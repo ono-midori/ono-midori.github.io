@@ -10,7 +10,7 @@
 
 ### Reviews
 
-书评和剧评吧。目前对法国大革命、德意志帝国的崛起、18~19世纪的欧洲历史挺感兴趣的。然后可能会看一些讲春秋战国时期的纪录片。秦国到底是个怎样的国家？秦法给秦人带来了怎样的生活变化？春秋时的周礼有哪些传统？
+书评和剧评吧。目前对法国大革命、德意志帝国的崛起这段18~19世纪的欧洲历史挺感兴趣的。
 
 ### Running Records
 
@@ -26,11 +26,11 @@
 
 [The Application of Airflow](./techs/airflow.md)
 
-[C++容器的内存管理](./techs/cppmm.md)
+[Memory Management of C++ Containers](./techs/cppmm.md)
 
-[Linux上mmap的效率](./techs/mmap.md)
+[The Performance of Linux mmap](./techs/mmap.md)
 
-[Openonload的kernel bypass技术](./techs/openonload.md)
+[Kernel Bypass of Openonload](./techs/openonload.md)
 
 [hugepage的用法和意义](./techs/hugepage.md)
 
