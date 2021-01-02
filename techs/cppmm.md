@@ -6,7 +6,7 @@
 
 ### malloc and free
 
-
+`void* malloc(int nbytes)` allocate *n* bytes of dynamic memory from heap, or free store. Malloc invokes system call to request memory from Linux kernel, which adopts sophisticated algorithm to management dynamic memory. 
 
 
 

@@ -34,18 +34,22 @@
 
 [Kernel Bypass of Openonload](./techs/openonload.md)
 
-[hugepage的用法和意义](./techs/hugepage.md)
+[The Usage and Performance of Hugepage](./techs/hugepage.md)
 
-[Linux动态内存的管理机制](./techs/linuxmm.md)
+[The Memory Management Algorithm of Linux Kernel](./techs/linuxmm.md)
 
-[Clickhouse的效率](./techs/clickhouse.md)
+[The Implementation Details and Performance of Clickhouse DBMS](./techs/clickhouse.md)
 
-[futex的应用](./techs/futex.md)
+[The Application of futex](./techs/futex.md)
 
-[Linux系统调用与中断的过程](./techs/syscall_int.md)
+[The Procedure of Interrupts and System calls on Linux](./techs/syscall_int.md)
 
-[C++的memory order概念和实践](./techs/cppmo.md)
+[The Concepts and Best Practice of C++ Memory Model](./techs/cppmo.md)
 
-[C编译器的sanitizer](./techs/sanitizer.md)
+[The Compiler Sanitizers and Valgrind for C/C++ Debugging](./techs/sanitizer.md)
 
-[Valgrind和Perf](./techs/val_perf.md)
+[The perf Tool and Performance Profiling of C++ program on Linux](./techs/val_perf.md)
+
+[The Page Reclaimation Algorithm of Linux Kernel](./techs/linuxpca.md)
+
+[The CFS Algorithm of Linux Kernel](./techs/linuxcfs.md)
