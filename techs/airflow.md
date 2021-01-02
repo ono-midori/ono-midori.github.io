@@ -84,7 +84,7 @@ smtp_ssl = True
   GRANT
   ```
 
-### `SSHOperator`
+### SSHOperator
 
 - Pip install `airflow[ssh]` and `paramiko` to use `SSHOperator`.
 - Use `airflow connections` command to add and delete SSH connections.
