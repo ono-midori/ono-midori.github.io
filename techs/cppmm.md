@@ -599,4 +599,58 @@ int main() {
   }
 }
 ```
+The output of code is somewhat verbose. Firstly, the distance of addresses beween two adjacent objects are still the size of object, so 
+```shell$ ./allocator3 
+sizeof(Foo) = 40
+allocate chunk of memory
+0x13f1280 0
+0x13f12a8 1
+0x13f12d0 2
+0x13f12f8 3
+0x13f1320 4
+allocate chunk of memory
+0x13f1350 5
+0x13f1378 6
+0x13f13a0 7
+0x13f13c8 8
+0x13f13f0 9
+allocate chunk of memory
+0x13f1420 10
+0x13f1448 11
+0x13f1470 12
+0x13f1498 13
+0x13f14c0 14
+allocate chunk of memory
+0x13f14f0 15
+0x13f1518 16
+0x13f1540 17
+0x13f1568 18
+0x13f1590 19
+allocate chunk of memory
+0x13f15c0 20
+0x13f15e8 21
+0x13f1610 22
+sizeof(Goo) = 48
+allocate chunk of memory
+0x13f1690 (0,0)
+0x13f16c0 (1,1)
+0x13f16f0 (2,2)
+0x13f1720 (3,3)
+0x13f1750 (4,4)
+allocate chunk of memory
+0x13f1790 (5,5)
+0x13f17c0 (6,6)
+0x13f17f0 (7,7)
+0x13f1820 (8,8)
+0x13f1850 (9,9)
+allocate chunk of memory
+0x13f1890 (10,10)
+0x13f18c0 (11,11)
+0x13f18f0 (12,12)
+0x13f1920 (13,13)
+0x13f1950 (14,14)
+allocate chunk of memory
+0x13f1990 (15,15)
+0x13f19c0 (16,16)
+```
 
