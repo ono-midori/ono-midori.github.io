@@ -1,6 +1,14 @@
 # Memory Management of C++ Containers
 
-[TOC]
+- [Memory Management of C++ Containers](#memory-management-of-c-containers)
+  - [malloc, free, new, and delete](#malloc-free-new-and-delete)
+    - [malloc and free](#malloc-and-free)
+    - [new and delete](#new-and-delete)
+    - [Four Versions of Global New](#four-versions-of-global-new)
+    - [Overload New and Delete for Class](#overload-new-and-delete-for-class)
+    - [Per-Class Allocator](#per-class-allocator)
+    - [Usage of Embedded Pointer to Avoid Cookie in Per-Class Allocator](#usage-of-embedded-pointer-to-avoid-cookie-in-per-class-allocator)
+  - [Static Allocators](#static-allocators)
 
 ## malloc, free, new, and delete
 
@@ -485,4 +493,110 @@ sizeof(Airplane) = 16
 ```
 
 ## Static Allocators
+
+Designing customized `new` and `delete` operations for each class is reinventing the wheels. If a general static allocator is designed, each class could reuse the code for memory allocation and release.
+
+```c++
+#include <complex>
+#include <iostream>
+#include <string>
+
+class allocator {
+private:
+  struct obj {
+    struct obj *next; // embedded pointer
+  };
+
+public:
+  void *allocate(size_t);
+  void deallocate(void *, size_t);
+
+private:
+  obj *freeStore = nullptr;
+  const int CHUNK = 5;
+};
+
+void *allocator::allocate(size_t size) {
+  obj *p;
+
+  if (!freeStore) {
+    std::cout << "allocate chunk of memory" << std::endl;
+    size_t chunk = CHUNK * size;
+    freeStore = p = reinterpret_cast<obj *>(malloc(chunk));
+
+    for (int i = 0; i < CHUNK - 1; ++i) {
+      p->next = reinterpret_cast<obj *>((char *)p + size);
+      p = p->next;
+    }
+    p->next = nullptr;
+  }
+  p = freeStore;
+  freeStore = freeStore->next;
+  return p;
+}
+
+void allocator::deallocate(void *p, size_t) {
+  reinterpret_cast<obj *>(p)->next = freeStore;
+  freeStore = reinterpret_cast<obj *>(p);
+}
+
+class Foo {
+public:
+  long L;
+  std::string str;
+  static allocator myAlloc;
+
+  Foo(long l) : L(l) {}
+  static void *operator new(size_t size) { return myAlloc.allocate(size); }
+
+  static void operator delete(void *pdead, size_t size) {
+    return myAlloc.deallocate(pdead, size);
+  }
+};
+
+allocator Foo::myAlloc;
+
+class Goo {
+public:
+  std::complex<double> c;
+  std::string str;
+  static allocator myAlloc;
+
+  Goo(const std::complex<double> &x) : c(x) {}
+
+  static void *operator new(size_t size) { return myAlloc.allocate(size); }
+
+  static void operator delete(void *pdead, size_t size) {
+    return myAlloc.deallocate(pdead, size);
+  }
+};
+
+allocator Goo::myAlloc;
+
+int main() {
+  {
+    Foo *p[100];
+
+    std::cout << "sizeof(Foo) = " << sizeof(Foo) << std::endl;
+    for (int i = 0; i < 23; ++i) {
+      p[i] = new Foo(i);
+      std::cout << p[i] << ' ' << p[i]->L << std::endl;
+    }
+
+    for (int i = 0; i < 23; ++i)
+      delete p[i];
+  }
+  {
+    Goo *p[100];
+    std::cout << "sizeof(Goo) = " << sizeof(Goo) << std::endl;
+    for (int i = 0; i < 17; ++i) {
+      p[i] = new Goo(std::complex<double>(i, i));
+      std::cout << p[i] << ' ' << p[i]->c << std::endl;
+    }
+
+    for (int i = 0; i < 17; ++i)
+      delete p[i];
+  }
+}
+```
 
