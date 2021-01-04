@@ -12,7 +12,7 @@
 
 书评和剧评吧。目前对法国大革命、德意志帝国的崛起这段18~19世纪的欧洲历史挺感兴趣的。
 
-[楚国八百年 法国大革命与拿破仑](./rs/2021-01.md)
+[楚国八百年 风云战国之列国 喋血长平 法国大革命和拿破仑](./rs/2021-01.md)
 
 ### Running Records
 
@@ -50,6 +50,8 @@
 
 [The perf Tool and Performance Profiling of C++ program on Linux](./techs/val_perf.md)
 
-[The Page Reclaimation Algorithm of Linux Kernel](./techs/linuxpca.md)
+[The Page Reclaimation Algorithm of Linux Kernel](./techs/linuxpra.md)
 
 [The CFS Algorithm of Linux Kernel](./techs/linuxcfs.md)
+
+[The Best Practice of C++ Smart Pointers](techs/cppsp.md)
