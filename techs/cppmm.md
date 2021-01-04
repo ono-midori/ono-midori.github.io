@@ -599,7 +599,8 @@ int main() {
   }
 }
 ```
-The output of code is somewhat verbose. Firstly, the distance of addresses beween two adjacent objects are still the size of object, so 
+The output of code is somewhat verbose. Firstly, the distance of addresses beween two adjacent objects are still the size of object.
+
 ```shell$ ./allocator3 
 sizeof(Foo) = 40
 allocate chunk of memory
