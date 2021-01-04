@@ -44,7 +44,7 @@
 
 [The Procedure of Interrupts and System calls on Linux](./techs/syscall_int.md)
 
-[The Concepts and Best Practice of C++ Memory Model](./techs/cppmo.md)
+[The Concepts and Best Practice of C++ Memory Order](./techs/cppmo.md)
 
 [The Compiler Sanitizers and Valgrind for C/C++ Debugging](./techs/sanitizer.md)
 

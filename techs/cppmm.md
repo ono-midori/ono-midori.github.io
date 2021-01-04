@@ -16,7 +16,7 @@
 
 ### malloc and free
 
-`void* malloc(int nbytes)` allocates *n* bytes of dynamic memory from heap, or free store. Malloc invokes system call to request memory from Linux kernel, which adopts sophisticated algorithm to management dynamic memory. `free(p)` releases the memory allocated at the pointer `p`, and `p` should be returned from a successful `malloc` call. The performance of malloc and free is controlled by user.
+`void* malloc(int nbytes)` allocates *n* bytes of dynamic memory from heap, or free store. Malloc invokes system call to request memory from Linux kernel, which adopts sophisticated algorithm to management dynamic memory. `free(p)` releases the memory allocated at the pointer `p`, and `p` should be returned from a successful `malloc` call. The performance of malloc and free is not controlled by user.
 
 The Linux kernel maintains the number of bytes allocated by `malloc` using additional memory area called cookie, such that the `free` operation could release the correct length of memory. Some memory allocation algorithms are designed without using cookie in order to save memory usage.
 
@@ -244,7 +244,7 @@ We find that in array new memory layout, there is 8 bytes between the pointers o
 
 In the previous example, we directly called `malloc` and `free` in the overridden version of `new` and `delete`. Here we customize the memory allocation procedure:
 
-```C++
+```c++
 /* allocator1.cpp */
 #include <cstddef>
 #include <iostream>
@@ -601,7 +601,8 @@ int main() {
 ```
 The output of code is somewhat verbose. Firstly, the distance of addresses beween two adjacent objects are still the size of object.
 
-```shell$ ./allocator3 
+```shell 
+$ ./allocator3
 sizeof(Foo) = 40
 allocate chunk of memory
 0x13f1280 0
