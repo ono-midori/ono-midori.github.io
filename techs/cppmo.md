@@ -14,7 +14,7 @@
 
 ## Memory Order Basics
 
-Whataver its type, an object is stored in one or more *memory locations*. In C++ memory model,
+Whatever its type, an object is stored in one or more *memory locations*. In C++ memory model,
 
 - Every variable is an object, including those that are members of other object.
 - Every object occupies at least one memory location.
@@ -27,7 +27,7 @@ Every object in a C++ program has a defined *modification order* composed of all
 
 ## Atomic Operations and Types in C++
 
-The standard atomic types are not copyable or assignable in the conventional sense, in that they have to copy constructors or copy assignment operators. All ioerations on an atomic type are defined as atomic, and assignment and copy-construction involves two objects. A single operation on two distincet objects cannot be atomic. In the case of copy-construction or copy-assignment, the value must first be read from one object and then written to the other. These are two separate operations on two separate objects, and the combination cannot be atomic. Therefore, there operations are not permitted. However, they support assignment from and implicit conversion to the corresponding built-in types as well as direct `load()` and `store()` member functions, `exchange()`, `compare_exchange_weak()`, and `compare_exchange_strong()`. Each of the operations on the atomic types has an optional memory-ordering argument that can be used to specify the required memory-ordering semantics. The operations are divided into three categories:
+The standard atomic types are not copyable or assignable in the conventional sense, in that they have to copy constructors or copy assignment operators. All operations on an atomic type are defined as atomic, and assignment and copy-construction involves two objects. A single operation on two distinct objects cannot be atomic. In the case of copy-construction or copy-assignment, the value must first be read from one object and then written to the other. These are two separate operations on two separate objects, and the combination cannot be atomic. Therefore, there operations are not permitted. However, they support assignment from and implicit conversion to the corresponding built-in types as well as direct `load()` and `store()` member functions, `exchange()`, `compare_exchange_weak()`, and `compare_exchange_strong()`. Each of the operations on the atomic types has an optional memory-ordering argument that can be used to specify the required memory-ordering semantics. The operations are divided into three categories:
 
 - *Store* operations, which can have `memory_order_relaxed`, `memory_order_release`, or `memory_order_seq_cst` ordering.
 - *Load* operations, which can have `memory_order_relaxed`, `memory_order_consume`, `memory_order_acquire`, or `memory_order_seq_cst` ordering.
@@ -51,7 +51,7 @@ On the other hand, `compare_exchange_strong()` is guaranteed to return `false` o
 
 ## Synchronizing Operations and Enforcing Ordering
 
-Suppose you have two threads, one of which is populating a data structure to be read by the second. The code listing shows such senario:
+Suppose you have two threads, one of which is populating a data structure to be read by the second. The code listing shows such scenario:
 
 ```c++
 #include <vector>
@@ -74,7 +74,7 @@ void writer_thread() {
 }
 ```
 
-The requied enforced access ordering comes from the operations on the `std::atomic<bool>` variable `data_ready`; they provide the necessary ordering by virtue of the memory model releations *happens-before* and *synchronizes-with*. The write of the data (3) happens-before the write to the `data_ready` flag (4), and the read of the flag (1) happens-before the read of the data (2). When the value read from `data_ready` (1) is `true`, the write synchronizes-with that read, creating a happens-before relationship. Because the happens-before is transitive, the write to the data (3) happens-before the wrute to the flag (4), which happens-before the read of the `true` value from the flag (1), which happens before the read of the data (2), and you have an enforced ordering: the write of the data happens-before the read of the data and everything is OK. With default atomic operations, the operation that writes a value happens before an operation that reads that value, which is rather intuitive, but it does need spelling out: the atomic oprations also have other options for the ordering requirements.
+The required enforced access ordering comes from the operations on the `std::atomic<bool>` variable `data_ready`; they provide the necessary ordering by virtue of the memory model relations *happens-before* and *synchronizes-with*. The write of the data (3) happens-before the write to the `data_ready` flag (4), and the read of the flag (1) happens-before the read of the data (2). When the value read from `data_ready` (1) is `true`, the write synchronizes-with that read, creating a happens-before relationship. Because the happens-before is transitive, the write to the data (3) happens-before the write to the flag (4), which happens-before the read of the `true` value from the flag (1), which happens before the read of the data (2), and you have an enforced ordering: the write of the data happens-before the read of the data and everything is OK. With default atomic operations, the operation that writes a value happens before an operation that reads that value, which is rather intuitive, but it does need spelling out: the atomic operations also have other options for the ordering requirements.
 
 ### the Synchronizes-with Relationship
 
@@ -94,7 +94,7 @@ There are six memory ordering options that can be applied to operations on atomi
 
 ### Sequentially Consistent Ordering
 
-The default ordering is named *sequentially consistent* because it implies that the behavior of the program is consistent with a somple sequential view of the world. If all iperations on instances of atomic types are sequentially consistent, the behavior of a multithreaded program is as if all these operations were performed in some particular sequence by a single thread: all threads must see the same order of operations.
+The default ordering is named *sequentially consistent* because it implies that the behavior of the program is consistent with a simple sequential view of the world. If all operations on instances of atomic types are sequentially consistent, the behavior of a multi-threaded program is as if all these operations were performed in some particular sequence by a single thread: all threads must see the same order of operations.
 
 From the point of view of synchronization, a sequentially consistent store synchronizes-with a sequentially consistent load of the same variable that reads the value stored. What's more, any sequentially consistent atomic operations done after that load must also appear after the store to other threads in the system using sequentially consistent atomic operations. The following listing shows sequentially consistency in action:
 
@@ -146,13 +146,13 @@ The `assert` (5) can never fire, because either the store to `x` (1) or the stor
 
 ### Non-Sequentially Consistent Memory Orderings
 
-Probably the biggest issue outside the nice sequentially consistent world is the fact that *there's no longer a single global order of events*. This means that different threas can see different views of the same operations, and you must throw away any mental model you have of operations from different threads neatly interleaved one after the other. Not only do you have to account for things happening truly concurrently, but *threads don't have to agree on the order of events*. It's not just that the compiler can reorder the instructions. Even if the threads are running the same bit of code, they can disagree on the order of events caused by operations in other threads in the absence of explicit ordering constraints, because the different CPU caches and internal buffers can hold different values for the same memory. It's so important I'll say it again: *threads don't have to agree on the order of events*.
+Probably the biggest issue outside the nice sequentially consistent world is the fact that *there's no longer a single global order of events*. This means that different threads can see different views of the same operations, and you must throw away any mental model you have of operations from different threads neatly interleaved one after the other. Not only do you have to account for things happening truly concurrently, but *threads don't have to agree on the order of events*. It's not just that the compiler can reorder the instructions. Even if the threads are running the same bit of code, they can disagree on the order of events caused by operations in other threads in the absence of explicit ordering constraints, because the different CPU caches and internal buffers can hold different values for the same memory. It's so important I'll say it again: *threads don't have to agree on the order of events*.
 
-You also have to throw out mental models based on the idea of the compiler or processor reordering the instructions. *In the absence of other ordering constraints, the only requirement is that all threads agree on the modification order of each individual variables.* Operations on distinct variables can appear in different orders on different threads, provided the values seen are consistent with any additional ordering constaints imposed.
+You also have to throw out mental models based on the idea of the compiler or processor reordering the instructions. *In the absence of other ordering constraints, the only requirement is that all threads agree on the modification order of each individual variables.* Operations on distinct variables can appear in different orders on different threads, provided the values seen are consistent with any additional ordering constraints imposed.
 
 ### Relaxed Ordering
 
-Operations on atomic types performed with relaxed ordering don't participate in synchronizes-with relationships. Operations on the same variable within a single thread still obey happens-before relationships, but there is almost no requirement on ordering relative to other threads. The only requirement is that accesses to a single atomic variable from the same thread can't be reordered; onace a given thread has seen a particular value of an atomic variable, a subsequent read by that thread can't retrieve an earlier value of the variable. Without any additional synchronization, the modification order of each variable is the only thing shared between threads that are using `memory_order_relaxed`. 
+Operations on atomic types performed with relaxed ordering don't participate in synchronizes-with relationships. Operations on the same variable within a single thread still obey happens-before relationships, but there is almost no requirement on ordering relative to other threads. The only requirement is that accesses to a single atomic variable from the same thread can't be reordered; once a given thread has seen a particular value of an atomic variable, a subsequent read by that thread can't retrieve an earlier value of the variable. Without any additional synchronization, the modification order of each variable is the only thing shared between threads that are using `memory_order_relaxed`. 
 
 To demonstrate just how relaxed your relaxed operations can be, you need only two threads, as shown in the following listing.
 
