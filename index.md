@@ -56,4 +56,8 @@
 
 [The Best Practice of C++ Smart Pointers](./techs/cppsp.md)
 
-[Linux epoll Basics and Applications](./techs/linuxepoll.md)
+[Epoll Basics and Applications](./techs/epoll.md)
+
+[Ptrace Debugging Tool](./techs/ptrace.md)
+
+[C++ Stack Unwinding](./techs/cppunw.md)
