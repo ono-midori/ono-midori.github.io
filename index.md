@@ -38,7 +38,7 @@
 
 [The Memory Management Algorithm of Linux Kernel](./techs/linuxmm.md)
 
-[The Implementation Details and Performance of Clickhouse DBMS](./techs/clickhouse.md)
+[The Application and Performance of Clickhouse DBMS](./techs/clickhouse.md)
 
 [The Application of futex](./techs/futex.md)
 
