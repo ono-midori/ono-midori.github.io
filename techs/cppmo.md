@@ -16,6 +16,8 @@
     - [Transitive Synchronization with Acquire-Release Ordering](#transitive-synchronization-with-acquire-release-ordering)
     - [Data Dependency with Acquire-Release Ordering and Memory_Order_Consume](#data-dependency-with-acquire-release-ordering-and-memory_order_consume)
     - [Release Sequences and Synchronizes-with](#release-sequences-and-synchronizes-with)
+    - [Fences](#fences)
+    - [Ordering Nonatomic Operations without Atomics](#ordering-nonatomic-operations-without-atomics)
 
 ## Memory Order Basics
 
@@ -548,3 +550,101 @@ int main() {
     c.join();
 }
 ```
+
+If there is one consumer thread, this is fine; the `fetch_sub()` is a read, with `memory_order_acquire` semantics, and the store had `memory_order_release` semantics, so the store synchronizes-with the load and the thread can read the item from the buffer. If there are two threads reading, the second `fetch_sub()` will see the value written by the first thread ('s `fetch_sub()`), and not the value written by the `store`. Without the rule about the release sequence, this second thread wouldn't have a happens-before relationship with the first thread, and it wouldn't be safe to read the shared buffer unless the first `fetch_sub()` also had `memory_order_release` semantics, which would introduce unnecessary synchronization between the two consumer threads. 
+
+### Fences
+
+An atomic operations library wouldn't be complete without a set of fences. These are operations that enforce memory-ordering constraints without modifying and data and are typically combined with atomic operations that use the `memory_order_relaxed` ordering constraints. Fences are global operations and affect the ordering of other atomic operations in the thread that executed the fence. Fences are also commonly called *memory barriers*, and they get their name because they put a line in the code that certain operations can't cross. Relaxed operations on separate variables can unsually be freely reordered by the compiler or the hardware. Fences restrict this freedom and instroduce happens-before and synchronizes-with relationships that weren't present before.
+
+The following listing shows an example adding a fence between the two atomic operations on each thread.
+
+```c++
+#include <atomic>
+#include <thread>
+#include <cassert>
+
+std::atomic<bool> x, y;
+std::atomic<int> z;
+
+void write_x_then_y() {
+    x.store(true, std::memory_order_relaxed); // (1)
+    std::atomic_thread_fence(std::memory_order_release); // (2)
+    y.store(true, std::memory_order_relaxed); // (3)
+}
+
+void read_y_then_x() {
+    while (!y.load(std::memory_order_relaxed)); // (4)
+    std::atomic_thread_fence(std::memory_order_acquire); // (5)
+    if (x.load(std::memory_order_relaxed)) // (6)
+        ++z;
+}
+
+int main() {
+    x = false;
+    y = false;
+    z = 0;
+    std::thread a(write_x_then_y);
+    std::thread b(read_y_then_x);
+    a.join();
+    b.join();
+    assert(z.load() != 0);
+}
+```
+
+The release fence (2) synchronizes-with the acquire fence (5), because the load from `y` at (4) reads the value stored at (3). This means that the store to `x` at (1) happens-before the load from `x` at (6), so the value read must be `true` and the assert at (7) won't fire. This is in constrast to the original case without the fences where the store to and load from `x` weren't reordered, and so the assert could fire. Note that both fences are necessary: you need a release in one thread and an acquire in another to get a synchronizes-with relationship.
+
+In this case, the release fence (2) has the same effect as if the store to `y` at (3) was tagged with `memory_order_release` rather that `memory_order_relaxed`. Likewise, the acquire fence (5) makes it as if the load from `y` (4) was tagged with `memory_order_acquire`. This is the general idea with fences: if an acquire operation sees the result of a store that takes place after a release fence, the fence synchronizes-with that acquire operation; and if a load that takes place before an acquire fence sees the result of a release operation, the release operation synchronizes-with the acquire fence. Of course, you can have fences on both sides, as in the example here, in which case if a load that takes place before the acquire fences sees a value written by a store that takes place after the release fence, the release fence synchronizes-with the acquire fence.
+
+Although the fence synchronization depends on the values read or written by operations before or after the fence, it's important to note that the synchronization point is the fence itself. If you take `write_x_then_y` from the above listing, and move the write to `x` after the fences as follows, the condition in the assert is no longer guaranteed to be true, even though the write to `x` comes before the write to `y`:
+
+```c++
+void write_x_then_y()
+{
+    std::atomic_thread_fence(std::memory_order_release);
+    x.store(true, std::memory_order_relaxed);
+    y.store(true, std::memory_order_relaxed);
+}
+```
+
+These two operations are no longer separated by the fence and so are no longer ordered.
+
+### Ordering Nonatomic Operations without Atomics
+
+If you replace `x` from above listing with an ordinary nonatomic `bool`, the behavior is guaranteed to be the same:
+
+```c++
+#include <atomic>
+#include <thread>
+#include <cassert>
+
+bool x = false;
+std::atomic<bool> y;
+std::atomic<int> z;
+
+void write_x_then_y() {
+    x = true; // (1)
+    std::atomic_thread_fence(std::memory_order_release);
+    y.store(true, std::memory_order_relaxed); // (2)
+}
+
+void read_y_then_x() {
+    while (!y.load(std::memory_order_relaxed)); // (3)
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (x) // (4)
+        ++z;
+}
+
+int main() {
+    x = false;
+    y = false;
+    z = 0;
+    std::thread a(write_x_then_y);
+    std::thread b(read_y_then_x);
+    a.join();
+    b.join();
+    assert(z.load() != 0); // (5)
+}
+```
+
+The fences still provide an enforced ordering of the store to `x` (1) and the store to `y` (2), and, the load from `y` (3) and the load from `x` (4). There's still a happens-before relationship between the store to `x` and the load from `x`, so the assert (5) still won't fire. 
