@@ -110,3 +110,51 @@ It is possible to have just one wait queue in the zone, but that would mean that
 
 ### Zone Initialisation
 
+The zones are initialised after ther kernel page tables have been fully setup. Predictably, each architecture performs this task differently, but the objective is always the same: to determine what parameters to send to either `free_area_init()` for UMA architecture, or `free_area_init_node()` for NUMA. The only parameter required for UMA is `zones_size`. 
+
+### Pages
+
+Every physical page frame in the system has an associated `struct page` which is used to keep track of its status. It is declared as follows in `<linux/mm.h>`:
+
+```c++
+152 typedef struct page {
+153     struct list_head list;
+154     struct address_space *mapping;
+155     unsigned long index;
+156     struct page *next_hash;
+158     atomic_t count;
+159     unsigned long flags;
+161     struct list_head lru;
+163     struct page **pprev_hash;
+164     struct buffer_head * buffers;
+175
+176 #if defined(CONFIG_HIGHMEM) || defined(WANT_PAGE_VIRTUAL)
+177     void *virtual;
+179 #endif /* CONFIG_HIGMEM || WANT_PAGE_VIRTUAL */
+180 } mem_map_t;
+```
+
+- **list**: Pages may belong to many lists, and this field us used as the list head.
+- **mapping**: When files or devices are memory mapped, their inode has an associated `address_space`. This field will point to this address space of the page belongs to the file.
+- **index**: This field has two uses and it depends on the state of the page what it means. 
+  - If the page is part of a file mapping, it is the offset within the file.
+  - If the page is part of the swap cache, this will be the offset within the `address_space` for the swap address space.
+- **next_hash**: Pages that are part of a file mapping are hashed on the inode and offset. This field links pages together that share the same hash bucket.
+- **count**: The reference count to the page. If it drops to 0, it may be freed. Any greater and it is in use by one or more processes or is in use by the kernel like when waiting for IO.
+- **flags**: These are flags which describes the status of the page. All of them are listed in the following table.
+- **lru**: For the page replacement policy, pages that may be swapped out will exist on either the `active_list` or the `inactive_list`. This is the list head for these LRU lists.
+- **pprev_hash**: This complement to `next_hash` so that the hash can work as a doubly linked list.
+- **buffers**: If a page has buffers for a block device associated with it, this field is used to keep track of the `buffer_head`. An anonymous page mapped by a process may also have an associated `buffer_head` of it is backed by a swap file. This is necessary as the page has to be synced with backing storage in block sized chunks defined by the underlying filesystem.
+- **virtual**: Normally only pages from `ZONE_NORMAL` are directly mapped by the kernel. To address pages in `ZONE_HIGHMEM`, `kmap()` is used to map the page for the kernel. There are only a fixed number of pages that may be mapped. When it is mapped, thi is its virtual address.
+
+## Page Table Management
+
+This chapter will begin by describing how the page table is arranged and what types are used to describe the three separate levels of the page table, followed by how a virtual address is broken up into its component parts for navigating the table. Once covered, it will be discussed how the lowest level entry, the *Page Table Entry (PTE)* and what bits are used by the hardware. The initialisation stage is then discussed, which shows how the page tables are initialised during boot strapping. Finally, we will cover how the TLB and CPU caches are utilised.
+
+### Describing the Page Directory
+
+Each process a pointer (`mm_struct->pgd`) to its own *Page Global Directory (PGD)* which is a physical page frame. This frame contains an array of type `pgd_t` which is an architecture specific type defined in `<asm/page.h>`. On the x86, the process page table is loaded by copying `mm_struct->pgd` into the `cr3` register which has the side effect of flushing the TLB. 
+
+Each active entry in the PGD table points to a page frame containing an array of *Page Middle Directory (PMD)* entries of type `pmd_t` which in turns points to the page frames containing *Page Table Entries (PTE)* of type `pte_t`, which finally points to page frames containing the actual user data. In the vent the page has been swapped out to backing storage, the swap entry is stored in the PTE and used by `do_swap_page()` during page fault, to find the swap entry containing the page data.
+
+Any given linear address may be broken up into parts, to yield offsets within these three table levels, and offset within the actual page. Tp help break up the linear address into its component parts, a number of macros are provided in triplets for each page table level, namely a `SHIFT`, a `SIZE` and a `MASK` macro. 
