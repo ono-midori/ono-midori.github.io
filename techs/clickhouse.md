@@ -18,17 +18,17 @@
 
 ClickHouse is a column-oriented database management system (DBMS) for online analytical processing of queries (OLAP). In a column-oriented DMBS, the values from different columns are stored separately, and data from the same column is stored together.
 
-### Distinctive Featires of ClickHouse
+### Distinctive Features of ClickHouse
 
 - True Column-Oriented Database Management System. In such DBMS, no extra data is stored with the values. Among other things, this means that constant-length values must be supported, to avoid storing their length "number" next to the values. (定长数据结构). 
-- Data Compression. Data compression does play a key role in achieving excellent performance. In addition to effecient general-purpose compression codecs with different trade-offs between disk space and CPU consumption, ClickHouse provides specialized codecs for specific kinds of data.
+- Data Compression. Data compression does play a key role in achieving excellent performance. In addition to efficient general-purpose compression codecs with different trade-offs between disk space and CPU consumption, ClickHouse provides specialized codecs for specific kinds of data.
 - Disk Storage of Data. Keeping data physically sorted by primary key makes it possible to extract data for its specific values or value ranges with low latency, less than a few dozen milliseconds. ClickHouse is designed to work on regular hard drives.
-- Paralle Processing on Multiple Cores. Large queries are parallelized naturally, taking all the necessary resources available on the current server.
+- Parallel Processing on Multiple Cores. Large queries are parallelized naturally, taking all the necessary resources available on the current server.
 - Vector Computation Engine. Data is not only stored by columns but is processed by vectors (parts of columns), which allows achieving high CPU efficiency.
 
 ## Table Engines
 
-The table engin determines:
+The table engine determines:
 - How and where data is stored, where to write it to, and where to read it from
 - Concurrent data access
 - Use of indexes
@@ -73,7 +73,7 @@ A table consists of data parts sorted by primary key.
 
 When data is inserted in a table, separate data parts are created, and the data in each part is lexicographically sorted by primary key. Data belonging to different partitions are separated into different parts. In the background, ClickHouse merges data parts for more efficient storage. Parts belonging to different partitions are not merged. The merge mechanism does not guarantee that all rows with the same primary key will be in the same data part.
 
-Data parts can be stored in `Wide` or `Compact` format. In `Wide` format, each column is stored in a separate file in a filesystem. In `Compact` format, all columns in a table are stored in one file. `Compact` format can be used to increase performance of small and frequenct inserts (因为读取的文件更少). If the number of bytes in a data part is less than `min_bytes_for_wide_part`, or if the number of rows in a data part is less than `min_rows_for_wide_part`, the part is stored in `Compact` format. Otherwise it is stored in `Wide` format. If none of these settings is set, data parts are stored in `Wide` format.
+Data parts can be stored in `Wide` or `Compact` format. In `Wide` format, each column is stored in a separate file in a filesystem. In `Compact` format, all columns in a table are stored in one file. `Compact` format can be used to increase performance of small and frequent inserts (因为读取的文件更少). If the number of bytes in a data part is less than `min_bytes_for_wide_part`, or if the number of rows in a data part is less than `min_rows_for_wide_part`, the part is stored in `Compact` format. Otherwise it is stored in `Wide` format. If none of these settings is set, data parts are stored in `Wide` format.
 
 Each data part is logically divided into granules. A granule is the smallest indivisible data set that ClickHouse reads when selecting data. ClickHouse doesn't split a row or a value, so each granule always contains an integer number of rows. The first row of a granule is marked with the value of the primary key for the row. For each data part, ClickHouse creates an index file that stores the marks (就是primary keys). For each column, whether it's in the primary key or not, ClickHouse also stores the same marks. These marks let you find data directly in column files. 
 
@@ -92,7 +92,7 @@ Taking the `CounterID, Date)` primary key as an example, the sorting and index c
   Marks numbers:   0      1      2      3      4      5      6      7      8      9      10
 ```
 
-If the data query specfies:
+If the data query specifies:
 - `CounterID in ('a', 'h')`, the server reads the data in the range of marks `[0, 3)` (也就是0,1,2) and `[6, 8)`(也就是6,7).
 - `CounterID in ('a', 'h') AND Date = 3`, the server reads the data in the ranges of marks `[1, 3)` and `[7, 8)`.
 - `Date = 3`, the server reads the data in the range of marks `[1, 10]`.
@@ -124,6 +124,6 @@ The partition is specified in the `PARTITION BY expr` clause when creating a tab
 
 *When inserting new data to a table, this data is stored as a separate part (chunk) sorted by the primary key. In 10~15 minutes after inserting, the parts of the same partition are merged into the entire part.*
 
-Note that a merge only works for data parts that have the same value for the partitioning expression. This means you shouldn't make overly granular partitions (不能分的太细). Otherwise, the `SELECT` query performs poorly because of an unreasonably large number of files in the file system and open file descriptprs.
+Note that a merge only works for data parts that have the same value for the partitioning expression. This means you shouldn't make overly granular partitions (不能分的太细). Otherwise, the `SELECT` query performs poorly because of an unreasonably large number of files in the file system and open file descriptors.
 
 Use the **system.parts** table to view the table parts and partitions.
