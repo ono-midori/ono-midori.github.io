@@ -36,7 +36,7 @@
 
 [The Usage and Performance of Hugepage](./techs/hugepage.md)
 
-[The Memory Management Algorithm of Linux Kernel](./techs/linuxmm.md)
+[The Memory Management Subsystem of Linux Kernel](./techs/linuxmm.md)
 
 [The Application and Performance of Clickhouse DBMS](./techs/clickhouse.md)
 
