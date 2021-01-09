@@ -58,6 +58,6 @@
 
 [Epoll Basics and Applications](./techs/epoll.md)
 
-[Ptrace Debugging Tool](./techs/ptrace.md)
+[Strace Debugging Tool](./techs/strace.md)
 
 [C++ Stack Unwinding](./techs/cppunw.md)
