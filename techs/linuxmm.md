@@ -26,6 +26,10 @@
       - [Allocating a Descriptor](#allocating-a-descriptor)
     - [Memory Region](#memory-region)
       - [Memory Region Operations](#memory-region-operations)
+      - [File/Device backed memory regions](#filedevice-backed-memory-regions)
+      - [Creating A Memory Region](#creating-a-memory-region)
+      - [Finding a Mapped Memory Region](#finding-a-mapped-memory-region)
+      - [Finding a Free Memory Region](#finding-a-free-memory-region)
 
 ## Describing Physical Memory
 
@@ -348,15 +352,15 @@ From a user perspective, the address space is a flat linear address space. But p
 
 ![Kernel Address Space](./pics/understand-html010.png)
 
-The region between `PAGE_OFFSET` and `VMALLOC_START - VMALLOC_OFFSET` is the physical memory map and the size of the region dep _OFFSET`. Between the physical memory map and the vmalloc address space, there is a gap of space `VMALLOC_OFFSET` in size, which on the x86 is 8MiB, to guard against out of bounds errors. For illustration, on a x86 with 32MiB of RAM, `VMALLOC_START` will be located at `PAGE_OFFSET + 0x02000000 + 0x00800000`.
+The region between `PAGE_OFFSET` and `VMALLOC_START - VMALLOC_OFFSET` is the physical memory map and the size of the region depends on the amount of available RAM. Page table entries exist to map physical memory to the virtual address range beginning at `PAGE_OFFSET`. Between the physical memory map and the vmalloc address space, there is a gap of space `VMALLOC_OFFSET` in size, which on the x86 is 8MiB, to guard against out of bounds errors. For illustration, on a x86 with 32MiB of RAM, `VMALLOC_START` will be located at `PAGE_OFFSET + 0x02000000 + 0x00800000`.
 
-In low memory systems, the remaining amount of the virtual address space, minus a 2 page gap, is used by `vmalloc()` for representing non-contiguous memory allocations in a contiguous virtual address space. In high-memory systems, the vmalloc area extends as far as `PKMAP_BASE` minus the two page gap, and two extra regions are introduced. The first, which begins at `PKMAP_BASE`, is an area reserved for the mapping of high memory pages into low memory with `kmap()`. The second is for fixed virtual address mappings which extends from `FIXADDR_START` to `FIXADDR_TOP`. Fixed virtual addresses are needed for subsystems that need to know the virtual address at compile time such as the Advanced Programmable Interrupt Controller (APIC). `FIXADDR_TOP` is statically defined to be 0xFFFFE000 on the x86 which is one page before the end of the virtual address space. The size of the fixed mapping region is calculated at compile time in `__FIXADDR_SIZE` and used to index back from FIXADDR_TOP to give the start of the region `FIXADDR_START`.
+In low memory systems, the remaining amount of the virtual address space, minus a 2 page gap, is used by `vmalloc()` for representing non-contiguous memory allocations in a contiguous virtual address space. In high-memory systems, the vmalloc area extends as far as `PKMAP_BASE` minus the two page gap, and two extra regions are introduced. The first, which begins at `PKMAP_BASE`, is an area reserved for the mapping of high memory pages into low memory with `kmap()`. The second is for fixed virtual address mappings which extends from `FIXADDR_START` to `FIXADDR_TOP`. Fixed virtual addresses are needed for subsystems that need to know the virtual address at compile time such as the Advanced Programmable Interrupt Controller (APIC). `FIXADDR_TOP` is statically defined to be 0xFFFFE000 on the x86 which is one page before the end of the virtual address space. The size of the fixed mapping region is calculated at compile time in `__FIXADDR_SIZE` and used to index back from `FIXADDR_TOP` to give the start of the region `FIXADDR_START`.
 
 ### Managing the Address Space
 
-The address space usable by the process is managed by a high level `mm_struct`. Each address space consists of a number of page-aligned regions of memory that are in use. They never overlap and represent a set of addresses which contain pages that are related to each other in terms of protection and purpose. These regions are represented by a struct `vm_area_struct`. For clarity, a region may represent the process heap for use with `malloc()`, a memory mapped file such as a shared library or a block of anonymous memory allocated with `mmap()`. The pages for this region may still have to be allocated, be active and resident or have been paged out.
+The address space usable by the process is managed by a high level `mm_struct`. Each address space consists of a number of page-aligned regions of memory that are in use. They never overlap and represent a set of addresses which contain pages that are related to each other in terms of protection and purpose. *These regions are represented by a `struct vm_area_struct`*. For clarity, a region may represent the process heap for use with `malloc()`, a memory mapped file such as a shared library, or a block of anonymous memory allocated with `mmap()`. The pages for this region may still have to be allocated, be active and resident or have been paged out.
 
-If a region is backed by a file, its `vm_file` field will be set. By traversing `vm_file->f_dentry->d_inode->i_mapping`, the associated address_space for the region may be obtained. The `address_space` has all the filesystem specific information required to perform page-based operations on disk.
+If a region is backed by a file, its `vm_file` field will be set. By traversing `vm_file->f_dentry->d_inode->i_mapping`, the associated `address_space` for the region may be obtained. The `address_space` has all the filesystem specific information required to perform page-based operations on disk.
 
 The relationship between the different address space related structures is illustrated in the following figure. A number of system calls are provided which affect the address space and regions. 
 
@@ -374,9 +378,9 @@ The relationship between the different address space related structures is illus
 
 ### Process Address Space Descriptor
 
-The process address space is described by the `mm_struct` struct meaning that only one exists for each process, and is shared between userspace threads. In fact, threads are identified in the task list by finding all `task_struct`s which have pointers to the same `mm_struct`.
+The process address space is described by the `mm_struct` struct meaning that only one exists for each process, and is shared between userspace threads. In fact, threads are identified in the task list by finding all `task_struct`s which have pointers to the same `mm_struct`. (线程指向同一个地址空间)
 
-A unique `mm_struct` is not needed for kernel threads as they will never page fault or access the userspace portion. The only exception is page faulting within the vmalloc space. The page fault handling code treats this as a special case and updates the current page table with information in the the master page table. As a `mm_struct` is not needed for kernel threads, the `task_struct->mm` field for kernel threads is always NULL. For some tasks such as the boot idle task, the `mm_struct` is never setup but for kernel threads, a call to `daemonize()` will call `exit_mm()` to decrement the usage counter.
+A unique `mm_struct` is not needed for kernel threads, as they will never page fault or access the userspace portion. The only exception is page faulting within the vmalloc space. The page fault handling code treats this as a special case and updates the current page table with information in the the master page table. As a `mm_struct` is not needed for kernel threads, the `task_struct->mm` field for kernel threads is always NULL. For some tasks such as the boot idle task, the `mm_struct` is never setup but for kernel threads, a call to `daemonize()` will call `exit_mm()` to decrement the usage counter.
 
 As TLB flushes are extremely expensive, a technique called lazy TLB is employed which avoids unnecessary TLB flushes by processes which do not access the userspace page tables as the kernel portion of the address space is always visible. The call to `switch_mm()`, which results in a TLB flush, is avoided by "borrowing" the `mm_struct` used by the previous task and placing it in `task_struct->active_mm`. This technique has made large improvements to context switches times.
 
@@ -417,7 +421,7 @@ The `mm_struct` is defined in `<linux/sched.h>` as follows:
 234 };
 ```
 
-The meaning of each of the field in this sizeable struct is as follows:
+The meaning of each of the field in this sizable struct is as follows:
 - **mmap**: The head of a linked list of all VMA regions in the address space;
 - **mm_rb**: The VMAs are arranged in a linked list and in a red-black tree for fast lookups. This is the root of the tree;
 - **mmap_cache**: The VMA found during the last call to find_vma() is stored in this field on the assumption that the area will be used again soon;
@@ -536,6 +540,7 @@ The protection flags:
 - `VM_DONTCOPY`: VMA will not be copied on fork
 - `VM_DONTEXPAND`: Prevents a region being resized. Flag is unused
   
+
 `mmap` Related flags:
 
 - `VM_MAYREAD`: Allow the `VM_READ` flag to be set
@@ -561,4 +566,153 @@ Locking flags:
 All the regions are linked together on a linked list ordered by address via the `vm_next` field. When searching for a free area, it is a simple matter of traversing the list, but a frequent operation is to search for the VMA for a particular address such as during page faulting for example. In this case, the red-black tree is traversed as it has O(logN) search time on average. The tree is ordered so that lower addresses than the current node are on the left leaf and higher addresses are on the right.
 
 #### Memory Region Operations
+
+There are three operations which a VMA may support called `open()`, `close()` and `nopage()`. It supports these with a `vm_operations_struct` in the VMA called `vma->vm_ops`. The struct contains three function pointers and is declared as follows in `<linux/mm.h>`:
+
+```c++
+133 struct vm_operations_struct {
+134     void (*open)(struct vm_area_struct * area);
+135     void (*close)(struct vm_area_struct * area);
+136     struct page * (*nopage)(struct vm_area_struct * area, 
+                                unsigned long address, 
+                                int unused);
+137 };
+```
+
+The `open()` and `close()` functions are will be called every time a region is created or deleted. These functions are only used by a small number of devices, one filesystem and System V shared regions which need to perform additional operations when regions are opened or closed. For example, the System V `open()` callback will increment the number of VMAs using a shared segment (`shp->shm_nattch`).
+
+The main operation of interest is the `nopage()` callback. This callback is used during a page-fault by `do_no_page()`. *The callback is responsible for locating the page in the page cache or allocating a page and populating it with the required data before returning it*.
+
+Most files that are mapped will use a `generic vm_operations_struct()` called `generic_file_vm_ops`. It registers only a `nopage()` function called `filemap_nopage()`. This `nopage()` function will either locating the page in the page cache or read the information from disk. The struct is declared as follows in `mm/filemap.c`:
+
+```c++
+2243 static struct vm_operations_struct generic_file_vm_ops = {
+2244     nopage:         filemap_nopage,
+2245 };
+```
+
+#### File/Device backed memory regions
+
+In the event the region is backed by a file, the `vm_file` leads to an associated `address_space`. The struct contains information of relevance to the filesystem such as the number of dirty pages which must be flushed to disk. It is declared as follows in `<linux/fs.h>`:
+
+```c++
+406 struct address_space {
+407     struct list_head        clean_pages;    
+408     struct list_head        dirty_pages;    
+409     struct list_head        locked_pages;   
+410     unsigned long           nrpages;        
+411     struct address_space_operations *a_ops; 
+412     struct inode            *host;          
+413     struct vm_area_struct   *i_mmap;        
+414     struct vm_area_struct   *i_mmap_shared; 
+415     spinlock_t              i_shared_lock;  
+416     int                     gfp_mask;       
+417 };
+```
+
+A brief description of each field is as follows:
+
+- **clean_pages**: List of clean pages that need no synchronisation with backing stoarge;
+- **dirty_pages**: List of dirty pages that need synchronisation with backing storage;
+- **locked_pages**: List of pages that are locked in memory;
+- **nrpages**: Number of resident pages in use by the address space;
+- **a_ops**: A struct of function for manipulating the filesystem. Each filesystem provides it's own `address_space_operations` although they sometimes use generic functions;
+- **host**: The host inode the file belongs to;
+- **i_mmap**: A list of private mappings using this `address_space`;
+- **i_mmap_shared**: A list of VMAs which share mappings in this `address_space`;
+- **i_shared_lock**: A spinlock to protect this structure;
+- **gfp_mask**: The mask to use when calling `__alloc_pages()` for new pages.
+
+Periodically the memory manager will need to flush information to disk. The memory manager does not know and does not care how information is written to disk, so the `a_ops` struct is used to call the relevant functions. It is declared as follows in `<linux/fs.h>`:
+
+```c++
+385 struct address_space_operations {
+386     int (*writepage)(struct page *);
+387     int (*readpage)(struct file *, struct page *);
+388     int (*sync_page)(struct page *);
+389     /*
+390      * ext3 requires that a successful prepare_write() call be
+391      * followed by a commit_write() call - they must be balanced
+392      */
+393     int (*prepare_write)(struct file *, struct page *, 
+                             unsigned, unsigned);
+394     int (*commit_write)(struct file *, struct page *, 
+                             unsigned, unsigned);
+395     /* Unfortunately this kludge is needed for FIBMAP. 
+         * Don't use it */
+396     int (*bmap)(struct address_space *, long);
+397     int (*flushpage) (struct page *, unsigned long);
+398     int (*releasepage) (struct page *, int);
+399 #define KERNEL_HAS_O_DIRECT
+400     int (*direct_IO)(int, struct inode *, struct kiobuf *, 
+                         unsigned long, int);
+401 #define KERNEL_HAS_DIRECT_FILEIO
+402     int (*direct_fileIO)(int, struct file *, struct kiobuf *, 
+                             unsigned long, int);
+403     void (*removepage)(struct page *);
+404 };
+```
+
+These fields are all function pointers which are described as follows;
+
+- **writepage**: Write a page to disk. The offset within the file to write to is stored within the page struct. It is up to the filesystem specific code to find the block. See `buffer.c:block_write_full_page()`;
+- **readpage**: Read a page from disk. See `buffer.c:block_read_full_page()`;
+- **sync_page**: Sync a dirty page with disk. See `buffer.c:block_sync_page()`;
+- **prepare_write**: This is called before data is copied from userspace into a page that will be written to disk. With a journaled filesystem, this ensures the filesystem log is up to date. With normal filesystems, it makes sure the needed buffer pages are allocated. See `buffer.c:block_prepare_write()`;
+- **commit_write**: After the data has been copied from userspace, this function is called to commit the information to disk. See `buffer.c:block_commit_write()`;
+- **bmap**: Maps a block so that raw IO can be performed. Mainly of concern to filesystem specific code although it is also when swapping out pages that are backed by a swap file instead of a swap partition;
+- **flushpage**: This makes sure there is no IO pending on a page before releasing it. See `buffer.c:discard_bh_page()`;
+- **releasepage**: This tries to flush all the buffers associated with a page before freeing the page itself. See `try_to_free_buffers()`.
+- **removepage**: An optional callback that is used when a page is removed from the page cache in `remove_page_from_inode_queue()`.
+
+#### Creating A Memory Region
+
+The system call `mmap()` is provided for creating new memory regions within a process. For the x86, the function calls `sys_mmap2()` which calls `do_mmap2()` directly with the same parameters. `do_mmap2()` is responsible for acquiring the parameters needed by `do_mmap_pgoff()`, which is the principle function for creating new areas for all architectures.
+
+`do_mmap2()` first clears the `MAP_DENYWRITE` and `MAP_EXECUTABLE` bits from the flags parameter as they are ignored by Linux, which is confirmed by the `mmap()` manual page. If a file is being mapped, `do_mmap2()` will look up the `struct file` based on the file descriptor passed as a parameter and acquire the `mm_struct->mmap_sem` semaphore before calling `do_mmap_pgoff()`.
+
+![Call Graph: sys_mmap2()](./pics/understand-html012.png)
+
+`do_mmap_pgoff()` begins by performing some basic sanity checks. It first checks the appropriate filesystem or device functions are available if a file or device is being mapped. It then ensures the size of the mapping is page aligned and that it does not attempt to create a mapping in the kernel portion of the address space. It then makes sure the size of the mapping does not overflow the range of `pgoff` and finally that the process does not have too many mapped regions already.
+
+This rest of the function is large but broadly speaking it takes the following steps:
+
+- Sanity check the parameters;
+- Find a free linear address space large enough for the memory mapping. If a filesystem or device specific `get_unmapped_area()` function is provided, it will be used; otherwise `arch_get_unmapped_area()` is called;
+- Calculate the VM flags and check them against the file access permissions;
+- If an old area exists where the mapping is to take place, fix it up so that it is suitable for the new mapping;
+- Allocate a `vm_area_struct` from the slab allocator and fill in its entries;
+- Link in the new VMA;
+- Call the filesystem or device specific mmap function;
+- Update statistics and exit.
+
+#### Finding a Mapped Memory Region
+
+A common operation is to find the VMA a particular address belongs to, such as during operations like page faulting, and the function responsible for this is `find_vma()`. The function `find_vma()` and other API functions affecting memory regions are listed in the following table.
+
+It first checks the `mmap_cache` field which caches the result of the last call to `find_vma()` as it is quite likely the same region will be needed a few times in succession. If it is not the desired region, the red-black tree stored in the `mm_rb` field is traversed. If the desired address is not contained within any VMA, the function will return the VMA closest to the requested address, so it is important callers double check to ensure the returned VMA contains the desired address.
+
+A second function called `find_vma_prev()` is provided which is functionally the same as `find_vma()` except that it also returns a pointer to the VMA preceding the desired VMA which is required as the list is a singly linked list. `find_vma_prev()` is rarely used but notably, it is used when two VMAs are being compared to determine if they may be merged. It is also used when removing a memory region so that the singly linked list may be updated.
+
+The last function of note for searching VMAs is `find_vma_intersection()` which is used to find a VMA which overlaps a given address range. The most notable use of this is during a call to `do_brk()` when a region is growing up. It is important to ensure that the growing region will not overlap an old region.
+
+- `struct vm_area_struct * find_vma(struct mm_struct * mm, unsigned long addr)`: Finds the VMA that covers a given address. If the region does not exist, it returns the VMA closest to the requested address
+- `struct vm_area_struct * find_vma_prev(struct mm_struct * mm, unsigned long addr, struct vm_area_struct **pprev)`: Same as `find_vma()` except it also also gives the VMA pointing to the returned VMA. It is not often used, with `sys_mprotect()` being the notable exception, as it is usually `find_vma_prepare()` that is required
+- `struct vm_area_struct * find_vma_prepare(struct mm_struct * mm, unsigned long addr, struct vm_area_struct ** pprev, rb_node_t *** rb_link, rb_node_t ** rb_parent)`: Same as `find_vma()` except that it will also the preceeding VMA in the linked list as well as the red-black tree nodes needed to perform an insertion into the tree
+- `struct vm_area_struct * find_vma_intersection(struct mm_struct * mm, unsigned long start_addr, unsigned long end_addr)`: Returns the VMA which intersects a given address range. Useful when checking if a linear address region is in use by any VMA
+- `int vma_merge(struct mm_struct * mm, struct vm_area_struct * prev, rb_node_t * rb_parent, unsigned long addr, unsigned long end, unsigned long vm_flags)`: Attempts to expand the supplied VMA to cover a new address range. If the VMA can not be expanded forwards, the next VMA is checked to see if it may be expanded backwards to cover the address range instead. Regions may be merged if there is no file/device mapping and the permissions match
+- `unsigned long get_unmapped_area(struct file *file, unsigned long addr, unsigned long len, unsigned long pgoff, unsigned long flags)`: Returns the address of a free region of memory large enough to cover the requested size of memory. Used principally when a new VMA is to be created
+- `void insert_vm_struct(struct mm_struct *, struct vm_area_struct *)`: Inserts a new VMA into a linear address space
+
+#### Finding a Free Memory Region
+
+When a new area is to be memory mapped, a free region has to be found that is large enough to contain the new mapping. The function responsible for finding a free area is `get_unmapped_area()`.
+
+As the call graph in the following figure indicates, there is little work involved with finding an unmapped area. The function is passed a number of parameters. A `struct file` is passed representing the file or device to be mapped, as well as `pgoff` which is the offset within the file that is been mapped. The requested address for the mapping is passed as well as its length. The last parameter is the protection flags for the area.
+
+![Call Graph: get_unmapped_area()](./pics/understand-html013.png)
+
+If a device is being mapped, such as a video card, the associated `f_op→get_unmapped_area()` is used. This is because devices or files may have additional requirements for mapping that generic code can not be aware of, such as the address having to be aligned to a particular virtual address.
+
+If there are no special requirements, the architecture specific function `arch_get_unmapped_area()` is called. Not all architectures provide their own function. For those that don't, there is a generic version provided in `mm/mmap.c`.
 
