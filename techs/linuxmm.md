@@ -19,6 +19,13 @@
       - [Mapping Physical to Virtual Kernel Addresses](#mapping-physical-to-virtual-kernel-addresses)
     - [Translation Lookaside Buffer (TLB)](#translation-lookaside-buffer-tlb)
     - [Level 1 CPU Cache Management](#level-1-cpu-cache-management)
+  - [Process Address Space](#process-address-space)
+    - [Linear Address Space](#linear-address-space)
+    - [Managing the Address Space](#managing-the-address-space)
+    - [Process Address Space Descriptor](#process-address-space-descriptor)
+      - [Allocating a Descriptor](#allocating-a-descriptor)
+    - [Memory Region](#memory-region)
+      - [Memory Region Operations](#memory-region-operations)
 
 ## Describing Physical Memory
 
@@ -328,4 +335,230 @@ It does not end there though. A second set of interfaces is required to avoid vi
 - `void flush_icache_range(unsigned long address, unsigned long endaddr)`: This is called when the kernel stores information in addresses that is likely to be executed, such as when a kernel module has been loaded.
 - `void flush_icache_user_range(struct vm_area_struct *vma, struct page *page, unsigned long addr, int len)`: This is similar to `flush_icache_range()` except it is called when a userspace range is affected. Currently, this is only used for `ptrace()` (used when debugging) when the address space is being accessed by access_process_vm().
 - `void flush_icache_page(struct vm_area_struct *vma, struct page *page)`: This is called when a page-cache page is about to be mapped. It is up to the architecture to use the VMA flags to determine whether the I-Cache or D-Cache should be flushed.
+
+## Process Address Space
+
+One of the principal advantages of virtual memory is that each process has its own virtual address space, which is mapped to physical memory by the operating system.
+
+This chapter begins with how the linear address space is broken up and what the purpose of each section is. We then cover the structures maintained to describe each process, how they are allocated, initialised and then destroyed. Next, we will cover how individual regions within the process space are created and all the various functions associated with them. That will bring us to exception handling related to the process address space, page faulting and the various cases that occur to satisfy a page fault. Finally, we will cover how the kernel safely copies information to and from userspace.
+
+### Linear Address Space
+
+From a user perspective, the address space is a flat linear address space. But predictably, the kernel's perspective is very different. *The address space is split into two parts, the userspace part which potentially changes with each full context switch, and the kernel address space which remains constant.* The location of the split is determined by the value of `PAGE_OFFSET` which is at `0xC0000000` on the x86. This means that 3GiB is available for the process to use while the remaining 1GiB is always mapped by the kernel. The linear virtual address space as the kernel sees it is illustrated in the following figure.
+
+![Kernel Address Space](./pics/understand-html010.png)
+
+The region between `PAGE_OFFSET` and `VMALLOC_START - VMALLOC_OFFSET` is the physical memory map and the size of the region dep _OFFSET`. Between the physical memory map and the vmalloc address space, there is a gap of space `VMALLOC_OFFSET` in size, which on the x86 is 8MiB, to guard against out of bounds errors. For illustration, on a x86 with 32MiB of RAM, `VMALLOC_START` will be located at `PAGE_OFFSET + 0x02000000 + 0x00800000`.
+
+In low memory systems, the remaining amount of the virtual address space, minus a 2 page gap, is used by `vmalloc()` for representing non-contiguous memory allocations in a contiguous virtual address space. In high-memory systems, the vmalloc area extends as far as `PKMAP_BASE` minus the two page gap, and two extra regions are introduced. The first, which begins at `PKMAP_BASE`, is an area reserved for the mapping of high memory pages into low memory with `kmap()`. The second is for fixed virtual address mappings which extends from `FIXADDR_START` to `FIXADDR_TOP`. Fixed virtual addresses are needed for subsystems that need to know the virtual address at compile time such as the Advanced Programmable Interrupt Controller (APIC). `FIXADDR_TOP` is statically defined to be 0xFFFFE000 on the x86 which is one page before the end of the virtual address space. The size of the fixed mapping region is calculated at compile time in `__FIXADDR_SIZE` and used to index back from FIXADDR_TOP to give the start of the region `FIXADDR_START`.
+
+### Managing the Address Space
+
+The address space usable by the process is managed by a high level `mm_struct`. Each address space consists of a number of page-aligned regions of memory that are in use. They never overlap and represent a set of addresses which contain pages that are related to each other in terms of protection and purpose. These regions are represented by a struct `vm_area_struct`. For clarity, a region may represent the process heap for use with `malloc()`, a memory mapped file such as a shared library or a block of anonymous memory allocated with `mmap()`. The pages for this region may still have to be allocated, be active and resident or have been paged out.
+
+If a region is backed by a file, its `vm_file` field will be set. By traversing `vm_file->f_dentry->d_inode->i_mapping`, the associated address_space for the region may be obtained. The `address_space` has all the filesystem specific information required to perform page-based operations on disk.
+
+The relationship between the different address space related structures is illustrated in the following figure. A number of system calls are provided which affect the address space and regions. 
+
+![Data Structures related to the Address Space](./pics/understand-html011.png)
+
+- `fork()`: Creates a new process with a new address space. All the pages are marked COW and are shared between the two processes until a page fault occurs to make private copies.
+- `clone()`: `clone()` allows a new process to be created that shares parts of its context with its parent and is how threading is implemented in Linux. `clone()` without the `CLONE_VM` set will create a new address space which is essentially the same as `fork()`.
+- `mmap()`: `mmap()` creates a new region within the process linear address space.
+- `mremap()`: Remaps or resizes a region of memory. If the virtual address space is not available for the mapping, the region may be moved unless the move is forbidden by the caller.
+- `munmap()`: This destroys part or all of a region. If the region been unmapped is in the middle of an existing region, the existing region is split into two separate regions.
+- `shmat()`: This attaches a shared memory segment to a process address space.
+- `shmdt()`: Removes a shared memory segment from an address space.
+- `execve()`: This loads a new executable file replacing the current address space.
+- `exit()`: Destroys an address space and all regions.
+
+### Process Address Space Descriptor
+
+The process address space is described by the `mm_struct` struct meaning that only one exists for each process, and is shared between userspace threads. In fact, threads are identified in the task list by finding all `task_struct`s which have pointers to the same `mm_struct`.
+
+A unique `mm_struct` is not needed for kernel threads as they will never page fault or access the userspace portion. The only exception is page faulting within the vmalloc space. The page fault handling code treats this as a special case and updates the current page table with information in the the master page table. As a `mm_struct` is not needed for kernel threads, the `task_struct->mm` field for kernel threads is always NULL. For some tasks such as the boot idle task, the `mm_struct` is never setup but for kernel threads, a call to `daemonize()` will call `exit_mm()` to decrement the usage counter.
+
+As TLB flushes are extremely expensive, a technique called lazy TLB is employed which avoids unnecessary TLB flushes by processes which do not access the userspace page tables as the kernel portion of the address space is always visible. The call to `switch_mm()`, which results in a TLB flush, is avoided by "borrowing" the `mm_struct` used by the previous task and placing it in `task_struct->active_mm`. This technique has made large improvements to context switches times.
+
+When entering lazy TLB, the function `enter_lazy_tlb()` is called to ensure that a `mm_struct` is not shared between processors in SMP machines, making it a NULL operation on UP machines. The second time use of lazy TLB is during process exit when `start_lazy_tlb()` is used briefly while the process is waiting to be reaped by the parent.
+
+The struct has two reference counts called `mm_users` and `mm_count` for two types of "users". 
+- `mm_users` is a reference count of processes accessing the userspace portion of for this `mm_struct`, such as the page tables and file mappings. Threads and the `swap_out()` code for instance will increment this count making sure a `mm_struct` is not destroyed early. When it drops to 0, `exit_mmap()` will delete all mappings and tear down the page tables before decrementing the `mm_count`.
+- `mm_count` is a reference count of the "anonymous users" for the `mm_struct` initialised at 1 for the "real" user. An anonymous user is one that does not necessarily care about the userspace portion and is just borrowing the `mm_struct`. Example users are kernel threads which use lazy TLB switching. When this count drops to 0, the `mm_struct` can be safely destroyed. Both reference counts exist because anonymous users need the `mm_struct` to exist even if the userspace mappings get destroyed and there is no point delaying the teardown of the page tables.
+
+The `mm_struct` is defined in `<linux/sched.h>` as follows:
+
+```c++
+206 struct mm_struct {
+207     struct vm_area_struct * mmap;
+208     rb_root_t mm_rb;
+209     struct vm_area_struct * mmap_cache;
+210     pgd_t * pgd;
+211     atomic_t mm_users;
+212     atomic_t mm_count;
+213     int map_count;
+214     struct rw_semaphore mmap_sem;
+215     spinlock_t page_table_lock;
+216 
+217     struct list_head mmlist;
+221 
+222     unsigned long start_code, end_code, start_data, end_data;
+223     unsigned long start_brk, brk, start_stack;
+224     unsigned long arg_start, arg_end, env_start, env_end;
+225     unsigned long rss, total_vm, locked_vm;
+226     unsigned long def_flags;
+227     unsigned long cpu_vm_mask;
+228     unsigned long swap_address;
+229 
+230     unsigned dumpable:1;
+231 
+232     /* Architecture-specific MM context */
+233     mm_context_t context;
+234 };
+```
+
+The meaning of each of the field in this sizeable struct is as follows:
+- **mmap**: The head of a linked list of all VMA regions in the address space;
+- **mm_rb**: The VMAs are arranged in a linked list and in a red-black tree for fast lookups. This is the root of the tree;
+- **mmap_cache**: The VMA found during the last call to find_vma() is stored in this field on the assumption that the area will be used again soon;
+- **pgd**: The Page Global Directory for this process;
+- **mm_users**: A reference count of users accessing the userspace portion of the address space as explained at the beginning of the section;
+- **mm_count**: A reference count of the anonymous users for the `mm_struct` starting at 1 for the "real" user as explained at the beginning of this section;
+- **map_count**: Number of VMAs in use;
+- **mmap_sem**: This is a long lived lock which protects the VMA list for readers and writers. As users of this lock require it for a long time and may need to sleep, a spinlock is inappropriate. A reader of the list takes this semaphore with `down_read()`. If they need to write, it is taken with `down_write()` and the `page_table_lock` spinlock is later acquired while the VMA linked lists are being updated;
+- **page_table_lock**: This protects most fields on the `mm_struct`. As well as the page tables, it protects the RSS (see below) count and the VMA from modification;
+- **mmlist**: All `mm_struct`s are linked together via this field;
+- **start_code, end_code**: The start and end address of the code section;
+- **start_data, end_data**: The start and end address of the data section;
+- **start_brk, brk**: The start and end address of the heap;
+- **start_stack**: Predictably enough, the start of the stack region;
+- **arg_start, arg_end**: The start and end address of command line arguments;
+- **env_start, env_end**: The start and end address of environment variables;
+- **rss**: Resident Set Size (RSS) is the number of resident pages for this process. It should be noted that the global zero page is not accounted for by RSS;
+- **total_vm**: The total memory space occupied by all VMA regions in the process;
+- **locked_vm**: The number of resident pages locked in memory;
+- **def_flags**: Only one possible value, `VM_LOCKED`. It is used to determine if all future mappings are locked by default or not;
+- **cpu_vm_mask**: A bitmask representing all possible CPUs in an SMP system. The mask is used by an InterProcessor Interrupt (IPI) to determine if a processor should execute a particular function or not. This is important during TLB flush for each CPU;
+- **swap_address**: Used by the pageout daemon to record the last address that was swapped from when swapping out entire processes;
+- **dumpable**: Set by `prctl()`, this flag is important only when tracing a process;
+- **context**: Architecture specific MMU context.
+
+There are a small number of functions for dealing with `mm_struct`s:
+- `mm_init()`: Initialises a `mm_struct` by setting starting values for each field, allocating a PGD, initialising spinlocks etc.
+- `allocate_mm()`: Allocates a `mm_struct()` from the slab allocator.
+- `mm_alloc()`: Allocates a `mm_struct` using `allocate_mm()` and calls `mm_init()` to initialise it.
+- `exit_mmap()`: Walks through a `mm_struct` and unmaps all VMAs associated with it.
+- `copy_mm()`: Makes an exact copy of the current tasks mm_struct for a new task. This is only used during fork.
+- `free_mm()`: Returns the `mm_struct` to the slab allocator.
+
+#### Allocating a Descriptor
+
+Two functions are provided to allocate a `mm_struct`. To be slightly confusing, they are essentially the same but with small important differences. `allocate_mm()` is just a preprocessor macro which allocates a `mm_struct` from the slab allocator. `mm_alloc()` allocates from slab and then calls `mm_init()` to initialise it.
+
+The initial `mm_struct` in the system is called `init_mm()` and is statically initialised at compile time using the macro `INIT_MM()`.
+
+```c++
+238 #define INIT_MM(name) \
+239 {                                                       \
+240     mm_rb:          RB_ROOT,                            \
+241     pgd:            swapper_pg_dir,                     \
+242     mm_users:       ATOMIC_INIT(2),                     \
+243     mm_count:       ATOMIC_INIT(1),                     \
+244     mmap_sem:       __RWSEM_INITIALIZER(name.mmap_sem), \
+245     page_table_lock: SPIN_LOCK_UNLOCKED,                \
+246     mmlist:         LIST_HEAD_INIT(name.mmlist),        \
+247 }
+```
+
+Once it is established, new `mm_struct`s are created using their parent `mm_struct` as a template. The function responsible for the copy operation is `copy_mm()` and it uses `init_mm()` to initialise process specific fields.
+
+While a new user increments the usage count with `atomic_inc(&mm->mm_users)`, it is decremented with a call to `mmput()`. If the `mm_users` count reaches zero, all the mapped regions are destroyed with `exit_mmap()` and the page tables destroyed as there is no longer any users of the userspace portions. The `mm_count` count is decremented with `mmdrop()` as all the users of the page tables and VMAs are counted as one `mm_struct` user. When `mm_count` reaches zero, the `mm_struct` will be destroyed.
+
+### Memory Region
+
+The full address space of a process is rarely used, only sparse regions are. Each region is represented by a `vm_area_struct` which never overlap and represent a set of addresses with the same protection and purpose. Examples of a region include a read-only shared library loaded into the address space or the process heap. A full list of mapped regions a process has may be viewed via the proc interface at `/proc/PID/maps` where PID is the process ID of the process that is to be examined.
+
+The region may have a number of different structures associated with it. At the top, there is the `vm_area_struct` which on its own is enough to represent anonymous memory.
+
+If the region is backed by a file, the `struct file` is available through the `vm_file` field which has a pointer to the `struct inode`. The inode is used to get the `struct address_space` which has all the private information about the file including a set of pointers to filesystem functions which perform the filesystem specific operations such as reading and writing pages to disk.
+
+The struct vm_area_struct is declared as follows in `<linux/mm.h>`:
+
+```c++
+ 44 struct vm_area_struct {
+ 45     struct mm_struct * vm_mm;
+ 46     unsigned long vm_start;
+ 47     unsigned long vm_end;
+ 49 
+ 50     /* linked list of VM areas per task, sorted by address */
+ 51     struct vm_area_struct *vm_next;
+ 52 
+ 53     pgprot_t vm_page_prot;
+ 54     unsigned long vm_flags;
+ 55 
+ 56     rb_node_t vm_rb;
+ 57 
+ 63     struct vm_area_struct *vm_next_share;
+ 64     struct vm_area_struct **vm_pprev_share;
+ 65 
+ 66     /* Function pointers to deal with this struct. */
+ 67     struct vm_operations_struct * vm_ops;
+ 68 
+ 69     /* Information about our backing store: */
+ 70     unsigned long vm_pgoff;
+ 72     struct file * vm_file;
+ 73     unsigned long vm_raend;
+ 74     void * vm_private_data;
+ 75 };
+```
+
+- **vm_mm**: The `mm_struct` this VMA belongs to;
+- **vm_start**: The starting address of the region;
+- **vm_end**: The end address of the region;
+- **vm_next**: All the VMAs in an address space are linked together in an address-ordered singly linked list via this field. It is interesting to note that the VMA list is one of the very rare cases where a singly linked list is used in the kernel;
+- **vm_page_prot**: The protection flags that are set for each PTE in this VMA. The different bits are described in the following table;
+- **vm_flags**: A set of flags describing the protections and properties of the VMA. They are all defined in `<linux/mm.h>` and are described in in the following table;
+- **vm_rb**: As well as being in a linked list, all the VMAs are stored on a red-black tree for fast lookups. This is important for page fault handling when finding the correct region quickly is important, especially for a large number of mapped regions;
+- **vm_next_share**: Shared VMA regions based on file mappings (such as shared libraries) linked together with this field;
+- **vm_pprev_share**: The complement of vm_next_share;
+- **vm_ops**: The vm_ops field contains functions pointers for open(), close() and nopage(). These are needed for syncing with information from the disk;
+- **vm_pgoff**: This is the page aligned offset within a file that is memory mapped;
+- **vm_file**: The struct file pointer to the file being mapped;
+- **vm_raend**: This is the end address of a read-ahead window. When a fault occurs, a number of additional pages after the desired page will be paged in. This field determines how many additional pages are faulted in;
+- **vm_private_data**: Used by some device drivers to store private information. Not of concern to the memory manager.
+
+The protection flags:
+
+- `VM_READ`: Pages may be read
+- `VM_WRITE`: Pages may be written
+- `VM_EXEC`: Pages may be executed
+- `VM_SHARED`: Pages may be shared
+- `VM_DONTCOPY`: VMA will not be copied on fork
+- `VM_DONTEXPAND`: Prevents a region being resized. Flag is unused
+  
+`mmap` Related flags:
+
+- `VM_MAYREAD`: Allow the `VM_READ` flag to be set
+- `VM_MAYWRITE`: Allow the `VM_WRITE` flag to be set
+- `VM_MAYEXEC`: Allow the `VM_EXEC` flag to be set
+- `VM_MAYSHARE`: Allow the `VM_SHARE` flag to be set
+- `VM_GROWSDOWN` Shared segment (probably stack) may grow down
+- `VM_GROWSUP`: Shared segment (probably heap) may grow up
+- `VM_SHM`: Pages are used by shared SHM memory segment
+- `VM_STACK_FLAGS`: Flags used by `setup_arg_flags()` to setup the stack
+
+Locking flags:
+
+- `VM_LOCKED`: If set, the pages will not be swapped out. Set by `mlock()`
+- `VM_IO`: Signals that the area is a mmaped region for IO to a device. It will also prevent the region being core dumped
+- `VM_RESERVED`: Do not swap out this region, used by device drivers
+
+`madvisde()` flags:
+
+- `VM_SEQ_READ`: A hint that pages will be accessed sequentially
+- `VM_RAND_READ`: A hint stating that readahead in the region is useless
+
+All the regions are linked together on a linked list ordered by address via the `vm_next` field. When searching for a free area, it is a simple matter of traversing the list, but a frequent operation is to search for the VMA for a particular address such as during page faulting for example. In this case, the red-black tree is traversed as it has O(logN) search time on average. The tree is ordered so that lower addresses than the current node are on the left leaf and higher addresses are on the right.
+
+#### Memory Region Operations
 
