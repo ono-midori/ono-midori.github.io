@@ -7,6 +7,7 @@
       - [Zone Watermarks](#zone-watermarks)
       - [Zone Wait Queue Table](#zone-wait-queue-table)
     - [Zone Initialisation](#zone-initialisation)
+      - [Initialising mem_map](#initialising-mem_map)
     - [Pages](#pages)
   - [Page Table Management](#page-table-management)
     - [Describing the Page Directory](#describing-the-page-directory)
@@ -150,7 +151,26 @@ It is possible to have just one wait queue in the zone, but that would mean that
 
 ### Zone Initialisation
 
-The zones are initialised after the kernel page tables have been fully setup. Predictably, each architecture performs this task differently, but the objective is always the same: to determine what parameters to send to either `free_area_init()` for UMA architecture, or `free_area_init_node()` for NUMA. The only parameter required for UMA is `zones_size`. 
+*The zones are initialised after the kernel page tables have been fully setup*. Predictably, each architecture performs this task differently, but the objective is always the same: *to determine what parameters to send to* either `free_area_init()` for UMA architecture, or `free_area_init_node()` for NUMA. The only parameter required for UMA is `zones_size`. 
+
+- **nid** is the Node ID which is the logical identifier of the node whose zones are being initialised;
+- **pgdat** is the node's `pg_data_t` that is being initialised. In UMA, this will simply be `contig_page_data`;
+- **pmap** is set later by `free_area_init_core()` to point to the beginning of the local `lmem_map` array allocated for the node. In NUMA, this is ignored as NUMA treats `mem_map` as a virtual array starting at `PAGE_OFFSET`. In UMA, this pointer is the global `mem_map` variable which is now `mem_map` gets initialised in UMA.
+- **zones_sizes** is an array containing the size of each zone in pages;
+- **zone_start_paddr** is the starting physical address for the first zone;
+- **zone_holes** is an array containing the total size of memory holes in the zones;
+
+It is the core function `free_area_init_core()` which is responsible for filling in each `zone_t` with the relevant information and the allocation of the mem_map array for the node. Note that information on what pages are free for the zones is not determined at this point. That information is not known until the boot memory allocator is being retired.
+
+#### Initialising `mem_map`
+
+The `mem_map area` is created during system startup in one of two fashions. On NUMA systems, the global `mem_map` is treated as a virtual array starting at `PAGE_OFFSET`. `free_area_init_node()` is called for each active node in the system, which allocates the portion of this array for the node being initialised. On UMA systems, `free_area_init()` uses `contig_page_data` as the node and the global `mem_map` as the "local" `mem_map` for this node. The callgraph for both functions is shown in the following figure.
+
+![Call Graph: free_area_init()](./pics/understand-html005.png)
+
+The core function `free_area_init_core()` allocates a local `lmem_map` ("l" for local) for the node being initialised. The memory for the array is allocated from the boot memory allocator with `alloc_bootmem_node()`. With UMA architectures, this newly allocated memory becomes the global `mem_map` but it is slightly different for NUMA.
+
+NUMA architectures allocate the memory for `lmem_map` within their own memory node. The global `mem_map` never gets explicitly allocated but instead is set to `PAGE_OFFSET` where it is treated as a virtual array. The address of the local map is stored in `pg_data_t->node_mem_map` which exists somewhere within the virtual `mem_map`. For each zone that exists in the node, the address within the virtual `mem_map` for the zone is stored in `zone_t->zone_mem_map`. All the rest of the code then treats `mem_map` as a real array as only valid regions within it will be used by nodes.
 
 ### Pages
 
@@ -180,12 +200,31 @@ The zones are initialised after the kernel page tables have been fully setup. Pr
   - If the page is part of a file mapping, it is the offset within the file.
   - If the page is part of the swap cache, this will be the offset within the `address_space` for the swap address space.
 - **next_hash**: Pages that are part of a file mapping are hashed on the inode and offset. This field links pages together that share the same hash bucket.
-- **count**: The reference count to the page. If it drops to 0, it may be freed. Any greater and it is in use by one or more processes or is in use by the kernel like when waiting for IO.
+- **count**: The reference count to the page. *If it drops to 0, it may be freed*. Any greater and it is in use by one or more processes or is in use by the kernel like when waiting for IO.
 - **flags**: These are flags which describes the status of the page. All of them are listed in the following table.
 - **lru**: For the page replacement policy, pages that may be swapped out will exist on either the `active_list` or the `inactive_list`. This is the list head for these LRU lists.
 - **pprev_hash**: This complement to `next_hash` so that the hash can work as a doubly linked list.
 - **buffers**: If a page has buffers for a block device associated with it, this field is used to keep track of the `buffer_head`. An anonymous page mapped by a process may also have an associated `buffer_head` of it is backed by a swap file. This is necessary as the page has to be synced with backing storage in block sized chunks defined by the underlying filesystem.
 - **virtual**: Normally only pages from `ZONE_NORMAL` are directly mapped by the kernel. To address pages in `ZONE_HIGHMEM`, `kmap()` is used to map the page for the kernel. There are only a fixed number of pages that may be mapped. When it is mapped, this is its virtual address.
+
+Bit name and its description:
+
+- `PG_active`:	This bit is set if a page is on the active_list LRU and cleared when it is removed. It marks a page as being hot
+- `PG_arch_1`:	Quoting directly from the code: PG_arch_1 is an architecture specific page state bit. The generic code guarantees that this bit is cleared for a page when it first is entered into the page cache. This allows an architecture to defer the flushing of the D-Cache (See Section 3.9) until the page is mapped by a process
+- `PG_checked`:	Only used by the Ext2 filesystem
+- `PG_dirty`:	This indicates if a page needs to be flushed to disk. When a page is written to that is backed by disk, it is not flushed immediately, this bit is needed to ensure a dirty page is not freed before it is written out
+- `PG_error`:	If an error occurs during disk I/O, this bit is set
+- `PG_fs_1`:	Bit reserved for a filesystem to use for it's own purposes. Currently, only NFS uses it to indicate if a page is in sync with the remote server or not
+- `PG_highmem`:	Pages in high memory cannot be mapped permanently by the kernel. Pages that are in high memory are flagged with this bit during mem_init()
+- `PG_launder`:	This bit is important only to the page replacement policy. When the VM wants to swap out a page, it will set this bit and call the writepage() function. When scanning, if it encounters a page with this bit and PG_locked set, it will wait for the I/O to complete
+- `PG_locked`:	This bit is set when the page must be locked in memory for disk I/O. When I/O starts, this bit is set and released when it completes
+- `PG_lru`:	If a page is on either the active_list or the inactive_list, this bit will be set
+- `PG_referenced`:	If a page is mapped and it is referenced through the mapping, index hash table, this bit is set. It is used during page replacement for moving the page around the LRU lists
+- `PG_reserved`:	This is set for pages that can never be swapped out. It is set by the boot memory allocator (See Chapter 5) for pages allocated during system startup. Later it is used to flag empty pages or ones that do not even exist
+- `PG_slab`:	This will flag a page as being used by the slab allocator
+- `PG_skip`:	Used by some architectures to skip over parts of the address space with no backing physical memory
+- `PG_unused`:	This bit is literally unused
+- `PG_uptodate`:	When a page is read from disk without error, this bit will be set.
 
 ## Page Table Management
 
