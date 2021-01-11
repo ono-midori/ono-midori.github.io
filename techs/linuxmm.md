@@ -44,16 +44,16 @@
 
 This chapter describes the structures used to keep account of memory banks, pages and the flags that affect VM behavior. 
 
-The first principal concept prevalent in the VM is *Non-Uniform Memory Access (NUMA)*. With large scale machines, memory may be arranged into banks that incur a different cost to access depending on the "distance" from the processor. Each bank is called a *node*, and the concept is represented under Linux by a `struct pglist_data` (typedeffed as `pg_data_t`) even if the architecture is UMA. Every node in the system is kept on a NULL terminated list call `pgdat_list`, and each node is linked to the next with the field `pg_data_t->node_next`. For UMA architectures like PC desktops, only one static `pg_data_t` structure called `contig_page_data` is used. 
+The first principal concept prevalent in the VM is *Non-Uniform Memory Access (NUMA)*. With large scale machines, memory may be arranged into banks that incur a different cost to access depending on the "distance" from the processor. Each bank is called a *node*, and the concept is represented under Linux by a `struct pglist_data` (typedeffed as `pg_data_t`) even if the architecture is UMA. *Every node in the system is kept on a NULL terminated list call `pgdat_list`*, and each node is linked to the next with the field `pg_data_t->node_next`. For UMA architectures like PC desktops, only one static `pg_data_t` structure called `contig_page_data` is used. 
 
-Each node is divided up into a number of blocks called *zones*, which represent ranges within memory. Zones should not be confused with zone based allocators. A zone is described by a `struct zone_struct`, typedeffed to `zone_t` and each one is of type `ZONE_DMA`, `ZONE_NORMAL` or `ZONE_HIGHMEM`(有很多zone, 每一个zone带有一种类型属性). Each zone type suitable a different type of usage. `ZONE_DMA` is memory in the low physical memory ranges with certain ISA devices require. Memory within `ZONE_NORMAL` is directly mapped by the kernel into the upper region of the linear address space, `ZONE_HIGHMEM` is the remaining available memory in the system and it not directly mapped by the kernel.
+Each node is divided up into a number of blocks called *zones*, which represent ranges within memory. Zones should not be confused with zone based allocators. *A zone is described by a `struct zone_struct`, typedeffed to `zone_t` and each one is of type `ZONE_DMA`, `ZONE_NORMAL` or `ZONE_HIGHMEM`*. Each zone type suitable a different type of usage. `ZONE_DMA` is memory in the low physical memory ranges with certain ISA devices require. Memory within `ZONE_NORMAL` is directly mapped by the kernel into the upper region of the linear address (virtual address space), `ZONE_HIGHMEM` is the remaining available memory in the system and it not directly mapped by the kernel.
 
 With the x86 the zones are:
 - `ZONE_DMA`: First 16MiB of memory
 - `ZONE_NORMAL`: 16MiB - 896MiB
 - `ZONE_HIGHMEM`: 896MiB - End
 
-It is important to note that many kernel operations can only take place using `ZONE_NORMAL`, so it is the most performance critical one. Each physical page frame is represented by a `struct page`, and all the structs are kept in a global `mem_map` array, which is usually stored at the beginning of `ZONE_NORMAL`. 
+It is important to note that many kernel operations can only take place using `ZONE_NORMAL`, so it is the most performance critical one. *Each physical page frame is represented by a `struct page`, and all the structs are kept in a global `mem_map` array*, which is usually stored at the beginning of `ZONE_NORMAL`. 注意`mem_map`是全局的，即使对NUMA系统也只有一个全局数组.
 
 ![Relationship between nodes, zones, and pages](./pics/understand-html001.png)
 
@@ -61,7 +61,7 @@ As the amount of memory directly accessible by the kernel (`ZONE_NORMAL`) is lim
 
 ### Nodes
 
-When allocating a page, Linux uses a *node-local allocation policy* to allocate memory from the node closest to the running CPU. As processes tend to run on the same CPU, it is likely the memory from the current node will be used. The struct is declared as follows in `<linux/mmzone.h>`:G
+When allocating a page, Linux uses a *node-local allocation policy* to allocate memory from the node closest to the running CPU. As processes tend to run on the same CPU, it is likely the memory from the current node will be used. The struct is declared as follows in `<linux/mmzone.h>`:
 
 ```c++
 129 typedef struct pglist_data {
@@ -140,11 +140,11 @@ When available memory in the system is low, the pageout daemon **kswapd** is wok
 
 - **pages_low**: When `pages_low` number of free pages is reached, **kswapd** is woken up by the buddy allocator to start freeing pages.
 - **pages_min**: When `page_min` is reached, the allocator will do the **kswapd** work in a synchronous fashion, sometimes refereed to as the *direct-reclaim* path.
-- **pages_high**: Once **kswapd** has been woken to start freeing pages, it will not consider the zone to be "balanced" when `pages_high` pages are free. Once the watermark has been reached, **kswapd** will go back to sleep.
+- **pages_high**: Once **kswapd** has been woken to start freeing pages, it will not consider the zone to be "balanced" until `pages_high` pages are free. Once the watermark has been reached, **kswapd** will go back to sleep.
 
 #### Zone Wait Queue Table
 
-When IO is being performed on a page, such are during page-in or page-out, it is locked to prevent accessing it with inconsistent data. Processes wishing to use it have to join a wait queue before it can be accessed by calling `wait_on_page()`. When the IO is completed, the page will be unlocked with `UnlockPage()`, and any process waiting on the queue will be woken up. Each page could have a wait queue, but it would be very expensive in terms of memory to have so many separate queues. So instead, the wait queue is stored in the `zone_t`.
+*When IO is being performed on a page, such are during page-in or page-out, it is locked to prevent accessing it with inconsistent data.* Processes wishing to use it have to join a wait queue before it can be accessed by calling `wait_on_page()`. When the IO is completed, the page will be unlocked with `UnlockPage()`, and any process waiting on the queue will be woken up. Each page could have a wait queue, but it would be very expensive in terms of memory to have so many separate queues. So instead, the wait queue is stored in the `zone_t`.
 
 It is possible to have just one wait queue in the zone, but that would mean that all processed waiting on any page in a zone would be woken up when one was unlocked. This would cause a serious *thundering herd* problem. Instead, a hash table of wait queues is stored in `zone_t->wait_table`. 
 
@@ -154,7 +154,7 @@ The zones are initialised after the kernel page tables have been fully setup. Pr
 
 ### Pages
 
-Every physical page frame in the system has an associated `struct page` which is used to keep track of its status. It is declared as follows in `<linux/mm.h>`:
+*Every physical page frame in the system has an associated `struct page` which is used to keep track of its status*. It is declared as follows in `<linux/mm.h>`:
 
 ```c++
 152 typedef struct page {
