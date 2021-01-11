@@ -6,8 +6,8 @@
     - [Zones](#zones)
       - [Zone Watermarks](#zone-watermarks)
       - [Zone Wait Queue Table](#zone-wait-queue-table)
-    - [Zone Initialisation](#zone-initialisation)
-      - [Initialising mem_map](#initialising-mem_map)
+    - [Zone initialization](#zone-initialization)
+      - [initializing mem_map](#initializing-mem_map)
     - [Pages](#pages)
   - [Page Table Management](#page-table-management)
     - [Describing the Page Directory](#describing-the-page-directory)
@@ -149,26 +149,26 @@ When available memory in the system is low, the pageout daemon **kswapd** is wok
 
 It is possible to have just one wait queue in the zone, but that would mean that all processed waiting on any page in a zone would be woken up when one was unlocked. This would cause a serious *thundering herd* problem. Instead, a hash table of wait queues is stored in `zone_t->wait_table`. 
 
-### Zone Initialisation
+### Zone initialization
 
-*The zones are initialised after the kernel page tables have been fully setup*. Predictably, each architecture performs this task differently, but the objective is always the same: *to determine what parameters to send to* either `free_area_init()` for UMA architecture, or `free_area_init_node()` for NUMA. The only parameter required for UMA is `zones_size`. 
+*The zones are initialized after the kernel page tables have been fully setup*. Predictably, each architecture performs this task differently, but the objective is always the same: *to determine what parameters to send to* either `free_area_init()` for UMA architecture, or `free_area_init_node()` for NUMA. The only parameter required for UMA is `zones_size`. 
 
-- **nid** is the Node ID which is the logical identifier of the node whose zones are being initialised;
-- **pgdat** is the node's `pg_data_t` that is being initialised. In UMA, this will simply be `contig_page_data`;
-- **pmap** is set later by `free_area_init_core()` to point to the beginning of the local `lmem_map` array allocated for the node. In NUMA, this is ignored as NUMA treats `mem_map` as a virtual array starting at `PAGE_OFFSET`. In UMA, this pointer is the global `mem_map` variable which is now `mem_map` gets initialised in UMA.
+- **nid** is the Node ID which is the logical identifier of the node whose zones are being initialized;
+- **pgdat** is the node's `pg_data_t` that is being initialized. In UMA, this will simply be `contig_page_data`;
+- **pmap** is set later by `free_area_init_core()` to point to the beginning of the local `lmem_map` array allocated for the node. In NUMA, this is ignored as NUMA treats `mem_map` as a virtual array starting at `PAGE_OFFSET`. In UMA, this pointer is the global `mem_map` variable which is now `mem_map` gets initialized in UMA.
 - **zones_sizes** is an array containing the size of each zone in pages;
 - **zone_start_paddr** is the starting physical address for the first zone;
 - **zone_holes** is an array containing the total size of memory holes in the zones;
 
-It is the core function `free_area_init_core()` which is responsible for filling in each `zone_t` with the relevant information and the allocation of the mem_map array for the node. Note that information on what pages are free for the zones is not determined at this point. That information is not known until the boot memory allocator is being retired.
+It is the core function `free_area_init_core()` which is responsible for filling in each `zone_t` with the relevant information and the allocation of the `mem_map` array for the node. Note that information on what pages are free for the zones is not determined at this point. That information is not known until the boot memory allocator is being retired.
 
-#### Initialising `mem_map`
+#### initializing `mem_map`
 
-The `mem_map area` is created during system startup in one of two fashions. On NUMA systems, the global `mem_map` is treated as a virtual array starting at `PAGE_OFFSET`. `free_area_init_node()` is called for each active node in the system, which allocates the portion of this array for the node being initialised. On UMA systems, `free_area_init()` uses `contig_page_data` as the node and the global `mem_map` as the "local" `mem_map` for this node. The callgraph for both functions is shown in the following figure.
+The `mem_map` area is created during system startup in one of two fashions. On NUMA systems, the global `mem_map` is treated as a virtual array starting at `PAGE_OFFSET`. `free_area_init_node()` is called for each active node in the system, which *allocates the portion of this array for the node being initialized*. On UMA systems, `free_area_init()` uses `contig_page_data` as the node and the global `mem_map` as the "local" `mem_map` for this node. The callgraph for both functions is shown in the following figure.
 
 ![Call Graph: free_area_init()](./pics/understand-html005.png)
 
-The core function `free_area_init_core()` allocates a local `lmem_map` ("l" for local) for the node being initialised. The memory for the array is allocated from the boot memory allocator with `alloc_bootmem_node()`. With UMA architectures, this newly allocated memory becomes the global `mem_map` but it is slightly different for NUMA.
+The core function `free_area_init_core()` allocates a local `lmem_map` ("l" for local) for the node being initialized. The memory for the array is allocated from the boot memory allocator with `alloc_bootmem_node()`. With UMA architectures, this newly allocated memory becomes the global `mem_map` but it is slightly different for NUMA.
 
 NUMA architectures allocate the memory for `lmem_map` within their own memory node. The global `mem_map` never gets explicitly allocated but instead is set to `PAGE_OFFSET` where it is treated as a virtual array. The address of the local map is stored in `pg_data_t->node_mem_map` which exists somewhere within the virtual `mem_map`. For each zone that exists in the node, the address within the virtual `mem_map` for the zone is stored in `zone_t->zone_mem_map`. All the rest of the code then treats `mem_map` as a real array as only valid regions within it will be used by nodes.
 
@@ -194,7 +194,7 @@ NUMA architectures allocate the memory for `lmem_map` within their own memory no
 180 } mem_map_t;
 ```
 
-- **list**: Pages may belong to many lists, and this field us used as the list head.
+- **list**: Pages may belong to many lists, and this field is used as the list head.
 - **mapping**: When files or devices are memory mapped, their inode has an associated `address_space`. This field will point to this address space of the page belongs to the file.
 - **index**: This field has two uses and it depends on the state of the page what it means. 
   - If the page is part of a file mapping, it is the offset within the file.
@@ -209,18 +209,18 @@ NUMA architectures allocate the memory for `lmem_map` within their own memory no
 
 Bit name and its description:
 
-- `PG_active`:	This bit is set if a page is on the active_list LRU and cleared when it is removed. It marks a page as being hot
-- `PG_arch_1`:	Quoting directly from the code: PG_arch_1 is an architecture specific page state bit. The generic code guarantees that this bit is cleared for a page when it first is entered into the page cache. This allows an architecture to defer the flushing of the D-Cache (See Section 3.9) until the page is mapped by a process
+- `PG_active`:	This bit is set if a page is on the `active_list` LRU and cleared when it is removed. It marks a page as being hot
+- `PG_arch_1`:	Quoting directly from the code: `PG_arch_1` is an architecture specific page state bit. The generic code guarantees that this bit is cleared for a page when it first is entered into the page cache. This allows an architecture to defer the flushing of the D-Cache until the page is mapped by a process
 - `PG_checked`:	Only used by the Ext2 filesystem
 - `PG_dirty`:	This indicates if a page needs to be flushed to disk. When a page is written to that is backed by disk, it is not flushed immediately, this bit is needed to ensure a dirty page is not freed before it is written out
 - `PG_error`:	If an error occurs during disk I/O, this bit is set
 - `PG_fs_1`:	Bit reserved for a filesystem to use for it's own purposes. Currently, only NFS uses it to indicate if a page is in sync with the remote server or not
-- `PG_highmem`:	Pages in high memory cannot be mapped permanently by the kernel. Pages that are in high memory are flagged with this bit during mem_init()
-- `PG_launder`:	This bit is important only to the page replacement policy. When the VM wants to swap out a page, it will set this bit and call the writepage() function. When scanning, if it encounters a page with this bit and PG_locked set, it will wait for the I/O to complete
-- `PG_locked`:	This bit is set when the page must be locked in memory for disk I/O. When I/O starts, this bit is set and released when it completes
-- `PG_lru`:	If a page is on either the active_list or the inactive_list, this bit will be set
+- `PG_highmem`:	Pages in high memory cannot be mapped permanently by the kernel. Pages that are in high memory are flagged with this bit during `mem_init()`
+- `PG_launder`:	This bit is important only to the page replacement policy. When the VM wants to swap out a page, it will set this bit and call the `writepage()` function. When scanning, if it encounters a page with this bit and PG_locked set, it will wait for the I/O to complete
+- `PG_locked`:	This bit is set when the page must be locked in memory for disk I/O. When I/O starts, this bit is set and released when it completes 
+-  `PG_lru`:	If a page is on either the `active_list` or the `inactive_list`, this bit will be set
 - `PG_referenced`:	If a page is mapped and it is referenced through the mapping, index hash table, this bit is set. It is used during page replacement for moving the page around the LRU lists
-- `PG_reserved`:	This is set for pages that can never be swapped out. It is set by the boot memory allocator (See Chapter 5) for pages allocated during system startup. Later it is used to flag empty pages or ones that do not even exist
+- `PG_reserved`:	This is set for pages that can never be swapped out. It is set by the boot memory allocator for pages allocated during system startup. Later it is used to flag empty pages or ones that do not even exist
 - `PG_slab`:	This will flag a page as being used by the slab allocator
 - `PG_skip`:	Used by some architectures to skip over parts of the address space with no backing physical memory
 - `PG_unused`:	This bit is literally unused
@@ -228,13 +228,13 @@ Bit name and its description:
 
 ## Page Table Management
 
-This chapter will begin by describing how the page table is arranged and what types are used to describe the three separate levels of the page table, followed by how a virtual address is broken up into its component parts for navigating the table. Once covered, it will be discussed how the lowest level entry, the *Page Table Entry (PTE)* and what bits are used by the hardware. The initialisation stage is then discussed, which shows how the page tables are initialised during boot strapping. Finally, we will cover how the TLB and CPU caches are utilized.
+This chapter will begin by describing how the page table is arranged and what types are used to describe the three separate levels of the page table, followed by how a virtual address is broken up into its component parts for navigating the table. Once covered, it will be discussed how the lowest level entry, the *Page Table Entry (PTE)* and what bits are used by the hardware. The initialization stage is then discussed, which shows how the page tables are initialized during boot strapping. Finally, we will cover how the TLB and CPU caches are utilized.
 
 ### Describing the Page Directory
 
 Each process a pointer (`mm_struct->pgd`) to its own *Page Global Directory (PGD)* which is a physical page frame. This frame contains an array of type `pgd_t` which is an architecture specific type defined in `<asm/page.h>`. On the x86, the process page table is loaded by copying `mm_struct->pgd` into the `cr3` register which has the side effect of flushing the TLB. 
 
-Each active entry in the PGD table points to a page frame containing an array of *Page Middle Directory (PMD)* entries of type `pmd_t` which in turns points to the page frames containing *Page Table Entries (PTE)* of type `pte_t`, which finally points to page frames containing the actual user data (三级页表). In the event the page has been swapped out to backing storage, the swap entry is stored in the PTE and used by `do_swap_page()` during page fault, to find the swap entry containing the page data.
+Each active entry in the PGD table points to a page frame containing an array of *Page Middle Directory (PMD)* entries of type `pmd_t`, which in turns points to the page frames containing *Page Table Entries (PTE)* of type `pte_t`, which finally points to page frames containing the actual user data (三级页表). In the event the page has been swapped out to backing storage, the swap entry is stored in the PTE and used by `do_swap_page()` during page fault, to find the swap entry containing the page data.
 
 ![Page table layout](./pics/understand-html006.png)
 
@@ -242,7 +242,7 @@ Any given linear address may be broken up into parts, to yield offsets within th
 
 ![Linear address bit size macros](./pics/understand-html007.png)
 
-The `MASK` values can be ANDd with a linear address to mask out all the upper bits, and is frequently used to determine if a linear address is aligned to a given level within the page table (对齐的时候末尾比特是0). The `SIZE` macros reveal how many bytes are addressed by each entry at each level.
+The `MASK` values can be ANDd with a linear address to mask out all the upper bits, and is frequently used to determine if a linear address is aligned to a given level within the page table (对齐的时候末尾比特是0). The `SIZE` macros reveal how many bytes are addressed by each entry at each level (表示了多少个地址).
 
 ![Linear address size and mask macros](./pics/understand-html008.png)
 
@@ -300,11 +300,11 @@ Pages used for the page tables are cached in a number of different lists called 
 
 ### Kernel Page Tables
 
-Each architecture implements the initialisation of page table differently, so only the x86 case will be discussed. The page initialisation is divided into two phases. The bootstrap phase sets up page tables for just *8MiB* so the paging unit can be enabled. The second phase initialises the rest of the page tables.
+Each architecture implements the initialization of page table differently, so only the x86 case will be discussed. The page initialization is divided into two phases. The bootstrap phase sets up page tables for just *8MiB* so the paging unit can be enabled. The second phase initializes the rest of the page tables.
 
 While all normal kernel code in `vmlinuz` is compiled with the base address at `PAGE_OFFSET + 1MiB`, the kernel is actually loaded beginning at the first megabyte (0x00100000) of memory. The first megabyte is used by some devices for communication with the BIOS and is skipped. The bootstrap code in this file (`vmlinuz`) treats 1MiB as its base address by subtracting `__PAGE_OFFSET` from any address until the paging unit is enabled. So before the paging unit is enabled, a page table mapping has to be established which translates the 8MiB of physical memory to be virtual `PAGE_OFFSET`.
 
-Initialisation begins with statically defining at compile time an array called `swap_pg_dir`, which is placed using linker directives at 0x00101000. It then establishes page table entries for 2 pages, `pg0` and `pg1`. If the processor supports the *Page Size Extension (PSE)* bit, it will be set so that pages will be translated are 4MiB pages, not 4KiB as is the normal case. The first pointers to `pg0` and `pg1` are placed to cover the region `1-9MiB`, and the second pointers to `pg0` and `pg1` are placed at `PAGE_OFFSET+1MiB`. This means that when paging is enabled, they will map to the correct pages using either physical or virtual addressing for just the kernel image. The rest of the kernel page tables will be initialised by `paging_init()` (这个时候kernel已经启动了，后面就可以用kernel的函数建立页表).
+initialization begins with statically defining at compile time an array called `swap_pg_dir`, which is placed using linker directives at 0x00101000. It then establishes page table entries for 2 pages, `pg0` and `pg1`. If the processor supports the *Page Size Extension (PSE)* bit, it will be set so that pages will be translated are 4MiB pages, not 4KiB as is the normal case. The first pointers to `pg0` and `pg1` are placed to cover the region `1-9MiB`, and the second pointers to `pg0` and `pg1` are placed at `PAGE_OFFSET+1MiB`. This means that when paging is enabled, they will map to the correct pages using either physical or virtual addressing for just the kernel image. The rest of the kernel page tables will be initialized by `paging_init()` (这个时候kernel已经启动了，后面就可以用kernel的函数建立页表).
 
 Once this mapping has been established, the paging unit is turned on by setting a bit in the `cr0` register, and a jump takes places immediately to ensure the *Instruction Pointer (EIP register)* is correct.
 
@@ -312,13 +312,13 @@ The call graph of `paging_init()` on x86 can be seen as follows:
 
 ![Call graph: `paging_init()`](./pics/understand-html009.png)
 
-The function first call `pagetable_init()` to initialise the page tables necessary to reference all physical memory in `ZONE_DMA` and `ZONE_NORMAL`. Remember that high memory in `ZONE_HIGHMEM` cannot be directly referenced and mappings are set up for it temporarily. For each `pgd_t` used by the kernel, the boot memory allocator is called to allocate a page for the PMDs, and the PSE bit will be set if available to use 4MiB TLB entries instead of 4KiB. If the PSE bit is not supported, a page for PTEs will be allocated for each `pmd_t`. If the CPU supports the PGE flag, it also will be set so that the page table entry will be global and visible to all processes.
+The function first call `pagetable_init()` to initialize the page tables necessary to reference all physical memory in `ZONE_DMA` and `ZONE_NORMAL`. Remember that high memory in `ZONE_HIGHMEM` cannot be directly referenced and mappings are set up for it temporarily. For each `pgd_t` used by the kernel, the boot memory allocator is called to allocate a page for the PMDs, and the PSE bit will be set if available to use 4MiB TLB entries instead of 4KiB. If the PSE bit is not supported, a page for PTEs will be allocated for each `pmd_t`. If the CPU supports the PGE flag, it also will be set so that the page table entry will be global and visible to all processes.
 
-Next, `pagetable_init()` calls `fixrange_init()` to setup the fixed address space mappings at the end of the virtual address space starting at `FIXADDR_START`. These mappings are used for purposes such as the local APIC and the atomic kmappings between `FIX_KMAP_BEGIN` and `FIX_KMAP_END` required by `kmap_atomic()`. Finally, the function calls `fixrange_init()` to initialise the page table entries required for normal high memory mappings with `kmap()`.
+Next, `pagetable_init()` calls `fixrange_init()` to setup the fixed address space mappings at the end of the virtual address space starting at `FIXADDR_START`. These mappings are used for purposes such as the local APIC and the atomic kmappings between `FIX_KMAP_BEGIN` and `FIX_KMAP_END` required by `kmap_atomic()`. Finally, the function calls `fixrange_init()` to initialize the page table entries required for normal high memory mappings with `kmap()`.
 
-Once `pagetable_init()` returns, the page tables for kernel space are now full initialised, so the static PGD (`swapper_pg_dir`) is loaded into the CR3 register so that the static table is now being used by the paging unit.
+Once `pagetable_init()` returns, the page tables for kernel space are now full initialized, so the static PGD (`swapper_pg_dir`) is loaded into the CR3 register so that the static table is now being used by the paging unit.
 
-The next task of the `paging_init()` is responsible for calling `kmap_init()` to initialise each of the PTEs with the `PAGE_KERNEL` protection flags. The final task is to call `zone_sizes_init()` which initialises all the zone structures used.
+The next task of the `paging_init()` is responsible for calling `kmap_init()` to initialize each of the PTEs with the `PAGE_KERNEL` protection flags. The final task is to call `zone_sizes_init()` which initializes all the zone structures used.
 
 ### Mapping Addresses to a `struct page`
 
@@ -392,7 +392,7 @@ It does not end there though. A second set of interfaces is required to avoid vi
 
 One of the principal advantages of virtual memory is that each process has its own virtual address space, which is mapped to physical memory by the operating system.
 
-This chapter begins with how the linear address space is broken up and what the purpose of each section is. We then cover the structures maintained to describe each process, how they are allocated, initialised and then destroyed. Next, we will cover how individual regions within the process space are created and all the various functions associated with them. That will bring us to exception handling related to the process address space, page faulting and the various cases that occur to satisfy a page fault. Finally, we will cover how the kernel safely copies information to and from userspace.
+This chapter begins with how the linear address space is broken up and what the purpose of each section is. We then cover the structures maintained to describe each process, how they are allocated, initialized and then destroyed. Next, we will cover how individual regions within the process space are created and all the various functions associated with them. That will bring us to exception handling related to the process address space, page faulting and the various cases that occur to satisfy a page fault. Finally, we will cover how the kernel safely copies information to and from userspace.
 
 ### Linear Address Space
 
@@ -436,7 +436,7 @@ When entering lazy TLB, the function `enter_lazy_tlb()` is called to ensure that
 
 The struct has two reference counts called `mm_users` and `mm_count` for two types of "users". 
 - `mm_users` is a reference count of processes accessing the userspace portion of for this `mm_struct`, such as the page tables and file mappings. Threads and the `swap_out()` code for instance will increment this count making sure a `mm_struct` is not destroyed early. When it drops to 0, `exit_mmap()` will delete all mappings and tear down the page tables before decrementing the `mm_count`.
-- `mm_count` is a reference count of the "anonymous users" for the `mm_struct` initialised at 1 for the "real" user. An anonymous user is one that does not necessarily care about the userspace portion and is just borrowing the `mm_struct`. Example users are kernel threads which use lazy TLB switching. When this count drops to 0, the `mm_struct` can be safely destroyed. Both reference counts exist because anonymous users need the `mm_struct` to exist even if the userspace mappings get destroyed and there is no point delaying the teardown of the page tables.
+- `mm_count` is a reference count of the "anonymous users" for the `mm_struct` initialized at 1 for the "real" user. An anonymous user is one that does not necessarily care about the userspace portion and is just borrowing the `mm_struct`. Example users are kernel threads which use lazy TLB switching. When this count drops to 0, the `mm_struct` can be safely destroyed. Both reference counts exist because anonymous users need the `mm_struct` to exist even if the userspace mappings get destroyed and there is no point delaying the teardown of the page tables.
 
 The `mm_struct` is defined in `<linux/sched.h>` as follows:
 
@@ -496,18 +496,18 @@ The meaning of each of the field in this sizable struct is as follows:
 - **context**: Architecture specific MMU context.
 
 There are a small number of functions for dealing with `mm_struct`s:
-- `mm_init()`: Initialises a `mm_struct` by setting starting values for each field, allocating a PGD, initialising spinlocks etc.
+- `mm_init()`: initializes a `mm_struct` by setting starting values for each field, allocating a PGD, initializing spinlocks etc.
 - `allocate_mm()`: Allocates a `mm_struct()` from the slab allocator.
-- `mm_alloc()`: Allocates a `mm_struct` using `allocate_mm()` and calls `mm_init()` to initialise it.
+- `mm_alloc()`: Allocates a `mm_struct` using `allocate_mm()` and calls `mm_init()` to initialize it.
 - `exit_mmap()`: Walks through a `mm_struct` and unmaps all VMAs associated with it.
 - `copy_mm()`: Makes an exact copy of the current tasks mm_struct for a new task. This is only used during fork.
 - `free_mm()`: Returns the `mm_struct` to the slab allocator.
 
 #### Allocating a Descriptor
 
-Two functions are provided to allocate a `mm_struct`. To be slightly confusing, they are essentially the same but with small important differences. `allocate_mm()` is just a preprocessor macro which allocates a `mm_struct` from the slab allocator. `mm_alloc()` allocates from slab and then calls `mm_init()` to initialise it.
+Two functions are provided to allocate a `mm_struct`. To be slightly confusing, they are essentially the same but with small important differences. `allocate_mm()` is just a preprocessor macro which allocates a `mm_struct` from the slab allocator. `mm_alloc()` allocates from slab and then calls `mm_init()` to initialize it.
 
-The initial `mm_struct` in the system is called `init_mm()` and is statically initialised at compile time using the macro `INIT_MM()`.
+The initial `mm_struct` in the system is called `init_mm()` and is statically initialized at compile time using the macro `INIT_MM()`.
 
 ```c++
 238 #define INIT_MM(name) \
@@ -522,7 +522,7 @@ The initial `mm_struct` in the system is called `init_mm()` and is statically in
 247 }
 ```
 
-Once it is established, new `mm_struct`s are created using their parent `mm_struct` as a template. The function responsible for the copy operation is `copy_mm()` and it uses `init_mm()` to initialise process specific fields.
+Once it is established, new `mm_struct`s are created using their parent `mm_struct` as a template. The function responsible for the copy operation is `copy_mm()` and it uses `init_mm()` to initialize process specific fields.
 
 While a new user increments the usage count with `atomic_inc(&mm->mm_users)`, it is decremented with a call to `mmput()`. If the `mm_users` count reaches zero, all the mapped regions are destroyed with `exit_mmap()` and the page tables destroyed as there is no longer any users of the userspace portions. The `mm_count` count is decremented with `mmdrop()` as all the users of the page tables and VMAs are counted as one `mm_struct` user. When `mm_count` reaches zero, the `mm_struct` will be destroyed.
 
