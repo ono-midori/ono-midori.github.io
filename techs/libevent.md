@@ -2213,7 +2213,7 @@ These types were introduced in Libevent 1.4.0-beta. The MAX/MIN constants first 
 
 #### Miscellaneous compatibility types
 
-The `ev_ssize_t` type is defined to `ssize_t` (signed `size_t`) on platforms that have one, and to a reasonable default on platforms that don’t. The largest possible value of `ev_ssize_t` is `EV_SSIZE_MAX`; the smallest is `EV_SSIZE_MIN`. (The largest possible value for size_t is `EV_SIZE_MAX`, in case your platform doesn’t define a `SIZE_MAX` for you.)
+The `ev_ssize_t` type is defined to `ssize_t` (signed `size_t`) on platforms that have one, and to a reasonable default on platforms that don't. The largest possible value of `ev_ssize_t` is `EV_SSIZE_MAX`; the smallest is `EV_SSIZE_MIN`. (The largest possible value for size_t is `EV_SIZE_MAX`, in case your platform doesn't define a `SIZE_MAX` for you.)
 
 The `ev_off_t` type is used to represent offset into a file or a chunk of memory. It is defined to `off_t` on platforms with a reasonable off_t definition, and to `ev_int64_t` on Windows.
 
@@ -2243,7 +2243,7 @@ Clearing a timeval sets its value to zero. Checking whether it is set returns tr
 #define evutil_timercmp(tvp, uvp, cmp)
 ```
 
-The `evutil_timercmp` macro compares two timevals, and yields true if they are in the relationship specified by the relational operator cmp. For example, `evutil_timercmp(t1, t2, <=)` means, "Is t1 <= t2?" Note that unlike some operating systems' versions, Libevent’s timercmp supports all the C relational operations (that is, <, >, ==, !=, ⇐, and >=).
+The `evutil_timercmp` macro compares two timevals, and yields true if they are in the relationship specified by the relational operator cmp. For example, `evutil_timercmp(t1, t2, <=)` means, "Is t1 <= t2?" Note that unlike some operating systems' versions, Libevent's timercmp supports all the C relational operations (that is, <, >, ==, !=, ⇐, and >=).
 
 ```c++
 int evutil_gettimeofday(struct timeval *tv, struct timezone *tz);
@@ -2282,7 +2282,7 @@ int evutil_closesocket(evutil_socket_t s);
 #define EVUTIL_CLOSESOCKET(s) evutil_closesocket(s)
 ```
 
-This function closes a socket. On Unix, it’s an alias for `close()`.
+This function closes a socket. On Unix, it's an alias for `close()`.
 
 ```c++
 #define EVUTIL_SOCKET_ERROR()
@@ -2335,7 +2335,7 @@ These snprintf-replacement functions behave as the standard snprintf and vsnprin
 
 ### Locale-independent string manipulation functions
 
-Sometimes, when implementing ASCII-based protocols, you want to manipulate strings according to ASCII’s notion of character type, regardless of your current locale. Libevent provides a few functions to help with this:
+Sometimes, when implementing ASCII-based protocols, you want to manipulate strings according to ASCII's notion of character type, regardless of your current locale. Libevent provides a few functions to help with this:
 
 ```c++
 int evutil_ascii_strcasecmp(const char *str1, const char *str2);
@@ -2375,7 +2375,7 @@ int evutil_sockaddr_cmp(const struct sockaddr *sa1,
     const struct sockaddr *sa2, int include_port);
 ```
 
-The `evutil_sockaddr_cmp()` function compares two addresses, and returns negative if `sa1` precedes `sa2`, 0 if they are equal, and positive if `sa2` precedes `sa1`. It works for `AF_INET` and `AF_INET6` addresses, and returns undefined output for other addresses. It’s guaranteed to give a total order for these addresses, but the ordering may change between Libevent versions.
+The `evutil_sockaddr_cmp()` function compares two addresses, and returns negative if `sa1` precedes `sa2`, 0 if they are equal, and positive if `sa2` precedes `sa1`. It works for `AF_INET` and `AF_INET6` addresses, and returns undefined output for other addresses. It's guaranteed to give a total order for these addresses, but the ordering may change between Libevent versions.
 
 If the `include_port` argument is false, then two sockaddrs are treated as equal if they differ only in their port. Otherwise, sockaddrs with different ports are treated as unequal.
 
@@ -2397,15 +2397,15 @@ void evutil_secure_rng_get_bytes(void *buf, size_t n);
 
 This function fills n-byte buffer at `buf` with `n` bytes of random data.
 
-If your platform provides the `arc4random()` function, Libevent uses that. Otherwise, it uses its own implementation of `arc4random()`, seeded by your operating system’s entropy pool (CryptGenRandom on Windows, /dev/urandom everywhere else).
+If your platform provides the `arc4random()` function, Libevent uses that. Otherwise, it uses its own implementation of `arc4random()`, seeded by your operating system's entropy pool (CryptGenRandom on Windows, /dev/urandom everywhere else).
 
 ```c++
 int evutil_secure_rng_init(void);
 void evutil_secure_rng_add_bytes(const char *dat, size_t datlen);
 ```
 
-You do not need to manually initialize the secure random number generator, but if you want to make sure it is successfully initialized, you can do so by calling `evutil_secure_rng_init()`. It seeds the RNG (if it was not already seeded) and returns 0 on success. If it returns -1, Libevent wasn’t able to find a good source of entropy on your OS, and you can’t use the RNG safely without initializing it yourself.
+You do not need to manually initialize the secure random number generator, but if you want to make sure it is successfully initialized, you can do so by calling `evutil_secure_rng_init()`. It seeds the RNG (if it was not already seeded) and returns 0 on success. If it returns -1, Libevent wasn't able to find a good source of entropy on your OS, and you can't use the RNG safely without initializing it yourself.
 
 If you are running in an environment where your program is likely to drop privileges (for example, by `running chroot(`)), you should call `evutil_secure_rng_init()` before you do so.
 
-You can add more random bytes to the entropy pool yourself by calling `evutil_secure_rng_add_bytes()`; this shouldn’t be necessary in typical use.
+You can add more random bytes to the entropy pool yourself by calling `evutil_secure_rng_add_bytes()`; this shouldn't be necessary in typical use.
