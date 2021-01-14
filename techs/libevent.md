@@ -51,6 +51,68 @@
     - [IPv6 helper and portability functions](#ipv6-helper-and-portability-functions)
     - [Structure macro portability functions](#structure-macro-portability-functions)
     - [Secure random number generator](#secure-random-number-generator)
+  - [Bufferevents: concepts and basics](#bufferevents-concepts-and-basics)
+    - [Bufferevents and evbuffers](#bufferevents-and-evbuffers)
+    - [Callbacks and watermarks](#callbacks-and-watermarks)
+    - [Deferred callbacks](#deferred-callbacks)
+    - [Option flags for bufferevents](#option-flags-for-bufferevents)
+    - [Working with socket-based bufferevents](#working-with-socket-based-bufferevents)
+      - [Creating a socket-based bufferevent](#creating-a-socket-based-bufferevent)
+      - [Launching connections on socket-based bufferevents](#launching-connections-on-socket-based-bufferevents)
+      - [Launching connections by hostname](#launching-connections-by-hostname)
+    - [Generic bufferevent operations](#generic-bufferevent-operations)
+      - [Freeing a bufferevent](#freeing-a-bufferevent)
+      - [Manipulating callbacks, watermarks, and enabled operations](#manipulating-callbacks-watermarks-and-enabled-operations)
+      - [Manipulating data in a bufferevent](#manipulating-data-in-a-bufferevent)
+      - [Read- and write timeouts](#read--and-write-timeouts)
+      - [Initiating a flush on a bufferevent](#initiating-a-flush-on-a-bufferevent)
+    - [Type-specific bufferevent functions](#type-specific-bufferevent-functions)
+    - [Manually locking and unlocking a bufferevent](#manually-locking-and-unlocking-a-bufferevent)
+    - [Obsolete bufferevent functionality](#obsolete-bufferevent-functionality)
+  - [Bufferevents: advanced topics](#bufferevents-advanced-topics)
+    - [Paired bufferevents](#paired-bufferevents)
+    - [Filtering bufferevents](#filtering-bufferevents)
+    - [Limiting maximum single read/write size](#limiting-maximum-single-readwrite-size)
+    - [Bufferevents and Rate-limiting](#bufferevents-and-rate-limiting)
+      - [The rate-limiting model](#the-rate-limiting-model)
+      - [Setting a rate limit on a bufferevent](#setting-a-rate-limit-on-a-bufferevent)
+      - [Setting a rate limit on a group of bufferevents](#setting-a-rate-limit-on-a-group-of-bufferevents)
+      - [Inspecting current rate-limit values](#inspecting-current-rate-limit-values)
+      - [Manually adjusting rate limits](#manually-adjusting-rate-limits)
+      - [Setting the smallest share possible in a rate-limited group](#setting-the-smallest-share-possible-in-a-rate-limited-group)
+      - [Limitations of the rate-limiting implementation](#limitations-of-the-rate-limiting-implementation)
+  - [Evbuffers: utility functionality for buffered IO](#evbuffers-utility-functionality-for-buffered-io)
+    - [Creating or freeing an evbuffer](#creating-or-freeing-an-evbuffer)
+    - [Evbuffers and Thread-safety](#evbuffers-and-thread-safety)
+    - [Inspecting an evbuffer](#inspecting-an-evbuffer)
+    - [Adding data to an evbuffer: basics](#adding-data-to-an-evbuffer-basics)
+    - [Moving data from one evbuffer to another](#moving-data-from-one-evbuffer-to-another)
+    - [Adding data to the front of an evbuffer](#adding-data-to-the-front-of-an-evbuffer)
+      - [Rearranging the internal layout of an evbuffer](#rearranging-the-internal-layout-of-an-evbuffer)
+    - [Removing data from an evbuffer](#removing-data-from-an-evbuffer)
+    - [Copying data out from an evbuffer](#copying-data-out-from-an-evbuffer)
+    - [Line-oriented input](#line-oriented-input)
+    - [Searching within an evbuffer](#searching-within-an-evbuffer)
+    - [Inspecting data without copying it](#inspecting-data-without-copying-it)
+    - [Adding data to an evbuffer directly](#adding-data-to-an-evbuffer-directly)
+      - [Notes and Caveats](#notes-and-caveats)
+    - [Network IO with evbuffers](#network-io-with-evbuffers)
+    - [Evbuffers and callbacks](#evbuffers-and-callbacks)
+    - [Avoiding data copies with evbuffer-based IO](#avoiding-data-copies-with-evbuffer-based-io)
+    - [Adding a file to an evbuffer](#adding-a-file-to-an-evbuffer)
+      - [WARNING](#warning)
+    - [Fine-grained control with file segments](#fine-grained-control-with-file-segments)
+    - [Adding an evbuffer to another by reference](#adding-an-evbuffer-to-another-by-reference)
+    - [Making an evbuffer add- or remove-only](#making-an-evbuffer-add--or-remove-only)
+  - [Connection listeners: accepting TCP connections](#connection-listeners-accepting-tcp-connections)
+    - [Creating or freeing an evconnlistener](#creating-or-freeing-an-evconnlistener)
+      - [Recognized flags](#recognized-flags)
+      - [The connection listener callback](#the-connection-listener-callback)
+    - [Enabling and disabling an evconnlistener](#enabling-and-disabling-an-evconnlistener)
+    - [Adjusting an evconnlistener’s callback](#adjusting-an-evconnlisteners-callback)
+    - [Inspecting an evconnlistener](#inspecting-an-evconnlistener)
+    - [Detecting errors](#detecting-errors)
+    - [Example code: an echo server.](#example-code-an-echo-server)
 
 ## A tiny introduction to asynchronous IO
 
@@ -2409,3 +2471,1794 @@ You do not need to manually initialize the secure random number generator, but i
 If you are running in an environment where your program is likely to drop privileges (for example, by `running chroot(`)), you should call `evutil_secure_rng_init()` before you do so.
 
 You can add more random bytes to the entropy pool yourself by calling `evutil_secure_rng_add_bytes()`; this shouldn't be necessary in typical use.
+
+## Bufferevents: concepts and basics
+
+Most of the time, an application wants to perform some amount of data buffering in addition to just responding to events. When we want to write data, for example, the usual pattern runs something like:
+
+- Decide that we want to write some data to a connection; put that data in a buffer.
+- Wait for the connection to become writable
+- Write as much of the data as we can
+- Remember how much we wrote, and if we still have more data to write, wait for the connection to become writable again.
+
+This buffered IO pattern is common enough that Libevent provides a generic mechanism for it. A "bufferevent" consists of an underlying transport (like a socket), a read buffer, and a write buffer. Instead of regular events, which give callbacks when the underlying transport is ready to be read or written, a bufferevent invokes its user-supplied callbacks when it has read or written enough data.
+
+There are multiple types of bufferevent that all share a common interface. As of this writing, the following types exist:
+
+- socket-based bufferevents: A bufferevent that sends and receives data from an underlying stream socket, using the event_* interface as its backend.
+- asynchronous-IO bufferevents: A bufferevent that uses the Windows IOCP interface to send and receive data to an underlying stream socket. (Windows only; experimental.)
+- filtering bufferevents: A bufferevent that processes incoming and outgoing data before passing it to an underlying bufferevent object—for example, to compress or translate data.
+- paired bufferevents: Two bufferevents that transmit data to one another.
+
+As of Libevent 2.0.2-alpha, the bufferevents interfaces here are still not fully orthogonal across all bufferevent types. In other words, not every interface described below will work on all bufferevent types. The Libevent developers intend to correct this in future versions.
+
+Bufferevents currently only work for stream-oriented protocols like TCP. There may in the future be support for datagram-oriented protocols like UDP.
+
+All of the functions and types in this section are declared in event2/bufferevent.h. Functions specifically related to evbuffers are declared in event2/buffer.h; see the next chapter for information on those.
+
+### Bufferevents and evbuffers
+
+Every bufferevent has an input buffer and an output buffer. These are of type "struct evbuffer". When you have data to write on a bufferevent, you add it to the output buffer; when a bufferevent has data for you to read, you drain it from the input buffer.
+
+The evbuffer interface supports many operations; we discuss them in a later section.
+
+### Callbacks and watermarks
+
+Every bufferevent has two data-related callbacks: a read callback and a write callback. By default, the read callback is called whenever any data is read from the underlying transport, and the write callback is called whenever enough data from the output buffer is emptied to the underlying transport. You can override the behavior of these functions by adjusting the read and write "watermarks" of the bufferevent.
+
+Every bufferevent has four watermarks:
+
+- Read low-water mark: Whenever a read occurs that leaves the bufferevent’s input buffer at this level or higher, the bufferevent’s read callback is invoked. Defaults to 0, so that every read results in the read callback being invoked.
+- Read high-water mark: If the bufferevent’s input buffer ever gets to this level, the bufferevent stops reading until enough data is drained from the input buffer to take us below it again. Defaults to unlimited, so that we never stop reading because of the size of the input buffer.
+- Write low-water mark: Whenever a write occurs that takes us to this level or below, we invoke the write callback. Defaults to 0, so that a write callback is not invoked unless the output buffer is emptied.
+- Write high-water mark: Not used by a bufferevent directly, this watermark can have special meaning when a bufferevent is used as the underlying transport of another bufferevent. See notes on filtering bufferevents below.
+
+A bufferevent also has an "error" or "event" callback that gets invoked to tell the application about non-data-oriented events, like when a connection is closed or an error occurs. The following event flags are defined:
+
+- BEV_EVENT_READING: An event occured during a read operation on the bufferevent. See the other flags for which event it was.
+- BEV_EVENT_WRITING: An event occured during a write operation on the bufferevent. See the other flags for which event it was.
+- BEV_EVENT_ERROR: An error occurred during a bufferevent operation. For more information on what the error was, call EVUTIL_SOCKET_ERROR().
+- BEV_EVENT_TIMEOUT: A timeout expired on the bufferevent.
+- BEV_EVENT_EOF: We got an end-of-file indication on the bufferevent.
+- BEV_EVENT_CONNECTED: We finished a requested connection on the bufferevent.
+
+### Deferred callbacks
+
+By default, a bufferevent callbacks are executed immediately when the corresponding condition happens. (This is true of evbuffer callbacks too; we’ll get to those later.) This immediate invocation can make trouble when dependencies get complex. For example, suppose that there is a callback that moves data into evbuffer A when it grows empty, and another callback that processes data out of evbuffer A when it grows full. Since these calls are all happening on the stack, you might risk a stack overflow if the dependency grows nasty enough.
+
+To solve this, you can tell a bufferevent (or an evbuffer) that its callbacks should be deferred. When the conditions are met for a deferred callback, rather than invoking it immediately, it is queued as part of the event_loop() call, and invoked after the regular events' callbacks.
+
+### Option flags for bufferevents
+
+You can use one or more flags when creating a bufferevent to alter its behavior. Recognized flags are:
+
+- BEV_OPT_CLOSE_ON_FREE
+When the bufferevent is freed, close the underlying transport. This will close an underlying socket, free an underlying bufferevent, etc.
+
+- BEV_OPT_THREADSAFE
+Automatically allocate locks for the bufferevent, so that it’s safe to use from multiple threads.
+- BEV_OPT_DEFER_CALLBACKS
+When this flag is set, the bufferevent defers all of its callbacks, as described above.
+- BEV_OPT_UNLOCK_CALLBACKS
+By default, when the bufferevent is set up to be threadsafe, the bufferevent’s locks are held whenever the any user-provided callback is invoked. Setting this option makes Libevent release the bufferevent’s lock when it’s invoking your callbacks.
+
+### Working with socket-based bufferevents
+
+The simplest bufferevents to work with is the socket-based type. A socket-based bufferevent uses Libevent’s underlying event mechanism to detect when an underlying network socket is ready for read and/or write operations, and uses underlying network calls (like readv, writev, WSASend, or WSARecv) to transmit and receive data.
+
+#### Creating a socket-based bufferevent
+
+You can create a socket-based bufferevent using bufferevent_socket_new():
+
+```c++
+struct bufferevent *bufferevent_socket_new(
+    struct event_base *base,
+    evutil_socket_t fd,
+    enum bufferevent_options options);
+```
+
+The base is an event_base, and options is a bitmask of bufferevent options (BEV_OPT_CLOSE_ON_FREE, etc). The fd argument is an optional file descriptor for a socket. You can set fd to -1 if you want to set the file descriptor later.
+
+Make sure that the socket you provide to bufferevent_socket_new is in non-blocking mode. Libevent provides the convenience method evutil_make_socket_nonblocking for this.
+
+This function returns a bufferevent on success, and NULL on failure.
+
+#### Launching connections on socket-based bufferevents
+
+If the bufferevent’s socket is not yet connected, you can launch a new connection.
+
+```c++
+int bufferevent_socket_connect(struct bufferevent *bev,
+    struct sockaddr *address, int addrlen);
+```
+
+The address and addrlen arguments are as for the standard call connect(). If the bufferevent does not already have a socket set, calling this function allocates a new stream socket for it, and makes it nonblocking.
+
+If the bufferevent does have a socket already, calling bufferevent_socket_connect() tells Libevent that the socket is not connected, and no reads or writes should be done on the socket until the connect operation has succeeded.
+
+It is okay to add data to the output buffer before the connect is done.
+
+This function returns 0 if the connect was successfully launched, and -1 if an error occurred.
+
+```c++
+#include <event2/event.h>
+#include <event2/bufferevent.h>
+#include <sys/socket.h>
+#include <string.h>
+
+void eventcb(struct bufferevent *bev, short events, void *ptr)
+{
+    if (events & BEV_EVENT_CONNECTED) {
+         /* We're connected to 127.0.0.1:8080.   Ordinarily we'd do
+            something here, like start reading or writing. */
+    } else if (events & BEV_EVENT_ERROR) {
+         /* An error occured while connecting. */
+    }
+}
+
+int main_loop(void)
+{
+    struct event_base *base;
+    struct bufferevent *bev;
+    struct sockaddr_in sin;
+
+    base = event_base_new();
+
+    memset(&sin, 0, sizeof(sin));
+    sin.sin_family = AF_INET;
+    sin.sin_addr.s_addr = htonl(0x7f000001); /* 127.0.0.1 */
+    sin.sin_port = htons(8080); /* Port 8080 */
+
+    bev = buf
+```
+
+The bufferevent_socket_connect() function was introduced in Libevent-2.0.2-alpha. Before then, you had to manually call connect() on your socket yourself, and when the connection was complete, the bufferevent would report it as a write.
+
+Note that you only get a BEV_EVENT_CONNECTED event if you launch the connect() attempt using bufferevent_socket_connect(). If you call connect() on your own, the connection gets reported as a write.
+
+If you want to call connect() yourself, but still get receive a BEV_EVENT_CONNECTED event when the connection succeeds, call bufferevent_socket_connect(bev, NULL, 0) after connect() returns -1 with errno equal to EAGAIN or EINPROGRESS.
+
+#### Launching connections by hostname
+
+Quite often, you’d like to combine resolving a hostname and connecting to it into a single operation. There’s an interface for that:
+
+```c++
+int bufferevent_socket_connect_hostname(struct bufferevent *bev,
+    struct evdns_base *dns_base, int family, const char *hostname,
+    int port);
+int bufferevent_socket_get_dns_error(struct bufferevent *bev);
+```
+
+This function resolves the DNS name hostname, looking for addresses of type family. (Allowable family types are AF_INET, AF_INET6, and AF_UNSPEC.) If the name resolution fails, it invokes the event callback with an error event. If it succeeds, it launches a connection attempt just as bufferevent_connect would.
+
+The dns_base argument is optional. If it is NULL, then Libevent blocks while waiting for the name lookup to finish, which usually isn’t what you want. If it is provided, then Libevent uses it to look up the hostname asynchronously. See chapter R9 for more info on DNS.
+
+As with bufferevent_socket_connect(), this function tells Libevent that any existing socket on the bufferevent is not connected, and no reads or writes should be done on the socket until the resolve is finished and the connect operation has succeeded.
+
+If an error occurs, it might be a DNS hostname lookup error. You can find out what the most recent error was by calling bufferevent_socket_get_dns_error(). If the returned error code is 0, no DNS error was detected.
+
+The following code shows a trivial HTTP v0 client:
+
+```c++
+/* Don't actually copy this code: it is a poor way to implement an
+   HTTP client.  Have a look at evhttp instead.
+*/
+#include <event2/dns.h>
+#include <event2/bufferevent.h>
+#include <event2/buffer.h>
+#include <event2/util.h>
+#include <event2/event.h>
+
+#include <stdio.h>
+
+void readcb(struct bufferevent *bev, void *ptr)
+{
+    char buf[1024];
+    int n;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    while ((n = evbuffer_remove(input, buf, sizeof(buf))) > 0) {
+        fwrite(buf, 1, n, stdout);
+    }
+}
+
+void eventcb(struct bufferevent *bev, short events, void *ptr)
+{
+    if (events & BEV_EVENT_CONNECTED) {
+         printf("Connect okay.\n");
+    } else if (events & (BEV_EVENT_ERROR|BEV_EVENT_EOF)) {
+         struct event_base *base = ptr;
+         if (events & BEV_EVENT_ERROR) {
+                 int err = bufferevent_socket_get_dns_error(bev);
+                 if (err)
+                         printf("DNS error: %s\n", evutil_gai_strerror(err));
+         }
+         printf("Closing\n");
+         bufferevent_free(bev);
+         event_base_loopexit(base, NULL);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    struct event_base *base;
+    struct evdns_base *dns_base;
+    struct bufferevent *bev;
+
+    if (argc != 3) {
+        printf("Trivial HTTP 0.x client\n"
+               "Syntax: %s [hostname] [resource]\n"
+               "Example: %s www.google.com /\n",argv[0],argv[0]);
+        return 1;
+    }
+
+    base = event_base_new();
+    dns_base = evdns_base_new(base, 1);
+
+    bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, readcb, NULL, eventcb, base);
+    bufferevent_enable(bev, EV_READ|EV_WRITE);
+    evbuffer_add_printf(bufferevent_get_output(bev), "GET %s\r\n", argv[2]);
+    bufferevent_socket_connect_hostname(
+        bev, dns_base, AF_UNSPEC, argv[1], 80);
+    event_base_dispatch(base);
+    return 0;
+}
+```
+
+### Generic bufferevent operations
+
+The functions in this section work with multiple bufferevent implementations.
+
+#### Freeing a bufferevent
+
+```c++
+void bufferevent_free(struct bufferevent *bev);
+```
+
+This function frees a bufferevent. Bufferevents are internally reference-counted, so if the bufferevent has pending deferred callbacks when you free it, it won’t be deleted until the callbacks are done.
+
+The bufferevent_free() function does, however, try to free the bufferevent as soon as possible. If there is pending data to write on the bufferevent, it probably won’t be flushed before the bufferevent is freed.
+
+If the BEV_OPT_CLOSE_ON_FREE flag was set, and this bufferevent has a socket or underlying bufferevent associated with it as its transport, that transport is closed when you free the bufferevent.
+
+#### Manipulating callbacks, watermarks, and enabled operations
+
+```c++
+typedef void (*bufferevent_data_cb)(struct bufferevent *bev, void *ctx);
+typedef void (*bufferevent_event_cb)(struct bufferevent *bev,
+    short events, void *ctx);
+
+void bufferevent_setcb(struct bufferevent *bufev,
+    bufferevent_data_cb readcb, bufferevent_data_cb writecb,
+    bufferevent_event_cb eventcb, void *cbarg);
+
+void bufferevent_getcb(struct bufferevent *bufev,
+    bufferevent_data_cb *readcb_ptr,
+    bufferevent_data_cb *writecb_ptr,
+    bufferevent_event_cb *eventcb_ptr,
+    void **cbarg_ptr);
+```
+
+The bufferevent_setcb() function changes one or more of the callbacks of a bufferevent. The readcb, writecb, and eventcb functions are called (respectively) when enough data is read, when enough data is written, or when an event occurs. The first argument of each is the bufferevent that has had the event happen. The last argument is the value provided by the user in the cbarg parameter of bufferevent_callcb(): You can use this to pass data to your callbacks. The events argument of the event callback is a bitmask of event flags: see "callbacks and watermarks" above.
+
+You can disable a callback by passing NULL instead of the callback function. Note all the callback functions on a bufferevent share a single cbarg value, so changing it will affect all of them.
+
+You can retrieve the currently set callbacks for a bufferevent by passing pointers to bufferevent_getcb(), which sets *readcb_ptr to the current read callback, *writecb_ptr to the current write callback, *eventcb_ptr to the current event callback, and *cbarg_ptr to the current callback argument field. Any of these pointers set to NULL will be ignored.
+
+```c++
+void bufferevent_enable(struct bufferevent *bufev, short events);
+void bufferevent_disable(struct bufferevent *bufev, short events);
+
+short bufferevent_get_enabled(struct bufferevent *bufev);
+```
+
+You can enable or disable the events EV_READ, EV_WRITE, or EV_READ|EV_WRITE on a bufferevent. When reading or writing is not enabled, the bufferevent will not try to read or write data.
+
+There is no need to disable writing when the output buffer is empty: the bufferevent automatically stops writing, and restarts again when there is data to write.
+
+Similarly, there is no need to disable reading when the input buffer is up to its high-water mark: the bufferevent automatically stops reading, and restarts again when there is space to read.
+
+By default, a newly created bufferevent has writing enabled, but not reading.
+
+You can call bufferevent_get_enabled() to see which events are currently enabled on the bufferevent.
+
+```c++
+void bufferevent_setwatermark(struct bufferevent *bufev, short events,
+    size_t lowmark, size_t highmark);
+```
+
+The bufferevent_setwatermark() function adjusts the read watermarks, the write watermarks, or both, of a single bufferevent. (If EV_READ is set in the events field, the read watermarks are adjusted. If EV_WRITE is set in the events field, the write watermarks are adjusted.)
+
+A high-water mark of 0 is equivalent to "unlimited".
+
+```c++
+#include <event2/event.h>
+#include <event2/bufferevent.h>
+#include <event2/buffer.h>
+#include <event2/util.h>
+
+#include <stdlib.h>
+#include <errno.h>
+#include <string.h>
+
+struct info {
+    const char *name;
+    size_t total_drained;
+};
+
+void read_callback(struct bufferevent *bev, void *ctx)
+{
+    struct info *inf = ctx;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    size_t len = evbuffer_get_length(input);
+    if (len) {
+        inf->total_drained += len;
+        evbuffer_drain(input, len);
+        printf("Drained %lu bytes from %s\n",
+             (unsigned long) len, inf->name);
+    }
+}
+
+void event_callback(struct bufferevent *bev, short events, void *ctx)
+{
+    struct info *inf = ctx;
+    struct evbuffer *input = bufferevent_get_input(bev);
+    int finished = 0;
+
+    if (events & BEV_EVENT_EOF) {
+        size_t len = evbuffer_get_length(input);
+        printf("Got a close from %s.  We drained %lu bytes from it, "
+            "and have %lu left.\n", inf->name,
+            (unsigned long)inf->total_drained, (unsigned long)len);
+        finished = 1;
+    }
+    if (events & BEV_EVENT_ERROR) {
+        printf("Got an error from %s: %s\n",
+            inf->name, evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()));
+        finished = 1;
+    }
+    if (finished) {
+        free(ctx);
+        bufferevent_free(bev);
+    }
+}
+
+struct bufferevent *setup_bufferevent(void)
+{
+    struct bufferevent *b1 = NULL;
+    struct info *info1;
+
+    info1 = malloc(sizeof(struct info));
+    info1->name = "buffer 1";
+    info1->total_drained = 0;
+
+    /* ... Here we should set up the bufferevent and make sure it gets
+       connected... */
+
+    /* Trigger the read callback only whenever there is at least 128 bytes
+       of data in the buffer. */
+    bufferevent_setwatermark(b1, EV_READ, 128, 0);
+
+    bufferevent_setcb(b1, read_callback, NULL, event_callback, info1);
+
+    bufferevent_enable(b1, EV_READ); /* Start reading. */
+    return b1;
+}
+```
+
+#### Manipulating data in a bufferevent
+
+Reading and writing data from the network does you no good if you can’t look at it. Bufferevents give you these methods to give them data to write, and to get the data to read:
+
+```c++
+struct evbuffer *bufferevent_get_input(struct bufferevent *bufev);
+struct evbuffer *bufferevent_get_output(struct bufferevent *bufev);
+```
+
+These two functions are very powerful fundamental: they return the input and output buffers respectively. For full information on all the operations you can perform on an evbuffer type, see the next chapter.
+
+Note that the application may only remove (not add) data on the input buffer, and may only add (not remove) data from the output buffer.
+
+If writing on the bufferevent was stalled because of too little data (or if reading was stalled because of too much), then adding data to the output buffer (or removing data from the input buffer) will automatically restart it.
+
+```c++
+int bufferevent_write(struct bufferevent *bufev,
+    const void *data, size_t size);
+int bufferevent_write_buffer(struct bufferevent *bufev,
+    struct evbuffer *buf);
+```
+
+These functions add data to a bufferevent’s output buffer. Calling bufferevent_write() adds size bytes from the memory at data to the end of the output buffer. Calling bufferevent_write_buffer() removes the entire contents of buf and puts them at the end of the output buffer. Both return 0 if successful, or -1 if an error occurred.
+
+```c++
+size_t bufferevent_read(struct bufferevent *bufev, void *data, size_t size);
+int bufferevent_read_buffer(struct bufferevent *bufev,
+    struct evbuffer *buf);
+```
+
+These functions remove data from a bufferevent’s input buffer. The bufferevent_read() function removes up to size bytes from the input buffer, storing them into the memory at data. It returns the number of bytes actually removed. The bufferevent_read_buffer() function drains the entire contents of the input buffer and places them into buf; it returns 0 on success and -1 on failure.
+
+Note that with bufferevent_read(), the memory chunk at data must actually have enough space to hold size bytes of data.
+
+```c++
+#include <event2/bufferevent.h>
+#include <event2/buffer.h>
+
+#include <ctype.h>
+
+void
+read_callback_uppercase(struct bufferevent *bev, void *ctx)
+{
+        /* This callback removes the data from bev's input buffer 128
+           bytes at a time, uppercases it, and starts sending it
+           back.
+
+           (Watch out!  In practice, you shouldn't use toupper to implement
+           a network protocol, unless you know for a fact that the current
+           locale is the one you want to be using.)
+         */
+
+        char tmp[128];
+        size_t n;
+        int i;
+        while (1) {
+                n = bufferevent_read(bev, tmp, sizeof(tmp));
+                if (n <= 0)
+                        break; /* No more data. */
+                for (i=0; i<n; ++i)
+                        tmp[i] = toupper(tmp[i]);
+                bufferevent_write(bev, tmp, n);
+        }
+}
+
+struct proxy_info {
+        struct bufferevent *other_bev;
+};
+void
+read_callback_proxy(struct bufferevent *bev, void *ctx)
+{
+        /* You might use a function like this if you're implementing
+           a simple proxy: it will take data from one connection (on
+           bev), and write it to another, copying as little as
+           possible. */
+        struct proxy_info *inf = ctx;
+
+        bufferevent_read_buffer(bev,
+            bufferevent_get_output(inf->other_bev));
+}
+
+struct count {
+        unsigned long last_fib[2];
+};
+
+void
+write_callback_fibonacci(struct bufferevent *bev, void *ctx)
+{
+        /* Here's a callback that adds some Fibonacci numbers to the
+           output buffer of bev.  It stops once we have added 1k of
+           data; once this data is drained, we'll add more. */
+        struct count *c = ctx;
+
+        struct evbuffer *tmp = evbuffer_new();
+        while (evbuffer_get_length(tmp) < 1024) {
+                 unsigned long next = c->last_fib[0] + c->last_fib[1];
+                 c->last_fib[0] = c->last_fib[1];
+                 c->last_fib[1] = next;
+
+                 evbuffer_add_printf(tmp, "%lu", next);
+        }
+
+        /* Now we add the whole contents of tmp to bev. */
+        bufferevent_write_buffer(bev, tmp);
+
+        /* We don't need tmp any longer. */
+        evbuffer_free(tmp);
+}
+```
+
+#### Read- and write timeouts
+
+As with other events, you can have a timeout get invoked if a certain amount of time passes without any data having been successfully written or read by a bufferevent.
+
+```c++
+void bufferevent_set_timeouts(struct bufferevent *bufev,
+    const struct timeval *timeout_read, const struct timeval *timeout_write);
+```
+
+Setting a timeout to NULL is supposed to remove it; however before Libevent 2.1.2-alpha this wouldn’t work with all event types. (As a workaround for older versions, you can try setting the timeout to a multi-day interval and/or having your eventcb function ignore BEV_TIMEOUT events when you don’t want them.)
+
+The read timeout will trigger if the bufferevent waits at least timeout_read seconds while trying to read read. The write timeout will trigger if the bufferevent waits at least timeout_write seconds while trying to write data.
+
+Note that the timeouts only count when the bufferevent would like to read or write. In other words, the read timeout is not enabled if reading is disabled on the bufferevent, or if the input buffer is full (at its high-water mark). Similarly, the write timeout is not enabled if if writing is disabled, or if there is no data to write.
+
+When a read or write timeout occurs, the corresponding read or write operation becomes disabled on the bufferevent. The event callback is then invoked with either BEV_EVENT_TIMEOUT|BEV_EVENT_READING or BEV_EVENT_TIMEOUT|BEV_EVENT_WRITING.
+
+#### Initiating a flush on a bufferevent
+
+```c++
+int bufferevent_flush(struct bufferevent *bufev,
+    short iotype, enum bufferevent_flush_mode state);
+```
+
+Flushing a bufferevent tells the bufferevent to force as many bytes as possible to be read to or written from the underlying transport, ignoring other restrictions that might otherwise keep them from being written. Its detailed function depends on the type of the bufferevent.
+
+The iotype argument should be EV_READ, EV_WRITE, or EV_READ|EV_WRITE to indicate whether bytes being read, written, or both should be processed. The state argument may be one of BEV_NORMAL, BEV_FLUSH, or BEV_FINISHED. BEV_FINISHED indicates that the other side should be told that no more data will be sent; the distinction between BEV_NORMAL and BEV_FLUSH depends on the type of the bufferevent.
+
+The bufferevent_flush() function returns -1 on failure, 0 if no data was flushed, or 1 if some data was flushed.
+
+Currently (as of Libevent 2.0.5-beta), bufferevent_flush() is only implemented for some bufferevent types. In particular, socket-based bufferevents don’t have it.
+
+### Type-specific bufferevent functions
+
+These bufferevent functions are not supported on all bufferevent types.
+
+```c++
+int bufferevent_priority_set(struct bufferevent *bufev, int pri);
+int bufferevent_get_priority(struct bufferevent *bufev);
+```
+
+This function adjusts the priority of the events used to implement bufev to pri. See event_priority_set() for more information on priorities.
+
+This function returns 0 on success, and -1 on failure. It works on socket-based bufferevents only.
+
+The bufferevent_priority_set() function was introduced in Libevent 1.0; bufferevent_get_priority() didn’t appear until Libevent 2.1.2-alpha.
+
+```c++
+int bufferevent_setfd(struct bufferevent *bufev, evutil_socket_t fd);
+evutil_socket_t bufferevent_getfd(struct bufferevent *bufev);
+```
+
+These functions set or return the file descriptor for a fd-based event. Only socket-based bufferevents support setfd(). Both return -1 on failure; setfd() returns 0 on success.
+
+```c++
+struct event_base *bufferevent_get_base(struct bufferevent *bev);
+```
+
+This function returns the event_base of a bufferevent.
+
+```c++
+struct bufferevent *bufferevent_get_underlying(struct bufferevent *bufev);
+```
+
+This function returns the bufferevent that another bufferevent is using as a transport, if any. For information on when this situation would occur, see notes on filtering bufferevents.
+
+### Manually locking and unlocking a bufferevent
+
+As with evbuffers, sometimes you want to ensure that a number of operations on a bufferevent are all performed atomically. Libevent exposes functions that you can use to manually lock and unlock a bufferevent.
+
+```c++
+void bufferevent_lock(struct bufferevent *bufev);
+void bufferevent_unlock(struct bufferevent *bufev);
+```
+
+Note that locking a bufferevent has no effect if the bufferevent was not given the BEV_OPT_THREADSAFE thread on creation, or if Libevent’s threading support wasn’t activated.
+
+Locking the bufferevent with this function will lock its associated evbuffers as well. These functions are recursive: it is safe to lock a bufferevent for which you already hold the lock. You must, of course, call unlock once for every time that you locked the bufferevent.
+
+### Obsolete bufferevent functionality
+
+The bufferevent backend code underwent substantial revision between Libevent 1.4 and Libevent 2.0. In the old interface, it was sometimes normal to build with access to the internals of the struct bufferevent, and to use macros that relied on this access.
+
+To make matters confusing, the old code sometimes used names for bufferevent functionality that were prefixed with "evbuffer".
+
+Here’s a brief guideline of what things used to be called before Libevent 2.0:
+
+![](./pics/bufferevent.png)
+
+The old functions were defined in event.h, not in event2/bufferevent.h.
+
+If you still need access to the internals of the common parts of the bufferevent struct, you can include event2/bufferevent_struct.h. We recommend against it: the contents of struct bufferevent WILL change between versions of Libevent. The macros and names in this section are available if you include event2/bufferevent_compat.h.
+
+The interface to set up a bufferevent differed in older versions:
+
+```c++
+struct bufferevent *bufferevent_new(evutil_socket_t fd,
+    evbuffercb readcb, evbuffercb writecb, everrorcb errorcb, void *cbarg);
+int bufferevent_base_set(struct event_base *base, struct bufferevent *bufev);
+```
+
+The bufferevent_new() function creates a socket bufferevent only, and does so on the deprecated "default" event_base. Calling bufferevent_base_set adjusts the event_base of a socket bufferevent only.
+
+Instead of setting timeouts as struct timeval, they were set as numbers of seconds:
+
+
+```c++
+void bufferevent_settimeout(struct bufferevent *bufev,
+    int timeout_read, int timeout_write);
+```
+
+Finally, note that the underlying evbuffer implementation for Libevent versions before 2.0 was pretty inefficient, to the point where using bufferevents for high-performance apps was kind of questionable.
+
+## Bufferevents: advanced topics
+
+This chapter describes some advanced features of Libevent’s bufferevent implementation that aren’t necessary for typical uses. If you’re just learning how to use bufferevents, you should skip this chapter for now and go on to read the evbuffer chapter.
+
+### Paired bufferevents
+
+Sometimes you have a networking program that needs to talk to itself. For example, you could have a program written to tunnel user connections over some protocol that sometimes also wants to tunnel connections of its own over that protocol. You could achieve this by opening a connection to your own listening port and having your program use itself, of course, but that would waste resources by having your program talk to itself via the network stack.
+
+Instead, you can create a pair of paired bufferevents such that all bytes written on one are received on the other (and vice versa), but no actual platform sockets are used.
+
+```c++
+int bufferevent_pair_new(struct event_base *base, int options,
+    struct bufferevent *pair[2]);
+```
+
+Calling bufferevent_pair_new() sets pair[0] and pair[1] to a pair of bufferevents, each connected to the other. All the usual options are supported, except for BEV_OPT_CLOSE_ON_FREE, which has no effect, and BEV_OPT_DEFER_CALLBACKS, which is always on.
+
+Why do bufferevent pairs need to run with callbacks deferred? It’s pretty common for an operation on one element of the pair to invoke a callback that alters the bufferevent, thus invoking the other bufferevent’s callbacks, and so on through many steps. When the callbacks were not deferred, this chain of calls would pretty frequently overflow the stack, starve other connections, and require all the callbacks to be reentrant.
+
+Paired bufferevents support flushing; setting the mode argument to either either BEV_NORMAL or BEV_FLUSH forces all the relevant data to get transferred from one bufferevent in the pair to the other, ignoring the watermarks that would otherwise restrict it. Setting mode to BEV_FINISHED additionally generates an EOF event on the opposite bufferevent.
+
+Freeing either member of the pair does not automatically free the other or generate an EOF event; it just makes the other member of the pair become unlinked. Once the bufferevent is unlinked, it will no longer successfully read or write data or generate any events.
+
+```c++
+struct bufferevent *bufferevent_pair_get_partner(struct bufferevent *bev)
+```
+
+Sometimes you may need to get the other member of a bufferevent pair given only one member. To do this, you can invoke the bufferevent_pair_get_partner() function. It will return the other member of the pair if bev is a member of a pair, and the other member still exists. Otherwise, it returns NULL.
+
+### Filtering bufferevents
+
+Sometimes you want to transform all the data passing through a bufferevent object. You could do this to add a compression layer, or wrap a protocol in another protocol for transport.
+
+```c++
+enum bufferevent_filter_result {
+        BEV_OK = 0,
+        BEV_NEED_MORE = 1,
+        BEV_ERROR = 2
+};
+typedef enum bufferevent_filter_result (*bufferevent_filter_cb)(
+    struct evbuffer *source, struct evbuffer *destination, ev_ssize_t dst_limit,
+    enum bufferevent_flush_mode mode, void *ctx);
+
+
+struct bufferevent *bufferevent_filter_new(struct bufferevent *underlying,
+        bufferevent_filter_cb input_filter,
+        bufferevent_filter_cb output_filter,
+        int options,
+        void (*free_context)(void *),
+        void *ctx);
+```
+
+The bufferevent_filter_new() function creates a new filtering bufferevent, wrapped around an existing "underlying" bufferevent. All data received via the underlying bufferevent is transformed with the "input" filter before arriving at the filtering bufferevent, and all data sent via the filtering bufferevent is transformed with an "output" filter before being sent out to the underlying bufferevent.
+
+Adding a filter to an underlying bufferevent replaces the callbacks on the underlying bufferevent. You can still add callbacks to the underlying bufferevent’s evbuffers, but you can’t set the callbacks on the bufferevent itself if you want the filter to still work.
+
+The input_filter and output_filter functions are described below. All the usual options are supported in options. If BEV_OPT_CLOSE_ON_FREE is set, then freeing the filtering bufferevent also frees the underlying bufferevent. The ctx field is an arbitrary pointer passed to the filter functions; if a free_context function is provided, it is called on ctx just before the filtering bufferevent is closed.
+
+The input filter function will be called whenever there is new readable data on the underlying input buffer. The output filter function is called whenever there is new writable data on the filter’s output buffer. Each one receives a pair of evbuffers: a source evbuffer to read data from, and a destination evbuffer to write data to. The dst_limit argument describes the upper bound of bytes to add to destination. The filter function is allowed to ignore this value, but doing so might violate high-water marks or rate limits. If dst_limit is -1, there is no limit. The mode parameter tells the filter how aggressive to be in writing. If it is BEV_NORMAL, then it should write as much as can be conveniently transformed. The BEV_FLUSH value means to write as much as possible, and BEV_FINISHED means that the filtering function should additionally do any cleanup necessary at the end of the stream. Finally, the filter function’s ctx argument is a void pointer as provided to the bufferevent_filter_new() constructor.
+
+Filter functions must return BEV_OK if any data was successfully written to the destination buffer, BEV_NEED_MORE if no more data can be written to the destination buffer without getting more input or using a different flush mode, and BEV_ERROR if there is a non-recoverable error on the filter.
+
+Creating the filter enables both reading and writing on the underlying bufferevent. You do not need to manage reads/writes on your own: the filter will suspend reading on the underlying bufferevent for you whenever it doesn’t want to read. For 2.0.8-rc and later, it is permissible to enable/disable reading and writing on the underlying bufferevent independently from the filter. If you do this, though, you may keep the filter from successfully getting the data it wants.
+
+You don’t need to specify both an input filter and an output filter: any filter you omit is replaced with one that passes data on without transforming it.
+
+### Limiting maximum single read/write size
+
+By default, bufferevents won’t read or write the maximum possible amount of bytes on each invocation of the event loop; doing so can lead to weird unfair behaviors and resource starvation. On the other hand, the defaults might not be reasonable for all situations.
+
+```c++
+int bufferevent_set_max_single_read(struct bufferevent *bev, size_t size);
+int bufferevent_set_max_single_write(struct bufferevent *bev, size_t size);
+
+ev_ssize_t bufferevent_get_max_single_read(struct bufferevent *bev);
+ev_ssize_t bufferevent_get_max_single_write(struct bufferevent *bev);
+```
+
+The two "set" functions replace the current read and write maxima respectively. If the size value is 0 or above EV_SSIZE_MAX, they instead set the maxima to the default value. These functions return 0 on success and -1 on failure.
+
+The two "get" functions return the current per-loop read and write maxima respectively.
+
+### Bufferevents and Rate-limiting
+
+Some programs want to limit the amount of bandwidth used for any single bufferevent, or for a group of bufferevents. Libevent 2.0.4-alpha and Libevent 2.0.5-alpha added a basic facility to put caps on individual bufferevents, or to assign bufferevents to a rate-limited group.
+
+#### The rate-limiting model
+Libevent’s rate-limiting uses a token bucket algorithm to decide how many bytes to read or write at a time. Every rate-limited object, at any given time, has a "read bucket" and a "write bucket", the sizes of which determine how many bytes the object is allowed to read or write immediately. Each bucket has a refill rate, a maximum burst size, and a timing unit or "tick". Whenever the timing unit elapses, the bucket is refilled proportionally to the refill rate—but if would become fuller than its burst size, any excess bytes are lost.
+
+Thus, the refill rate determines the maximum average rate at which the object will send or receive bytes, and the burst size determines the largest number of bytes that will be sent or received in a single burst. The timing unit determines the smoothness of the traffic.
+
+#### Setting a rate limit on a bufferevent
+
+```c++
+#define EV_RATE_LIMIT_MAX EV_SSIZE_MAX
+struct ev_token_bucket_cfg;
+struct ev_token_bucket_cfg *ev_token_bucket_cfg_new(
+        size_t read_rate, size_t read_burst,
+        size_t write_rate, size_t write_burst,
+        const struct timeval *tick_len);
+void ev_token_bucket_cfg_free(struct ev_token_bucket_cfg *cfg);
+int bufferevent_set_rate_limit(struct bufferevent *bev,
+    struct ev_token_bucket_cfg *cfg);
+```
+
+An ev_token_bucket_cfg structure represents the configuration values for a pair of token buckets used to limit reading and writing on a single bufferevent or group of bufferevents. To create one, call the ev_token_bucket_cfg_new function and provide the maximum average read rate, the maximum read burst, the maximum write rate, the maximum write burst, and the length of a tick. If the tick_len argument is NULL, the length of a tick defaults to one second. The function may return NULL on error.
+
+Note that the read_rate and write_rate arguments are scaled in units of bytes per tick. That is, if the tick is one tenth of a second, and read_rate is 300, then the maximum average read rate is 3000 bytes per second. Rate and burst values over EV_RATE_LIMIT_MAX are not supported.
+
+To limit a bufferevent’s transfer rate, call bufferevent_set_rate_limit() on it with an ev_token_bucket_cfg. The function returns 0 on success, and -1 on failure. You can give any number of bufferevents the same ev_token_bucket_cfg. To remove a bufferevent’s rate limits, call bufferevent_set_rate_limit(), passing NULL for the cfg parameter.
+
+To free an ev_token_bucket_cfg, call ev_token_bucket_cfg_free(). Note that it is NOT currently safe to do this until no bufferevents are using the ev_token_bucket_cfg.
+
+#### Setting a rate limit on a group of bufferevents
+
+You can assign bufferevents to a rate limiting group if you want to limit their total bandwidth usage.
+
+```c++
+struct bufferevent_rate_limit_group;
+
+struct bufferevent_rate_limit_group *bufferevent_rate_limit_group_new(
+        struct event_base *base,
+        const struct ev_token_bucket_cfg *cfg);
+int bufferevent_rate_limit_group_set_cfg(
+        struct bufferevent_rate_limit_group *group,
+        const struct ev_token_bucket_cfg *cfg);
+void bufferevent_rate_limit_group_free(struct bufferevent_rate_limit_group *);
+int bufferevent_add_to_rate_limit_group(struct bufferevent *bev,
+    struct bufferevent_rate_limit_group *g);
+int bufferevent_remove_from_rate_limit_group(struct bufferevent *bev);
+```
+
+To construct a rate limiting group, call bufferevent_rate_limit_group() with an event_base and an initial ev_token_bucket_cfg. You can add bufferevents to the group with bufferevent_add_to_rate_limit_group() and bufferevent_remove_from_rate_limit_group(); these functions return 0 on success and -1 on error.
+
+A single bufferevent can be a member of no more than one rate limiting group at a time. A bufferevent can have both an individual rate limit (as set with bufferevent_set_rate_limit()) and a group rate limit. When both limits are set, the lower limit for each bufferevent applies.
+
+You can change the rate limit for an existing group by calling bufferevent_rate_limit_group_set_cfg(). It returns 0 on success and -1 on failure. The bufferevent_rate_limit_group_free() function frees a rate limit group and removes all of its members.
+
+As of version 2.0, Libevent’s group rate limiting tries to be fair on aggregate, but the implementation can be unfair on very small timescales. If you care strongly about scheduling fairness, please help out with patches for future versions.
+
+#### Inspecting current rate-limit values
+
+Sometimes your code may want to inspect the current rate limits that apply for a given bufferevent or group. Libevent provides some functions to do so.
+
+```c++
+ev_ssize_t bufferevent_get_read_limit(struct bufferevent *bev);
+ev_ssize_t bufferevent_get_write_limit(struct bufferevent *bev);
+ev_ssize_t bufferevent_rate_limit_group_get_read_limit(
+        struct bufferevent_rate_limit_group *);
+ev_ssize_t bufferevent_rate_limit_group_get_write_limit(
+        struct bufferevent_rate_limit_group *);
+```
+
+The above functions return the current size, in bytes, of a bufferevent’s or a group’s read or write token buckets. Note that these values can be negative if a bufferevent has been forced to exceed its allocations. (Flushing the bufferevent can do this.)
+
+```c++
+ev_ssize_t bufferevent_get_max_to_read(struct bufferevent *bev);
+ev_ssize_t bufferevent_get_max_to_write(struct bufferevent *bev);
+```
+These functions return the number of bytes that a bufferevent would be willing to read or write right now, taking into account any rate limits that apply to the bufferevent, its rate limiting group (if any), and any maximum-to-read/write-at-a-time values imposed by Libevent as a whole.
+
+```c++
+void bufferevent_rate_limit_group_get_totals(
+    struct bufferevent_rate_limit_group *grp,
+    ev_uint64_t *total_read_out, ev_uint64_t *total_written_out);
+void bufferevent_rate_limit_group_reset_totals(
+    struct bufferevent_rate_limit_group *grp);
+```
+
+Each bufferevent_rate_limit_group tracks the total number of bytes sent over it, in total. You can use this to track total usage by a number of bufferevents in the group. Calling bufferevent_rate_limit_group_get_totals() on a group sets *total_read_out and *total_written_out to the total number of bytes read and written on a bufferevent group respectively. These totals start at 0 when the group is created, and reset to 0 whenever bufferevent_rate_limit_group_reset_totals() is called on a group.
+
+#### Manually adjusting rate limits
+
+For programs with really complex needs, you might want to adjust the current values of a token bucket. You might want to do this, for example, if your program is generating traffic in some way that isn’t via a bufferevent.
+
+```c++
+int bufferevent_decrement_read_limit(struct bufferevent *bev, ev_ssize_t decr);
+int bufferevent_decrement_write_limit(struct bufferevent *bev, ev_ssize_t decr);
+int bufferevent_rate_limit_group_decrement_read(
+        struct bufferevent_rate_limit_group *grp, ev_ssize_t decr);
+int bufferevent_rate_limit_group_decrement_write(
+        struct bufferevent_rate_limit_group *grp, ev_ssize_t decr);
+```
+
+These functions decrement a current read or write bucket in a bufferevent or rate limiting group. Note that the decrements are signed: if you want to increment a bucket, pass a negative value.
+
+#### Setting the smallest share possible in a rate-limited group
+
+Frequently, you don’t want to divide the bytes available in a rate-limiting group up evenly among all bufferevents in every tick. For example, if you had 10,000 active bufferevents in a rate-limiting group with 10,000 bytes available for writing every tick, it wouldn’t be efficient to let each bufferevent write only 1 byte per tick, due to the overheads of system calls and TCP headers.
+
+To solve this, each rate-limiting group has a notion of its "minimum share". In the situation above, instead of every bufferevent being allowed to write 1 byte per tick, 10,000/SHARE bufferevents will be allowed to write SHARE bytes each every tick, and the rest will be allowed to write nothing. Which bufferevents are allowed to write first is chosen randomly each tick.
+
+The default minimum share is chosen to give decent performance, and is currently (as of 2.0.6-rc) set to 64. You can adjust this value with the following function:
+
+```c++
+int bufferevent_rate_limit_group_set_min_share(
+        struct bufferevent_rate_limit_group *group, size_t min_share);
+```
+
+Setting the min_share to 0 disables the minimum-share code entirely.
+
+Libevent’s rate-limiting has had minimum shares since it was first introduced. The function to change them was first exposed in Libevent 2.0.6-rc.
+
+#### Limitations of the rate-limiting implementation
+
+As of Libevent 2.0, there are some limitations to the rate-limiting implementation that you should know.
+
+- Not every bufferevent type supports rate limiting well, or at all.
+- Bufferevent rate limiting groups cannot nest, and a bufferevent can only be in a single rate limiting group at a time.
+- The rate limiting implementation only counts bytes transferred in TCP packets as data, doesn’t include TCP headers.
+- The read-limiting implementation relies on the TCP stack noticing that the application is only consuming data at a certain rate, and pushing back on the other side of the TCP connection when its buffers get full.
+- Some implementations of bufferevents (particularly the windows IOCP implementation) can over-commit.
+- Buckets start out with one full tick’s worth of traffic. This means that a bufferevent can start reading or writing immediately, and not wait until a full tick has passed. It also means, though, that a bufferevent that has been rate limited for N.1 ticks can potentially transfer N+1 ticks worth of traffic.
+- Ticks cannot be smaller than 1 millisecond, and all fractions of a millisecond are ignored.
+
+## Evbuffers: utility functionality for buffered IO
+
+Libevent’s evbuffer functionality implements a queue of bytes, optimized for adding data to the end and removing it from the front.
+
+Evbuffers are meant to be generally useful for doing the "buffer" part of buffered network IO. They do not provide functions to schedule the IO or trigger the IO when it’s ready: that is what bufferevents do.
+
+The functions in this chapter are declared in event2/buffer.h unless otherwise noted.
+
+### Creating or freeing an evbuffer
+
+```c++
+struct evbuffer *evbuffer_new(void);
+void evbuffer_free(struct evbuffer *buf);
+```
+
+These functions should be relatively clear: evbuffer_new() allocates and returns a new empty evbuffer, and evbuffer_free() deletes one and all of its contents.
+
+### Evbuffers and Thread-safety
+
+```c++
+int evbuffer_enable_locking(struct evbuffer *buf, void *lock);
+void evbuffer_lock(struct evbuffer *buf);
+void evbuffer_unlock(struct evbuffer *buf);
+```
+
+By default, it is not safe to access an evbuffer from multiple threads at once. If you need to do this, you can call evbuffer_enable_locking() on the evbuffer. If its lock argument is NULL, Libevent allocates a new lock using the lock creation function that was provided to evthread_set_lock_creation_callback. Otherwise, it uses the argument as the lock.
+
+The evbuffer_lock() and evbuffer_unlock() functions acquire and release the lock on an evbuffer respectively. You can use them to make a set of operations atomic. If locking has not been enabled on the evbuffer, these functions do nothing.
+
+(Note that you do not need to call evbuffer_lock() and evbuffer_unlock() around individual operations: if locking is enabled on the evbuffer, individual operations are already atomic. You only need to lock the evbuffer manually when you have more than one operation that need to execute without another thread butting in.)
+
+### Inspecting an evbuffer
+
+```c++
+size_t evbuffer_get_length(const struct evbuffer *buf);
+```
+
+This function returns the number of bytes stored in an evbuffer.
+
+```c++
+size_t evbuffer_get_contiguous_space(const struct evbuffer *buf);
+```
+
+This function returns the number of bytes stored contiguously at the front of the evbuffer. The bytes in an evbuffer may be stored in multiple separate chunks of memory; this function returns the number of bytes currently stored in the first chunk.
+
+### Adding data to an evbuffer: basics
+
+```c++
+int evbuffer_add(struct evbuffer *buf, const void *data, size_t datlen);
+```
+
+This function appends the datlen bytes in data to the end of buf. It returns 0 on success, and -1 on failure.
+
+```c++
+int evbuffer_add_printf(struct evbuffer *buf, const char *fmt, ...)
+int evbuffer_add_vprintf(struct evbuffer *buf, const char *fmt, va_list ap);
+```
+
+These functions append formatted data to the end of buf. The format argument and other remaining arguments are handled as if by the C library functions "printf" and "vprintf" respectively. The functions return the number of bytes appended.
+
+```c++
+int evbuffer_expand(struct evbuffer *buf, size_t datlen);
+```
+
+This function alters the last chunk of memory in the buffer, or adds a new chunk, such that the buffer is now large enough to contain datlen bytes without any further allocations.
+
+```c++
+/* Here are two ways to add "Hello world 2.0.1" to a buffer. */
+/* Directly: */
+evbuffer_add(buf, "Hello world 2.0.1", 17);
+
+/* Via printf: */
+evbuffer_add_printf(buf, "Hello %s %d.%d.%d", "world", 2, 0, 1);
+```
+
+### Moving data from one evbuffer to another
+
+For efficiency, Libevent has optimized functions for moving data from one evbuffer to another.
+
+```c++
+int evbuffer_add_buffer(struct evbuffer *dst, struct evbuffer *src);
+int evbuffer_remove_buffer(struct evbuffer *src, struct evbuffer *dst,
+    size_t datlen);
+```
+
+The evbuffer_add_buffer() function moves all data from src to the end of dst. It returns 0 on success, -1 on failure.
+
+The evbuffer_remove_buffer() function moves exactly datlen bytes from src to the end of dst, copying as little as possible. If there are fewer than datlen bytes to move, it moves all the bytes. It returns the number of bytes moved.
+
+### Adding data to the front of an evbuffer
+
+```c++
+int evbuffer_prepend(struct evbuffer *buf, const void *data, size_t size);
+int evbuffer_prepend_buffer(struct evbuffer *dst, struct evbuffer* src);
+```
+
+These functions behave as evbuffer_add() and evbuffer_add_buffer() respectively, except that they move data to the front of the destination buffer.
+
+These functions should be used with caution, and never on an evbuffer shared with a bufferevent. 
+
+#### Rearranging the internal layout of an evbuffer
+
+Sometimes you want to peek at the first N bytes of data in the front of an evbuffer, and see it as a contiguous array of bytes. To do this, you must first ensure that the front of the buffer really is contiguous.
+
+```c++
+unsigned char *evbuffer_pullup(struct evbuffer *buf, ev_ssize_t size);
+```
+
+The evbuffer_pullup() function "linearizes" the first size bytes of buf, copying or moving them as needed to ensure that they are all contiguous and occupying the same chunk of memory. If size is negative, the function linearizes the entire buffer. If size is greater than the number of bytes in the buffer, the function returns NULL. Otherwise, evbuffer_pullup() returns a pointer to the first byte in buf.
+
+Calling evbuffer_pullup() with a large size can be quite slow, since it potentially needs to copy the entire buffer’s contents.
+
+```c++
+#include <event2/buffer.h>
+#include <event2/util.h>
+
+#include <string.h>
+
+int parse_socks4(struct evbuffer *buf, ev_uint16_t *port, ev_uint32_t *addr)
+{
+    /* Let's parse the start of a SOCKS4 request!  The format is easy:
+     * 1 byte of version, 1 byte of command, 2 bytes destport, 4 bytes of
+     * destip. */
+    unsigned char *mem;
+
+    mem = evbuffer_pullup(buf, 8);
+
+    if (mem == NULL) {
+        /* Not enough data in the buffer */
+        return 0;
+    } else if (mem[0] != 4 || mem[1] != 1) {
+        /* Unrecognized protocol or command */
+        return -1;
+    } else {
+        memcpy(port, mem+2, 2);
+        memcpy(addr, mem+4, 4);
+        *port = ntohs(*port);
+        *addr = ntohl(*addr);
+        /* Actually remove the data from the buffer now that we know we
+           like it. */
+        evbuffer_drain(buf, 8);
+        return 1;
+    }
+}
+```
+
+Calling evbuffer_pullup() with size equal to the value returned by evbuffer_get_contiguous_space() will not result in any data being copied or moved.
+
+### Removing data from an evbuffer
+
+```c++
+int evbuffer_drain(struct evbuffer *buf, size_t len);
+int evbuffer_remove(struct evbuffer *buf, void *data, size_t datlen);
+```
+
+
+The evbuffer_remove() function copies and removes the first datlen bytes from the front of buf into the memory at data. If there are fewer than datlen bytes available, the function copies all the bytes there are. The return value is -1 on failure, and is otherwise the number of bytes copied.
+
+The evbuffer_drain() function behaves as evbuffer_remove(), except that it does not copy the data: it just removes it from the front of the buffer. It returns 0 on success and -1 on failure.
+
+### Copying data out from an evbuffer
+
+Sometimes you want to get a copy of the data at the start of a buffer without draining it. For example, you might want to see whether a complete record of some kind has arrived, without draining any of the data (as evbuffer_remove would do), or rearranging the buffer internally (as evbuffer_pullup() would do.)
+
+```c++
+ev_ssize_t evbuffer_copyout(struct evbuffer *buf, void *data, size_t datlen);
+ev_ssize_t evbuffer_copyout_from(struct evbuffer *buf,
+     const struct evbuffer_ptr *pos,
+     void *data_out, size_t datlen);
+```
+
+The evbuffer_copyout() behaves just like evbuffer_remove(), but does not drain any data from the buffer. That is, it copies the first datlen bytes from the front of buf into the memory at data. If there are fewer than datlen bytes available, the function copies all the bytes there are. The return value is -1 on failure, and is otherwise the number of bytes copied.
+
+The evbuffer_copyout_from() function behaves like evbuffer_copyout(), but instead of copying bytes from the front of the buffer, it copies them beginning at the position provided in pos. See "Searching within an evbuffer" below for information on the evbuffer_ptr structure.
+
+If copying data from the buffer is too slow, use evbuffer_peek() instead.
+
+```c++
+#include <event2/buffer.h>
+#include <event2/util.h>
+#include <stdlib.h>
+#include <stdlib.h>
+
+int get_record(struct evbuffer *buf, size_t *size_out, char **record_out)
+{
+    /* Let's assume that we're speaking some protocol where records
+       contain a 4-byte size field in network order, followed by that
+       number of bytes.  We will return 1 and set the 'out' fields if we
+       have a whole record, return 0 if the record isn't here yet, and
+       -1 on error.  */
+    size_t buffer_len = evbuffer_get_length(buf);
+    ev_uint32_t record_len;
+    char *record;
+
+    if (buffer_len < 4)
+       return 0; /* The size field hasn't arrived. */
+
+   /* We use evbuffer_copyout here so that the size field will stay on
+       the buffer for now. */
+    evbuffer_copyout(buf, &record_len, 4);
+    /* Convert len_buf into host order. */
+    record_len = ntohl(record_len);
+    if (buffer_len < record_len + 4)
+        return 0; /* The record hasn't arrived */
+
+    /* Okay, _now_ we can remove the record. */
+    record = malloc(record_len);
+    if (record == NULL)
+        return -1;
+
+    evbuffer_drain(buf, 4);
+    evbuffer_remove(buf, record, record_len);
+
+    *record_out = record;
+    *size_out = record_len;
+    return 1;
+}
+```
+
+### Line-oriented input
+
+```c++
+enum evbuffer_eol_style {
+        EVBUFFER_EOL_ANY,
+        EVBUFFER_EOL_CRLF,
+        EVBUFFER_EOL_CRLF_STRICT,
+        EVBUFFER_EOL_LF,
+        EVBUFFER_EOL_NUL
+};
+char *evbuffer_readln(struct evbuffer *buffer, size_t *n_read_out,
+    enum evbuffer_eol_style eol_style);
+```
+
+Many Internet protocols use line-based formats. The evbuffer_readln() function extracts a line from the front of an evbuffer and returns it in a newly allocated NUL-terminated string. If n_read_out is not NULL, *n_read_out is set to the number of bytes in the string returned. If there is not a whole line to read, the function returns NULL. The line terminator is not included in the copied string.
+
+The evbuffer_readln() function understands 4 line termination formats:
+
+- EVBUFFER_EOL_LF The end of a line is a single linefeed character. (This is also known as "\n". It is ASCII value is 0x0A.)
+- EVBUFFER_EOL_CRLF_STRICT The end of a line is a single carriage return, followed by a single linefeed. (This is also known as "\r\n". The ASCII values are 0x0D 0x0A).
+- EVBUFFER_EOL_CRLF The end of the line is an optional carriage return, followed by a linefeed. (In other words, it is either a "\r\n" or a "\n".) This format is useful in parsing text-based Internet protocols, since the standards generally prescribe a "\r\n" line-terminator, but nonconformant clients sometimes say just "\n".
+- EVBUFFER_EOL_ANY The end of line is any sequence of any number of carriage return and linefeed characters. This format is not very useful; it exists mainly for backward compatibility.
+- EVBUFFER_EOL_NUL The end of line is a single byte with the value 0 — that is, an ASCII NUL.
+
+(Note that if you used event_set_mem_functions() to override the default malloc, the string returned by evbuffer_readln will be allocated by the malloc-replacement you specified.)
+
+```c++
+char *request_line;
+size_t len;
+
+request_line = evbuffer_readln(buf, &len, EVBUFFER_EOL_CRLF);
+if (!request_line) {
+    /* The first line has not arrived yet. */
+} else {
+    if (!strncmp(request_line, "HTTP/1.0 ", 9)) {
+        /* HTTP 1.0 detected ... */
+    }
+    free(request_line);
+}
+```
+
+### Searching within an evbuffer
+
+The evbuffer_ptr structure points to a location within an evbuffer, and contains data that you can use to iterate through an evbuffer.
+
+```c++
+struct evbuffer_ptr {
+        ev_ssize_t pos;
+        struct {
+                /* internal fields */
+        } _internal;
+};
+```
+
+The pos field is the only public field; the others should not be used by user code. It indicates a position in the evbuffer as an offset from the start.
+
+```c++
+struct evbuffer_ptr evbuffer_search(struct evbuffer *buffer,
+    const char *what, size_t len, const struct evbuffer_ptr *start);
+struct evbuffer_ptr evbuffer_search_range(struct evbuffer *buffer,
+    const char *what, size_t len, const struct evbuffer_ptr *start,
+    const struct evbuffer_ptr *end);
+struct evbuffer_ptr evbuffer_search_eol(struct evbuffer *buffer,
+    struct evbuffer_ptr *start, size_t *eol_len_out,
+    enum evbuffer_eol_style eol_style);
+```
+
+The evbuffer_search() function scans the buffer for an occurrence of the len-character string what. It returns an evbuffer_ptr containing the position of the string, or -1 if the string was not found. If the start argument is provided, it’s the position at which the search should begin; otherwise, the search is from the start of the string.
+
+The evbuffer_search_range() function behaves as evbuffer_search, except that it only considers occurrences of what that occur before the evbuffer_ptr end.
+
+The evbuffer_search_eol() function detects line-endings as evbuffer_readln(), but instead of copying out the line, returns an evbuffer_ptr to the start of the end-of-line characters(s). If eol_len_out is non-NULL, it is set to the length of the EOL string.
+
+```c++
+enum evbuffer_ptr_how {
+        EVBUFFER_PTR_SET,
+        EVBUFFER_PTR_ADD
+};
+int evbuffer_ptr_set(struct evbuffer *buffer, struct evbuffer_ptr *pos,
+    size_t position, enum evbuffer_ptr_how how);
+```
+
+The evbuffer_ptr_set function manipulates the position of an evbuffer_ptr pos within buffer. If how is EVBUFFER_PTR_SET, the pointer is moved to an absolute position position within the buffer. If it is EVBUFFER_PTR_ADD, the pointer moves position bytes forward. This function returns 0 on success and -1 on failure.
+
+```c++
+#include <event2/buffer.h>
+#include <string.h>
+
+/* Count the total occurrences of 'str' in 'buf'. */
+int count_instances(struct evbuffer *buf, const char *str)
+{
+    size_t len = strlen(str);
+    int total = 0;
+    struct evbuffer_ptr p;
+
+    if (!len)
+        /* Don't try to count the occurrences of a 0-length string. */
+        return -1;
+
+    evbuffer_ptr_set(buf, &p, 0, EVBUFFER_PTR_SET);
+
+    while (1) {
+         p = evbuffer_search(buf, str, len, &p);
+         if (p.pos < 0)
+             break;
+         total++;
+         evbuffer_ptr_set(buf, &p, 1, EVBUFFER_PTR_ADD);
+    }
+
+    return total;
+}
+```
+
+Any call that modifies an evbuffer or its layout invalidates all outstanding evbuffer_ptr values, and makes them unsafe to use.
+
+### Inspecting data without copying it
+
+Sometimes, you want to read data in an evbuffer without copying it out (as evbuffer_copyout() does), and without rearranging the evbuffer’s internal memory (as evbuffer_pullup() does). Sometimes you might want to see data in the middle of an evbuffer.
+
+You can do this with:
+
+```c++
+struct evbuffer_iovec {
+        void *iov_base;
+        size_t iov_len;
+};
+
+int evbuffer_peek(struct evbuffer *buffer, ev_ssize_t len,
+    struct evbuffer_ptr *start_at,
+    struct evbuffer_iovec *vec_out, int n_vec);
+```
+
+When you call evbuffer_peek(), you give it an array of evbuffer_iovec structures in vec_out. The array’s length is n_vec. It sets these structures so that each one contains a pointer to a chunk of the evbuffer’s internal RAM (iov_base), and the length of memory that is set in that chunk.
+
+If len is less than 0, evbuffer_peek() tries to fill all of the evbuffer_iovec structs you have given it. Otherwise, it fills them until either they are all used, or at least len bytes are visible. If the function could give you all the data you asked for, it returns the number of evbuffer_iovec structures that it actually used. Otherwise, it returns the number that it would need in order to give what you asked for.
+
+When ptr is NULL, evbuffer_peek() starts at the beginning of the buffer. Otherwise, it starts at the pointer given in ptr.
+
+```c++
+{
+    /* Let's look at the first two chunks of buf, and write them to stderr. */
+    int n, i;
+    struct evbuffer_iovec v[2];
+    n = evbuffer_peek(buf, -1, NULL, v, 2);
+    for (i=0; i<n; ++i) { /* There might be less than two chunks available. */
+        fwrite(v[i].iov_base, 1, v[i].iov_len, stderr);
+    }
+}
+
+{
+    /* Let's send the first 4906 bytes to stdout via write. */
+    int n, i, r;
+    struct evbuffer_iovec *v;
+    size_t written = 0;
+
+    /* determine how many chunks we need. */
+    n = evbuffer_peek(buf, 4096, NULL, NULL, 0);
+    /* Allocate space for the chunks.  This would be a good time to use
+       alloca() if you have it. */
+    v = malloc(sizeof(struct evbuffer_iovec)*n);
+    /* Actually fill up v. */
+    n = evbuffer_peek(buf, 4096, NULL, v, n);
+    for (i=0; i<n; ++i) {
+        size_t len = v[i].iov_len;
+        if (written + len > 4096)
+            len = 4096 - written;
+        r = write(1 /* stdout */, v[i].iov_base, len);
+        if (r<=0)
+            break;
+        /* We keep track of the bytes written separately; if we don't,
+           we may write more than 4096 bytes if the last chunk puts
+           us over the limit. */
+        written += len;
+    }
+    free(v);
+}
+
+{
+    /* Let's get the first 16K of data after the first occurrence of the
+       string "start\n", and pass it to a consume() function. */
+    struct evbuffer_ptr ptr;
+    struct evbuffer_iovec v[1];
+    const char s[] = "start\n";
+    int n_written;
+
+    ptr = evbuffer_search(buf, s, strlen(s), NULL);
+    if (ptr.pos == -1)
+        return; /* no start string found. */
+
+    /* Advance the pointer past the start string. */
+    if (evbuffer_ptr_set(buf, &ptr, strlen(s), EVBUFFER_PTR_ADD) < 0)
+        return; /* off the end of the string. */
+
+    while (n_written < 16*1024) {
+        /* Peek at a single chunk. */
+        if (evbuffer_peek(buf, -1, &ptr, v, 1) < 1)
+            break;
+        /* Pass the data to some user-defined consume function */
+        consume(v[0].iov_base, v[0].iov_len);
+        n_written += v[0].iov_len;
+
+        /* Advance the pointer so we see the next chunk next time. */
+        if (evbuffer_ptr_set(buf, &ptr, v[0].iov_len, EVBUFFER_PTR_ADD)<0)
+            break;
+    }
+}
+```
+Note that: 
+
+- Modifying the data pointed to by the evbuffer_iovec can result in undefined behavior.
+- If any function is called that modifies the evbuffer, the pointers that evbuffer_peek() yields may become invalid.
+- If your evbuffer could be used in multiple threads, make sure to lock it with evbuffer_lock() before you call evbuffer_peek(), and unlock it once you are done using the extents that evbuffer_peek() gave you.
+
+### Adding data to an evbuffer directly
+
+Sometimes you want to insert data info an evbuffer directly, without first writing it into a character array and then copying it in with evbuffer_add(). There are an advanced pair of functions you can use to do this: evbuffer_reserve_space() and evbuffer_commit_space(). As with evbuffer_peek(), these functions use the evbuffer_iovec structure to provide direct access to memory inside the evbuffer.
+
+```c++
+int evbuffer_reserve_space(struct evbuffer *buf, ev_ssize_t size,
+    struct evbuffer_iovec *vec, int n_vecs);
+int evbuffer_commit_space(struct evbuffer *buf,
+    struct evbuffer_iovec *vec, int n_vecs);
+```
+
+The evbuffer_reserve_space() function gives you pointers to space inside the evbuffer. It expands the buffer as necessary to give you at least size bytes. The pointers to these extents, and their lengths, will be stored in the array of vectors you pass in with vec; n_vec is the length of this array.
+
+The value of n_vec must be at least 1. If you provide only one vector, then Libevent will ensure that you have all the contiguous space you requested in a single extent, but it may have to rearrange the buffer or waste memory in order to do so. For better performance, provide at least 2 vectors. The function returns the number of provided vectors that it needed for the space you requested.
+
+The data that you write into these vectors is not part of the buffer until you call evbuffer_commit_space(), which actually makes the data you wrote count as being in the buffer. If you want to commit less space than you asked for, you can decrease the iov_len field in any of the evbuffer_iovec structures you were given. You can also pass back fewer vectors than you were given. The evbuffer_commit_space() function returns 0 on success and -1 on failure.
+
+#### Notes and Caveats
+- Calling any function that rearranges the evbuffer or adds data to it evbuffer will invalidate the pointers you got from evbuffer_reserve_space().
+- In the current implementation, evbuffer_reserve_space() never uses more than two vectors, no matter how many the user supplies. This may change in a future release.
+- It is safe to call evbuffer_reserve_space() any number of times.
+- If your evbuffer could be used in multiple threads, make sure to lock it with evbuffer_lock() before you call evbuffer_reserve_space(), and unlock it once you commit.
+
+```c++
+/* Suppose we want to fill a buffer with 2048 bytes of output from a
+   generate_data() function, without copying. */
+struct evbuffer_iovec v[2];
+int n, i;
+size_t n_to_add = 2048;
+
+/* Reserve 2048 bytes.*/
+n = evbuffer_reserve_space(buf, n_to_add, v, 2);
+if (n<=0)
+   return; /* Unable to reserve the space for some reason. */
+
+for (i=0; i<n && n_to_add > 0; ++i) {
+   size_t len = v[i].iov_len;
+   if (len > n_to_add) /* Don't write more than n_to_add bytes. */
+      len = n_to_add;
+   if (generate_data(v[i].iov_base, len) < 0) {
+      /* If there was a problem during data generation, we can just stop
+         here; no data will be committed to the buffer. */
+      return;
+   }
+   /* Set iov_len to the number of bytes we actually wrote, so we
+      don't commit too much. */
+   v[i].iov_len = len;
+}
+
+/* We commit the space here.  Note that we give it 'i' (the number of
+   vectors we actually used) rather than 'n' (the number of vectors we
+   had available. */
+if (evbuffer_commit_space(buf, v, i) < 0)
+   return; /* Error committing */
+```
+
+The following code shows a bad example:
+
+```c++
+/* Here are some mistakes you can make with evbuffer_reserve().
+   DO NOT IMITATE THIS CODE. */
+struct evbuffer_iovec v[2];
+
+{
+  /* Do not use the pointers from evbuffer_reserve_space() after
+     calling any functions that modify the buffer. */
+  evbuffer_reserve_space(buf, 1024, v, 2);
+  evbuffer_add(buf, "X", 1);
+  /* WRONG: This next line won't work if evbuffer_add needed to rearrange
+     the buffer's contents.  It might even crash your program. Instead,
+     you add the data before calling evbuffer_reserve_space. */
+  memset(v[0].iov_base, 'Y', v[0].iov_len-1);
+  evbuffer_commit_space(buf, v, 1);
+}
+
+{
+  /* Do not modify the iov_base pointers. */
+  const char *data = "Here is some data";
+  evbuffer_reserve_space(buf, strlen(data), v, 1);
+  /* WRONG: The next line will not do what you want.  Instead, you
+     should _copy_ the contents of data into v[0].iov_base. */
+  v[0].iov_base = (char*) data;
+  v[0].iov_len = strlen(data);
+  /* In this case, evbuffer_commit_space might give an error if you're
+     lucky */
+  evbuffer_commit_space(buf, v, 1);
+}
+```
+
+### Network IO with evbuffers
+
+The most common use case for evbuffers in Libevent is network IO. The interface for performing network IO on an evbuffer is:
+
+```c++
+int evbuffer_write(struct evbuffer *buffer, evutil_socket_t fd);
+int evbuffer_write_atmost(struct evbuffer *buffer, evutil_socket_t fd,
+        ev_ssize_t howmuch);
+int evbuffer_read(struct evbuffer *buffer, evutil_socket_t fd, int howmuch);
+```
+
+The evbuffer_read() function reads up to howmuch bytes from the socket fd onto the end of buffer. It returns a number of bytes read on success, 0 on EOF, and -1 on an error. Note that the error may indicate that a nonblocking operation would not succeed; you need to check the error code for EAGAIN (or WSAEWOULDBLOCK on Windows). If howmuch is negative, evbuffer_read() tries to guess how much to read itself.
+
+The evbuffer_write_atmost() function tries to write up to howmuch bytes from the front of buffer onto the socket fd. It returns a number of bytes written on success, and -1 on failure. As with evbuffer_read(), you need to check the error code to see whether the error is real, or just indicates that nonblocking IO could not be completed immediately. If you give a negative value for howmuch, we try to write the entire contents of the buffer.
+
+Calling evbuffer_write() is the same as calling evbuffer_write_atmost() with a negative howmuch argument: it attempts to flush as much of the buffer as it can.
+
+On Unix, these functions should work on any file descriptor that supports read and write. On Windows, only sockets are supported.
+
+Note that when you are using bufferevents, you do not need to call these IO functions; the bufferevents code does it for you.
+
+### Evbuffers and callbacks
+
+Users of evbuffers frequently want to know when data is added to or removed from an evbuffer. To support this, Libevent provides a generic evbuffer callback mechanism.
+
+```c++
+struct evbuffer_cb_info {
+        size_t orig_size;
+        size_t n_added;
+        size_t n_deleted;
+};
+
+typedef void (*evbuffer_cb_func)(struct evbuffer *buffer,
+    const struct evbuffer_cb_info *info, void *arg);
+```
+
+An evbuffer callback is invoked whenever data is added to or removed from the evbuffer. It receives the buffer, a pointer to an evbuffer_cb_info structure, and a user-supplied argument. The evbuffer_cb_info structure’s orig_size field records how many bytes there were on the buffer before its size changed; its n_added field records how many bytes were added to the buffer, and its n_deleted field records how many bytes were removed.
+
+```c++
+struct evbuffer_cb_entry;
+struct evbuffer_cb_entry *evbuffer_add_cb(struct evbuffer *buffer,
+    evbuffer_cb_func cb, void *cbarg);
+```
+
+The evbuffer_add_cb() function adds a callback to an evbuffer, and returns an opaque pointer that can later be used to refer to this particular callback instance. The cb argument is the function that will be invoked, and the cbarg is the user-supplied pointer to pass to the function.
+
+You can have multiple callbacks set on a single evbuffer. Adding a new callback does not remove old callbacks.
+
+```c++
+#include <event2/buffer.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/* Here's a callback that remembers how many bytes we have drained in
+   total from the buffer, and prints a dot every time we hit a
+   megabyte. */
+struct total_processed {
+    size_t n;
+};
+void count_megabytes_cb(struct evbuffer *buffer,
+    const struct evbuffer_cb_info *info, void *arg)
+{
+    struct total_processed *tp = arg;
+    size_t old_n = tp->n;
+    int megabytes, i;
+    tp->n += info->n_deleted;
+    megabytes = ((tp->n) >> 20) - (old_n >> 20);
+    for (i=0; i<megabytes; ++i)
+        putc('.', stdout);
+}
+
+void operation_with_counted_bytes(void)
+{
+    struct total_processed *tp = malloc(sizeof(*tp));
+    struct evbuffer *buf = evbuffer_new();
+    tp->n = 0;
+    evbuffer_add_cb(buf, count_megabytes_cb, tp);
+
+    /* Use the evbuffer for a while.  When we're done: */
+    evbuffer_free(buf);
+    free(tp);
+}
+```
+
+Note in passing that freeing a nonempty evbuffer does not count as draining data from it, and that freeing an evbuffer does not free the user-supplied data pointer for its callbacks.
+
+If you don’t want a callback to be permanently active on a buffer, you can remove it (to make it gone for good), or disable it (to turn it off for a while):
+
+```c++
+int evbuffer_remove_cb_entry(struct evbuffer *buffer,
+    struct evbuffer_cb_entry *ent);
+int evbuffer_remove_cb(struct evbuffer *buffer, evbuffer_cb_func cb,
+    void *cbarg);
+
+#define EVBUFFER_CB_ENABLED 1
+int evbuffer_cb_set_flags(struct evbuffer *buffer,
+                          struct evbuffer_cb_entry *cb,
+                          ev_uint32_t flags);
+int evbuffer_cb_clear_flags(struct evbuffer *buffer,
+                          struct evbuffer_cb_entry *cb,
+                          ev_uint32_t flags);
+```
+
+You can remove a callback either by the evbuffer_cb_entry you got when you added it, or by the callback and pointer you used. The evbuffer_remove_cb() functions return 0 on success and -1 on failure.
+
+The evbuffer_cb_set_flags() function and the evbuffer_cb_clear_flags() function make a given flag be set or cleared on a given callback respectively. Right now, only one user-visible flag is supported: EVBUFFER_CB_ENABLED. The flag is set by default. When it is cleared, modifications to the evbuffer do not cause this callback to get invoked.
+
+```c++
+int evbuffer_defer_callbacks(struct evbuffer *buffer, struct event_base *base);
+```
+
+As with bufferevent callbacks, you can cause evbuffer callbacks to not run immediately when the evbuffer is changed, but rather to be deferred and run as part of the event loop of a given event base. This can be helpful if you have multiple evbuffers whose callbacks potentially cause data to be added and removed from one another, and you want to avoid smashing the stack.
+
+If an evbuffer’s callbacks are deferred, then when they are finally invoked, they may summarize the results for multiple operations.
+
+Like bufferevents, evbuffers are internally reference-counted, so that it is safe to free an evbuffer even if it has deferred callbacks that have not yet executed.
+
+This entire callback system was new in Libevent 2.0.1-alpha. The evbuffer_cb_(set|clear)_flags() functions have existed with their present interfaces since 2.0.2-alpha.
+
+### Avoiding data copies with evbuffer-based IO
+
+Really fast network programming often calls for doing as few data copies as possible. Libevent provides some mechanisms to help out with this.
+
+```c++
+typedef void (*evbuffer_ref_cleanup_cb)(const void *data,
+    size_t datalen, void *extra);
+
+int evbuffer_add_reference(struct evbuffer *outbuf,
+    const void *data, size_t datlen,
+    evbuffer_ref_cleanup_cb cleanupfn, void *extra);
+```
+
+This function adds a piece of data to the end of an evbuffer by reference. No copy is performed: instead, the evbuffer just stores a pointer to the datlen bytes stored at data. Therefore, the pointer must remain valid for as long as the evbuffer is using it. When the evbuffer no longer needs data, it will call the provided "cleanupfn" function with the provided "data" pointer, "datlen" value, and "extra" pointer as arguments. This function returns 0 on success, -1 on failure.
+
+```c++
+#include <event2/buffer.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* In this example, we have a bunch of evbuffers that we want to use to
+   spool a one-megabyte resource out to the network.  We do this
+   without keeping any more copies of the resource in memory than
+   necessary. */
+
+#define HUGE_RESOURCE_SIZE (1024*1024)
+struct huge_resource {
+    /* We keep a count of the references that exist to this structure,
+       so that we know when we can free it. */
+    int reference_count;
+    char data[HUGE_RESOURCE_SIZE];
+};
+
+struct huge_resource *new_resource(void) {
+    struct huge_resource *hr = malloc(sizeof(struct huge_resource));
+    hr->reference_count = 1;
+    /* Here we should fill hr->data with something.  In real life,
+       we'd probably load something or do a complex calculation.
+       Here, we'll just fill it with EEs. */
+    memset(hr->data, 0xEE, sizeof(hr->data));
+    return hr;
+}
+
+void free_resource(struct huge_resource *hr) {
+    --hr->reference_count;
+    if (hr->reference_count == 0)
+        free(hr);
+}
+
+static void cleanup(const void *data, size_t len, void *arg) {
+    free_resource(arg);
+}
+
+/* This is the function that actually adds the resource to the
+   buffer. */
+void spool_resource_to_evbuffer(struct evbuffer *buf,
+    struct huge_resource *hr)
+{
+    ++hr->reference_count;
+    evbuffer_add_reference(buf, hr->data, HUGE_RESOURCE_SIZE,
+        cleanup, hr);
+}
+```
+
+### Adding a file to an evbuffer
+
+Some operating systems provide ways to write files to the network without ever copying the data to userspace. You can access these mechanisms, where available, with the simple interface:
+
+```c++
+int evbuffer_add_file(struct evbuffer *output, int fd, ev_off_t offset,
+    size_t length);
+```
+
+The evbuffer_add_file() function assumes that it has an open file descriptor (not a socket, for once!) fd that is available for reading. It adds length bytes from the file, starting at position offset, to the end of output. It returns 0 on success, or -1 on failure.
+
+#### WARNING
+
+In Libevent 2.0.x, the only reliable thing to do with data added this way was to send it to the network with evbuffer_write*(), drain it with evbuffer_drain(), or move it to another evbuffer with evbuffer_*_buffer(). You couldn’t reliably extract it from the buffer with evbuffer_remove(), linearize it with evbuffer_pullup(), and so on. Libevent 2.1.x tries to fix this limitation.
+
+If your operating system supports splice() or sendfile(), Libevent will use it to send data from fd to the network directly when call evbuffer_write(), without copying the data to user RAM at all. If splice/sendfile don’t exist, but you have mmap(), Libevent will mmap the file, and your kernel can hopefully figure out that it never needs to copy the data to userspace. Otherwise, Libevent will just read the data from disk into RAM.
+
+The file descriptor will be closed after the data is flushed from the evbuffer, or when the evbuffer is freed. If that’s not what you want, or if you want finer-grained control over the file, see the file_segment functionality below.
+
+### Fine-grained control with file segments
+
+The evbuffer_add_file() interface is inefficient for adding the same file more than once, since it takes ownership of the file.
+
+```c++
+struct evbuffer_file_segment;
+
+struct evbuffer_file_segment *evbuffer_file_segment_new(
+        int fd, ev_off_t offset, ev_off_t length, unsigned flags);
+void evbuffer_file_segment_free(struct evbuffer_file_segment *seg);
+int evbuffer_add_file_segment(struct evbuffer *buf,
+    struct evbuffer_file_segment *seg, ev_off_t offset, ev_off_t length);
+```
+
+The evbuffer_file_segment_new() function creates and returns a new evbuffer_file_segment object to represent a piece of the underlying file stored in fd that begins at offset and contains length bytes. On error, it return NULL.
+
+File segments are implemented with sendfile, splice, mmap, CreateFileMapping, or malloc()-and-read(), as appropriate. They’re created using the most lightweight supported mechanism, and transition to a heavier-weight mechanism as needed. (For example, if your OS supports sendfile and mmap, then a file segment can be implemented using only sendfile, until you try to actually inspect its contents. At that point, it needs to be mmap()ed.) You can control the fine-grained behavior of a file segment with these flags:
+
+- EVBUF_FS_CLOSE_ON_FREE If this flag is set, freeing the file segment with evbuffer_file_segment_free() will close the underlying file.
+- EVBUF_FS_DISABLE_MMAP If this flag is set, the file_segment will never use a mapped-memory style backend (CreateFileMapping, mmap) for this file, even if that would be appropriate.
+- EVBUF_FS_DISABLE_SENDFILE If this flag is set, the file_segment will never use a sendfile-style backend (sendfile, splice) for this file, even if that would be appropriate.
+- EVBUF_FS_DISABLE_LOCKING If this flag is set, no locks are allocated for the file segment: it won’t be safe to use it in any way where it can be seen by multiple threads.
+
+Once you have an evbuffer_file_segment, you can add some or all of it to an evbuffer using evbuffer_add_file_segment(). The offset argument here refers to an offset within the file segment, not to an offset within the file itself.
+
+When you no longer want to use a file segment, you can free it with evbuffer_file_segment_free(). The actual storage won’t be released until no evbuffer any longer holds a reference to a piece of the file segment.
+
+```c++
+typedef void (*evbuffer_file_segment_cleanup_cb)(
+    struct evbuffer_file_segment const *seg, int flags, void *arg);
+
+void evbuffer_file_segment_add_cleanup_cb(struct evbuffer_file_segment *seg,
+        evbuffer_file_segment_cleanup_cb cb, void *arg);
+```
+
+You can add a callback function to a file segment that will be invoked when the final reference to the file segment has been released and the file segment is about to get freed. This callback must not attempt to revivify the file segment, add it to any buffers, or so on.
+
+### Adding an evbuffer to another by reference
+
+You can also add one evbuffer’s to another by reference: rather than removing the contents of one buffer and adding them to another, you give one evbuffer a reference to another, and it behaves as though you had copied all the bytes in.
+
+```c++
+int evbuffer_add_buffer_reference(struct evbuffer *outbuf,
+    struct evbuffer *inbuf);
+```
+
+The evbuffer_add_buffer_reference() function behaves as though you had copied all the data from outbuf to inbuf, but does not perform any unnecessary copies. It returns 0 if successful and -1 on failure.
+
+Note that subsequent changes to the contents of inbuf are not reflected in outbuf: this function adds the current contents of the evbuffer by reference, not the evbuffer itself.
+
+Note also that you cannot nest buffer references: a buffer that has already been the outbuf of one evbuffer_add_buffer_reference call cannot be the inbuf of another.
+
+### Making an evbuffer add- or remove-only
+
+```c++
+int evbuffer_freeze(struct evbuffer *buf, int at_front);
+int evbuffer_unfreeze(struct evbuffer *buf, int at_front);
+```
+
+You can use these functions to temporarily disable changes to the front or end of an evbuffer. The bufferevent code uses them internally to prevent accidental modifications to the front of an output buffer, or the end of an input buffer.
+
+## Connection listeners: accepting TCP connections
+
+The evconnlistener mechanism gives you a way to listen for and accept incoming TCP connections.
+
+All the functions and types in this section are declared in event2/listener.h. They first appeared in Libevent 2.0.2-alpha, unless otherwise noted.
+
+### Creating or freeing an evconnlistener
+
+```c++
+struct evconnlistener *evconnlistener_new(struct event_base *base,
+    evconnlistener_cb cb, void *ptr, unsigned flags, int backlog,
+    evutil_socket_t fd);
+struct evconnlistener *evconnlistener_new_bind(struct event_base *base,
+    evconnlistener_cb cb, void *ptr, unsigned flags, int backlog,
+    const struct sockaddr *sa, int socklen);
+void evconnlistener_free(struct evconnlistener *lev);
+```
+
+The two evconnlistener_new*() functions both allocate and return a new connection listener object. A connection listener uses an event_base to note when there is a new TCP connection on a given listener socket. When a new connection arrives, it invokes the callback function you give it.
+
+In both functions, the base parameter is an event_base that the listener should use to listen for connections. The cb function is a callback to invoke when a new connection is received; if cb is NULL, the listener is treated as disabled until a callback is set. The ptr pointer will be passed to the callback. The flags argument controls the behavior of the listener — more on this below. The backlog parameter controls the maximum number of pending connections that the network stack should allow to wait in a not-yet-accepted state at any time; see documentation for your system’s listen() function for more details. If backlog is negative, Libevent tries to pick a good value for the backlog; if it is zero, Libevent assumes that you have already called listen() on the socket you are providing it.
+
+The functions differ in how they set up their listener socket. The evconnlistener_new() function assumes that you have already bound a socket to the port you want to listen on, and that you’re passing the socket in as fd. If you want Libevent to allocate and bind to a socket on its own, call evconnlistener_new_bind(), and pass in the sockaddr you want to bind to, and its length.
+
+When using evconnlistener_new, make sure your listening socket is in non-blocking mode by using evutil_make_socket_nonblocking or by manually setting the correct socket option. When the listening socket is left in blocking mode, undefined behavior might occur.
+
+To free a connection listener, pass it to evconnlistener_free().
+
+#### Recognized flags
+These are the flags you can pass to the flags argument of the evconnlistener_new() function. You can give any number of these, OR’d together.
+
+- LEV_OPT_LEAVE_SOCKETS_BLOCKING By default, when the connection listener accepts a new incoming socket, it sets it up to be nonblocking so that you can use it with the rest of Libevent. Set this flag if you do not want this behavior.
+- LEV_OPT_CLOSE_ON_FREE If this option is set, the connection listener closes its underlying socket when you free it.
+- LEV_OPT_CLOSE_ON_EXEC If this option is set, the connection listener sets the close-on-exec flag on the underlying listener socket. See your platform documentation for fcntl and FD_CLOEXEC for more information.
+- LEV_OPT_REUSEABLE By default on some platforms, once a listener socket is closed, no other socket can bind to the same port until a while has passed. Setting this option makes Libevent mark the socket as reusable, so that once it is closed, another socket can be opened to listen on the same port.
+- LEV_OPT_THREADSAFE Allocate locks for the listener, so that it’s safe to use it from multiple threads. New in Libevent 2.0.8-rc.
+- LEV_OPT_DISABLED Initialize the listener to be disabled, not enabled. You can turn it on manually with evconnlistener_enable(). New in Libevent 2.1.1-alpha.
+- LEV_OPT_DEFERRED_ACCEPT If possible, tell the kernel to not announce sockets as having been accepted until some data has been received on them, and they are ready for reading. Do not use this option if your protocol doesn’t start out with the client transmitting data, since in that case this option will sometimes cause the kernel to never tell you about the connection. Not all operating systems support this option: on ones that don’t, this option has no effect. New in Libevent 2.1.1-alpha.
+
+#### The connection listener callback
+
+```c++
+typedef void (*evconnlistener_cb)(struct evconnlistener *listener,
+    evutil_socket_t sock, struct sockaddr *addr, int len, void *ptr);
+```
+
+When a new connection is received, the provided callback function is invoked. The listener argument is the connection listener that received the connection. The sock argument is the new socket itself. The addr and len arguments are the address from which the connection was received and the length of that address respectively. The ptr argument is the user-supplied pointer that was passed to evconnlistener_new().
+
+### Enabling and disabling an evconnlistener
+
+```c++
+int evconnlistener_disable(struct evconnlistener *lev);
+int evconnlistener_enable(struct evconnlistener *lev);
+```
+
+These functions temporarily disable or reenable listening for new connections.
+
+### Adjusting an evconnlistener’s callback
+
+```c++
+void evconnlistener_set_cb(struct evconnlistener *lev,
+    evconnlistener_cb cb, void *arg);
+```
+
+This function adjusts the callback and callback argument of an existing evconnlistener.
+
+### Inspecting an evconnlistener
+
+```c++
+evutil_socket_t evconnlistener_get_fd(struct evconnlistener *lev);
+struct event_base *evconnlistener_get_base(struct evconnlistener *lev);
+```
+
+These functions return a listener’s associated socket and event_base respectively.
+
+### Detecting errors
+
+You can set an error callback that gets informed whenever an accept() call fails on the listener. This can be important to do if you’re facing an error condition that would lock the process unless you addressed it.
+
+```c++
+typedef void (*evconnlistener_errorcb)(struct evconnlistener *lis, void *ptr);
+void evconnlistener_set_error_cb(struct evconnlistener *lev,
+    evconnlistener_errorcb errorcb);
+```
+
+If you use evconnlistener_set_error_cb() to set an error callback on a listener, the callback will be invoked every time that an error occurs on the listener. It will receive the listener as its first argument, and the argument passed as ptr to evconnlistener_new() as its second argument.
+
+### Example code: an echo server.
+
+```c++
+#include <event2/listener.h>
+#include <event2/bufferevent.h>
+#include <event2/buffer.h>
+
+#include <arpa/inet.h>
+
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <errno.h>
+
+static void
+echo_read_cb(struct bufferevent *bev, void *ctx)
+{
+        /* This callback is invoked when there is data to read on bev. */
+        struct evbuffer *input = bufferevent_get_input(bev);
+        struct evbuffer *output = bufferevent_get_output(bev);
+
+        /* Copy all the data from the input buffer to the output buffer. */
+        evbuffer_add_buffer(output, input);
+}
+
+static void
+echo_event_cb(struct bufferevent *bev, short events, void *ctx)
+{
+        if (events & BEV_EVENT_ERROR)
+                perror("Error from bufferevent");
+        if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+                bufferevent_free(bev);
+        }
+}
+
+static void
+accept_conn_cb(struct evconnlistener *listener,
+    evutil_socket_t fd, struct sockaddr *address, int socklen,
+    void *ctx)
+{
+        /* We got a new connection! Set up a bufferevent for it. */
+        struct event_base *base = evconnlistener_get_base(listener);
+        struct bufferevent *bev = bufferevent_socket_new(
+                base, fd, BEV_OPT_CLOSE_ON_FREE);
+
+        bufferevent_setcb(bev, echo_read_cb, NULL, echo_event_cb, NULL);
+
+        bufferevent_enable(bev, EV_READ|EV_WRITE);
+}
+
+static void
+accept_error_cb(struct evconnlistener *listener, void *ctx)
+{
+        struct event_base *base = evconnlistener_get_base(listener);
+        int err = EVUTIL_SOCKET_ERROR();
+        fprintf(stderr, "Got an error %d (%s) on the listener. "
+                "Shutting down.\n", err, evutil_socket_error_to_string(err));
+
+        event_base_loopexit(base, NULL);
+}
+
+int
+main(int argc, char **argv)
+{
+        struct event_base *base;
+        struct evconnlistener *listener;
+        struct sockaddr_in sin;
+
+        int port = 9876;
+
+        if (argc > 1) {
+                port = atoi(argv[1]);
+        }
+        if (port<=0 || port>65535) {
+                puts("Invalid port");
+                return 1;
+        }
+
+        base = event_base_new();
+        if (!base) {
+                puts("Couldn't open event base");
+                return 1;
+        }
+
+        /* Clear the sockaddr before using it, in case there are extra
+         * platform-specific fields that can mess us up. */
+        memset(&sin, 0, sizeof(sin));
+        /* This is an INET address */
+        sin.sin_family = AF_INET;
+        /* Listen on 0.0.0.0 */
+        sin.sin_addr.s_addr = htonl(0);
+        /* Listen on the given port. */
+        sin.sin_port = htons(port);
+
+        listener = evconnlistener_new_bind(base, accept_conn_cb, NULL,
+            LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE, -1,
+            (struct sockaddr*)&sin, sizeof(sin));
+        if (!listener) {
+                perror("Couldn't create listener");
+                return 1;
+        }
+        evconnlistener_set_error_cb(listener, accept_error_cb);
+
+        event_base_dispatch(base);
+        return 0;
+}
+```
