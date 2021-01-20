@@ -1095,7 +1095,7 @@ All current public Libevent headers are installed under the `event2` directory. 
 
 Before you can use any interesting Libevent function, you need to allocate one or more event_base structures. Each event_base structure holds a set of events and can poll to determine which events are active.
 
-If an event_base is set up to use locking, it is safe to access it between multiple threads. Its loop can only be run in a single thread, however. If you want to have multiple threads polling for IO, you need to have an event_base for each thread.
+If an event_base is set up to use locking, it is safe to access it between multiple threads. Its loop can only be run in a single thread, however. *If you want to have multiple threads polling for IO, you need to have an event_base for each thread.*
 
 Each event_base has a "method", or a backend that it uses to determine which events are ready. The recognized methods are:
 
@@ -1162,13 +1162,13 @@ Calling `event_config_avoid_method` tells Libevent to avoid a specific available
 
 The recognized feature values for `event_config_require_features` are:
 
-- `EV_FEATURE_ET`: Requires a backend method that supports edge-triggered IO.
-- `EV_FEATURE_O1`: Requires a backend method where adding or deleting a single event, or having a single event become active, is an O(1) operation.
-- `EV_FEATURE_FDS`: Requires a backend method that can support arbitrary file descriptor types, and not just sockets.
+- `EV_FEATURE_ET`: *Requires a backend method that supports edge-triggered IO.*
+- `EV_FEATURE_O1`: *Requires a backend method where adding or deleting a single event, or having a single event become active, is an O(1) operation.*
+- `EV_FEATURE_FDS`: *Requires a backend method that can support arbitrary file descriptor types, and not just sockets.*
 
 The recognized option values for `event_config_set_flag()` are:
 
-- `EVENT_BASE_FLAG_NOLOCK`: Do not allocate locks for the event_base. Setting this option may save a little time for locking and releasing the event_base, but will make it unsafe and nonfunctional to access it from multiple threads.
+- `EVENT_BASE_FLAG_NOLOCK`: *Do not allocate locks for the event_base.* Setting this option may save a little time for locking and releasing the event_base, but will make it unsafe and nonfunctional to access it from multiple threads.
 - `EVENT_BASE_FLAG_IGNORE_ENV`: Do not check the `EVENT_*` environment variables when picking which backend method to use. Think hard before using this flag: it can make it harder for users to debug the interactions between your program and Libevent.
 - `EVENT_BASE_FLAG_NO_CACHE_TIME`: Instead of checking the current time every time the event loop is ready to run timeout callbacks, check it after every timeout callback. This can use more CPU than you necessarily intended, so watch out!
 - `EVENT_BASE_FLAG_EPOLL_USE_CHANGELIST`: Tells Libevent that, if it decides to use the epoll backend, it is safe to use the faster "changelist"-based backend. The epoll-changelist backend can avoid needless system calls in cases where the same fd has its status modified more than once between calls to the backend's dispatch function, but it also trigger a kernel bug that causes erroneous results if you give Libevent any fds cloned by `dup()` or its variants. This flag has no effect if you use a backend other than epoll. You can also turn on the epoll-changelist option by setting the `EVENT_EPOLL_USE_CHANGELIST` environment variable.
@@ -1184,7 +1184,7 @@ int event_config_set_max_dispatch_interval(struct event_config *cfg,
     int min_priority);
 ```
 
-This function prevents priority inversion by limiting how many low-priority event callbacks can be invoked before checking for more high-priority events. If `max_interval` is non-null, the event loop checks the time after each callback, and re-scans for high-priority events if `max_interval` has passed. If `max_callbacks` is nonnegative, the event loop also checks for more events after `max_callbacks` callbacks have been invoked. These rules apply to any event of `min_priority` or higher. (I don't want to waste too much time on low-priority callbacks.)
+*This function prevents priority inversion by limiting how many low-priority event callbacks can be invoked before checking for more high-priority events.* If `max_interval` is non-null, the event loop checks the time after each callback, and re-scans for high-priority events if `max_interval` has passed. If `max_callbacks` is nonnegative, the event loop also checks for more events after `max_callbacks` callbacks have been invoked. These rules apply to any event of `min_priority` or higher. (I don't want to waste too much time on low-priority callbacks.)
 
 The following code prefers edge-triggered backends:
 
@@ -1295,7 +1295,7 @@ if (!base) {
 
 These functions are defined in `<event2/event.h>`. The `event_base_get_method()` call was first available in Libevent 1.4.3. The others first appeared in Libevent 2.0.1-alpha.
 
-### Deallocating an event_base
+#### Deallocating an event_base
 
 When you are finished with an event_base, you can deallocate it with `event_base_free()`.
 
@@ -1315,11 +1315,11 @@ Libevent supports setting multiple priorities on an event. By default, though, a
 int event_base_priority_init(struct event_base *base, int n_priorities);
 ```
 
-This function returns 0 on success and -1 on failure. The base argument is the event_base to modify, and `n_priorities` is the number of priorities to support. It must be at least 1. The available priorities for new events will be numbered from 0 (most important) to `n_priorities`-1 (least important).
+This function returns 0 on success and -1 on failure. The `base` argument is the event_base to modify, and `n_priorities` is the number of priorities to support. It must be at least 1. The available priorities for new events will be numbered from 0 (most important) to `n_priorities`-1 (least important).
 
 There is a constant, `EVENT_MAX_PRIORITIES`, that sets the upper bound on the value of `n_priorities`. It is an error to call this function with a higher value for `n_priorities`.
 
-You must call this function before any events become active. It is best to call it immediately after creating the event_base.
+*You must call this function before any events become active. It is best to call it immediately after creating the event_base.*
 
 To find the number of priorities currently supported by a base, you can call `event_base_getnpriorities()`.
 
@@ -1390,7 +1390,7 @@ By default, the `event_base_loop()` function *runs an event_base until there are
 
 You can change the behavior of `event_base_loop()` by setting one or more flags in its flags argument. *If `EVLOOP_ONCE` is set, then the loop will wait until some events become active, then run active events until there are no more to run, then return*. *If `EVLOOP_NONBLOCK` is set, then the loop will not wait for events to trigger: it will only check whether any events are ready to trigger immediately, and run their callbacks if so*.
 
-*Ordinarily, the loop will exit as soon as it has no pending or active events*. You can override this behavior by passing the `EVLOOP_NO_EXIT_ON_EMPTY flag` --- for example, if you're going to be adding events from some other thread. If you do set `EVLOOP_NO_EXIT_ON_EMPTY`, the loop will keep running until somebody calls `event_base_loopbreak()`, or calls `event_base_loopexit()`, or an error occurs.
+*Ordinarily, the loop will exit as soon as it has no pending or active events*. You can override this behavior by passing the `EVLOOP_NO_EXIT_ON_EMPTY flag` --- for example, if you're going to be adding events from some other thread. *If you do set `EVLOOP_NO_EXIT_ON_EMPTY`, the loop will keep running until somebody calls `event_base_loopbreak()`, or calls `event_base_loopexit()`, or an error occurs.*
 
 When it is done, `event_base_loop()` returns 0 if it exited normally, -1 if it exited because of some unhandled error in the backend, and 1 if it exited because there were no more pending or active events.
 
@@ -1442,7 +1442,7 @@ The `event_base_loopexit()` function tells an event_base to stop looping after a
 
 The `event_base_loopbreak()` function tells the event_base to exit its loop immediately. It differs from `event_base_loopexit(base, NULL)` in that *if the event_base is currently running callbacks for any active events, it will exit immediately after finishing **the one** it's currently processing*.
 
-Note also that `event_base_loopexit(base,NULL)` and `event_base_loopbreak(base)` act differently when no event loop is running: loopexit schedules the next instance of the event loop to stop right after the next round of callbacks are run (as if it had been invoked with `EVLOOP_ONCE`) whereas loopbreak only stops a currently running loop, and has no effect if the event loop isn't running.
+Note also that `event_base_loopexit(base,NULL)` and `event_base_loopbreak(base)` act differently when no event loop is running: `loopexit` schedules the next instance of the event loop to stop right after the next round of callbacks are run (as if it had been invoked with `EVLOOP_ONCE`) whereas `loopbreak` only stops a currently running loop, and has no effect if the event loop isn't running.
 
 Both of these methods return 0 on success and -1 on failure.
 
@@ -1499,7 +1499,7 @@ void run_base_with_ticks(struct event_base *base)
   }
 }
 ```
-Sometimes you may want to tell whether your call to `event_base_dispatch()` or `event_base_loop()` exited normally, or because of a call to `event_base_loopexit()` or `event_base_break()`. You can use these functions to tell whether loopexit or break was called:
+Sometimes you may want to tell whether your call to `event_base_dispatch()` or `event_base_loop()` exited normally, or because of a call to `event_base_loopexit()` or `event_base_break()`. You can use these functions to tell whether `loopexit` or `loopbreak `was called:
 
 ```c++
 int event_base_got_exit(struct event_base *base);
@@ -1512,7 +1512,7 @@ These functions are declared in `<event2/event.h>`. The `event_break_loopexit()`
 
 ### Re-checking for events
 
-Ordinarily, Libevent checks for events, then runs all the active events with the highest priority, then checks for events again, and so on. But sometimes you might want to stop Libevent right after the current callback has been run, and tell it to scan again. By analogy to `event_base_loopbreak()`, you can do this with the function `event_base_loopcontinue()`.
+Ordinarily, Libevent checks for events, then runs all the active events with the highest priority, then checks for events again, and so on. But sometimes you might want to stop Libevent right after the current callback has been run, and tell it to scan again (skip the remaining callbacks). By analogy to `event_base_loopbreak()`, you can do this with the function `event_base_loopcontinue()`.
 
 ```c++
 int event_base_loopcontinue(struct event_base *);
@@ -1611,7 +1611,7 @@ struct event *event_new(struct event_base *base, evutil_socket_t fd,
 void event_free(struct event *event);
 ```
 
-The `event_new()` function tries to allocate and construct a new event for use with base. The what argument is a set of the flags listed above. (Their semantics are described below.) If `fd` is nonnegative, it is the file that we'll observe for read or write events. When the event is active, Libevent will invoke the provided `cb` function, passing it as arguments: the file descriptor `fd`, a bitfield of all the events that triggered, and the value that was passed in for `arg` when the function was constructed.
+The `event_new()` function tries to allocate and construct a new event for use with `base`. The `what` argument is a set of the flags listed above. (Their semantics are described below.) If `fd` is nonnegative, it is the file that we'll observe for read or write events. When the event is active, Libevent will invoke the provided `cb` function, passing it as arguments: the file descriptor `fd`, a bitfield of all the events that triggered, and the value that was passed in for `arg` when the function was constructed.
 
 On an internal error, or invalid arguments, `event_new()` will return NULL.
 
@@ -1658,14 +1658,14 @@ The above functions are defined in `<event2/event.h>`, and first appeared in Lib
 
 #### The event flags
 
-- `EV_TIMEOUT`: This flag indicates an event that becomes active after a timeout elapses. The `EV_TIMEOUT`: flag is ignored when constructing an event: you can either set a timeout when you add the event, or not. It is set in the `what` argument to the callback function when a timeout has occurred.
+- `EV_TIMEOUT`: This flag indicates an event that becomes active after a timeout elapses. The `EV_TIMEOUT` flag is ignored when constructing an event: you can either set a timeout when you add the event, or not. It is set in the `what` argument to the callback function when a timeout has occurred.
 - `EV_READ`: This flag indicates an event that becomes active when the provided file descriptor is ready for reading.
 - `EV_WRITE`: This flag indicates an event that becomes active when the provided file descriptor is ready for writing.
 - `EV_SIGNAL`: Used to implement signal detection. See "Constructing signal events" below.
 - `EV_PERSIST`: Indicates that the event is persistent. See "About Event Persistence" below.
 - `EV_ET`: Indicates that the event should be edge-triggered, if the underlying event_base backend supports edge-triggered events. This affects the semantics of `EV_READ` and `EV_WRITE`.
 
-Since Libevent 2.0.1-alpha, any number of events may be pending for the same conditions at the same time. For example, you may have two events that will become active if a given fd becomes ready to read. The order in which their callbacks are run is undefined.
+Since Libevent 2.0.1-alpha, *any number of events may be pending for the same conditions at the same time*. For example, you may have two events that will become active if a given `fd` becomes ready to read. *The order in which their callbacks are run is undefined*.
 
 These flags are defined in `<event2/event.h>`. All have existed since before Libevent 1.0, except for `EV_ET`, which was introduced in Libevent 2.0.1-alpha.
 
@@ -1673,15 +1673,16 @@ These flags are defined in `<event2/event.h>`. All have existed since before Lib
 
 By default, whenever a pending event becomes active (because its fd is ready to read or write, or because its timeout expires), *it becomes non-pending right before its callback is executed*. Thus, *if you want to make the event pending again, you can call `event_add()` on it again from inside the callback function*.
 
-If the `EV_PERSIST` flag is set on an event, however, the event is persistent. This means that *event remains pending even when its callback is activated*. *If you want to make it non-pending from within its callback, you can call `event_del()` on it*.
+*If the `EV_PERSIST` flag is set on an event, however, the event is persistent.* This means that *event remains pending even when its callback is activated*. *If you want to make it non-pending from within its callback, you can call `event_del()` on it*.
 
 *The timeout on a persistent event resets whenever the event's callback runs*. Thus, if you have an event with flags `EV_READ|EV_PERSIST` and a timeout of five seconds, the event will become active:
+
 - Whenever the socket is ready for reading.
 - Whenever five seconds have passed since the event last became active.
 
 #### Creating an event as its own callback argument
 
-Frequently, you might want to create an event that receives itself as a callback argument. You can't just pass a pointer to the event as an argument to `event_new()`, though, because it does not exist yet. To solve this problem, you can use `event_self_cbarg()`.
+Frequently, you might want to create an event that receives itself as a callback argument. You can't just pass a pointer to the event as an argument to `event_new()`, though, because it does not exist yet (the callback is a parameter of event "constructor"). To solve this problem, you can use `event_self_cbarg()`.
 
 ```c++
 void *event_self_cbarg();
@@ -1895,17 +1896,17 @@ Once you have constructed an event, it won't actually do anything until you have
 int event_add(struct event *ev, const struct timeval *tv);
 ```
 
-Calling `event_add` on a non-pending event makes it pending in its configured base. The function returns 0 on success, and -1 on failure. If `tv` is NULL, the event is added with no timeout. Otherwise, `tv` is the size of the timeout in seconds and microseconds.
+*Calling `event_add` on a non-pending event makes it pending in its configured base.* The function returns 0 on success, and -1 on failure. If `tv` is NULL, the event is added with no timeout. Otherwise, `tv` is the size of the timeout in seconds and microseconds.
 
-If you call `event_add()` on an event that is already pending, it will leave it pending, and reschedule it with the provided timeout. If the event is already pending, and you re-add it with the timeout NULL, `event_add()` will have no effect.
+*If you call `event_add()` on an event that is already pending, it will leave it pending, and reschedule it with the provided timeout.* If the event is already pending, and you re-add it with the timeout NULL, `event_add()` will have no effect.
 
-Do not set `tv` to the time at which you want the timeout to run. If you say `tv->tv_sec = time(NULL)+10;` on 1 January 2010, your timeout will wait 40 years, not 10 seconds.
+*Do not set `tv` to the time at which you want the timeout to run.* If you say `tv->tv_sec = time(NULL)+10;` on 1 January 2010, your timeout will wait 40 years, not 10 seconds.
 
 ```c++
 int event_del(struct event *ev);
 ```
 
-Calling `event_del` on an initialized event makes it non-pending and non-active. If the event was not pending or active, there is no effect. The return value is 0 on success, -1 on failure.
+*Calling `event_del` on an initialized event makes it non-pending and non-active.* If the event was not pending or active, there is no effect. The return value is 0 on success, -1 on failure.
 
 *If you delete an event after it becomes active but before its callback has a chance to execute, the callback will not be executed*.
 
@@ -1921,15 +1922,15 @@ These are defined in `<event2/event.h>`; `event_add()` and `event_del()` have ex
 
 *When multiple events trigger at the same time, Libevent does not define any order with respect to when their callbacks will be executed. You can define some events as more important than others by using priorities*.
 
-As discussed in an earlier section, each event_base has one or more priority values associated with it. Before adding an event to the event_base, but after initializing it, you can set its priority.
+As discussed in an earlier section, each event_base has one or more priority values associated with it. *Before adding an event to the event_base, but after initializing it, you can set its priority.*
 
 ```c++
 int event_priority_set(struct event *event, int priority);
 ```
 
-The priority of the event is a number between 0 and the number of priorities in an event_base, minus 1. The function returns 0 on success, and -1 on failure.
+The `priority` of the `event` is a number between 0 and the number of priorities in an event_base, minus 1. The function returns 0 on success, and -1 on failure.
 
-*When multiple events of multiple priorities become active, the low-priority events are not run. Instead, Libevent runs the high priority events, then checks for events again. Only when no high-priority events are active are the low-priority events run*.
+*When multiple events of multiple priorities become active, the low-priority events are not run. Instead, Libevent runs the high priority events, then checks for events again. Only when no high-priority events are active are the low-priority events run* (see the pseudo-code of event loop).
 
 ```c++
 #include <event2/event.h>
@@ -2423,7 +2424,7 @@ int evutil_parse_sockaddr_port(const char *str, struct sockaddr *out,
 
 This function parses an address from `str` and writes the result to `out`. The `outlen` argument must point to an integer holding the number of bytes available in `out`; it is altered to hold the number of bytes actually used. This function returns 0 on success and -1 on failure. It recognizes the following address formats:
 
-- [ipv6]:port (as in "[ffff::]:80")
+- [ipv6]:port "as in "[ffff::]:80""
 - ipv6 (as in "ffff::")
 - [ipv6] (as in "[ffff::]")
 - ipv4:port (as in "1.2.3.4:80")
@@ -2506,8 +2507,8 @@ Every bufferevent has two data-related callbacks: a read callback and a write ca
 
 Every bufferevent has four watermarks:
 
-- Read low-water mark: Whenever a read (read from kernel buffer to libevent input buffer) occurs that leaves the bufferevent's input buffer at this level or higher, the bufferevent's read callback is invoked. Defaults to 0, so that every read results in the read callback being invoked.
-- Read high-water mark: If the bufferevent's input buffer ever gets to this level, the bufferevent stops reading until enough data is drained from the input buffer to take us below it again. Defaults to unlimited, so that we never stop reading because of the size of the input buffer.
+- Read low-water mark: Whenever a read (read from underlying transport to libevent input buffer) occurs that leaves the bufferevent's input buffer at this level or higher, the bufferevent's read callback is invoked. Defaults to 0, so that every read results in the read callback being invoked.
+- Read high-water mark: If the bufferevent's input buffer ever gets to this level, the bufferevent stops reading (from underlying transport) until enough data is drained from the input buffer to take us below it again. Defaults to unlimited, so that we never stop reading because of the size of the input buffer.
 - Write low-water mark: Whenever a write occurs that takes us to this level or below, we invoke the write callback. Defaults to 0, so that a write callback is not invoked unless the output buffer is emptied.
 - Write high-water mark: Not used by a bufferevent directly, this watermark can have special meaning when a bufferevent is used as the underlying transport of another bufferevent. See notes on filtering bufferevents below.
 
@@ -2522,7 +2523,7 @@ A bufferevent also has an "error" or "event" callback that gets invoked to tell 
 
 ### Deferred callbacks
 
-By default, a bufferevent callbacks are executed immediately when the corresponding condition happens. (This is true of evbuffer callbacks too; we'll get to those later.) This immediate invocation can make trouble when dependencies get complex. *For example, suppose that there is a callback that moves data into evbuffer A when it grows empty, and another callback that processes data out of evbuffer A when it grows full. Since these calls are all happening on the stack, you might risk a stack overflow if the dependency grows nasty enough.* z
+By default, a bufferevent callbacks are executed immediately when the corresponding condition happens. (This is true of evbuffer callbacks too; we'll get to those later.) This immediate invocation can make trouble when dependencies get complex. *For example, suppose that there is a callback that moves data into evbuffer A when it grows empty, and another callback that processes data out of evbuffer A when it grows full. Since these calls are all happening on the stack, you might risk a stack overflow if the dependency grows nasty enough.*
 
 To solve this, you can tell a bufferevent (or an evbuffer) that its callbacks should be deferred. When the conditions are met for a deferred callback, rather than invoking it immediately, it is queued as part of the `event_loop()` call, and invoked after the regular events' callbacks.
 
@@ -2550,9 +2551,9 @@ struct bufferevent *bufferevent_socket_new(
     enum bufferevent_options options);
 ```
 
-The base is an event_base, and options is a bitmask of bufferevent options (`BEV_OPT_CLOSE_ON_FREE`, etc). The `fd` argument is an optional file descriptor for a socket. *You can set fd to -1 if you want to set the file descriptor later.*
+The `base` is an event_base, and `options` is a bitmask of bufferevent options (`BEV_OPT_CLOSE_ON_FREE`, etc). The `fd` argument is an optional file descriptor for a socket. *You can set fd to -1 if you want to set the file descriptor later.*
 
-Make sure that the socket you provide to `bufferevent_socket_new` is in non-blocking mode. Libevent provides the convenience method `evutil_make_socket_nonblocking` for this.
+*Make sure that the socket you provide to `bufferevent_socket_new` is in non-blocking mode.* Libevent provides the convenience method `evutil_make_socket_nonblocking` for this.
 
 This function returns a bufferevent on success, and NULL on failure.
 
@@ -2565,9 +2566,9 @@ int bufferevent_socket_connect(struct bufferevent *bev,
     struct sockaddr *address, int addrlen);
 ```
 
-The `address` and `addrlen` arguments are as for the standard call `connect()`. If the bufferevent does not already have a socket set, calling this function allocates a new stream socket for it, and makes it nonblocking.
+The `address` and `addrlen` arguments are as for the standard call `connect()`. *If the bufferevent does not already have a socket set, calling this function allocates a new stream socket for it, and makes it nonblocking.*
 
-If the bufferevent does have a socket already, calling `bufferevent_socket_connect()` tells Libevent that the socket is not connected, and no reads or writes should be done on the socket until the connect operation has succeeded.
+*If the bufferevent does have a socket already, calling `bufferevent_socket_connect()` tells Libevent that the socket is not connected, and no reads or writes should be done on the socket until the connect operation has succeeded*.
 
 It is okay to add data to the output buffer before the connect is done.
 
