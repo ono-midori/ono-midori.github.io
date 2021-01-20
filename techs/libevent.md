@@ -2605,6 +2605,7 @@ int main_loop(void)
 
     bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
 
+    // read_cb and write_cb is set to NULL.
     bufferevent_setcb(bev, NULL, NULL, eventcb, NULL);
 
     if (bufferevent_socket_connect(bev,
@@ -2746,9 +2747,9 @@ void bufferevent_getcb(struct bufferevent *bufev,
     void **cbarg_ptr);
 ```
 
-The `bufferevent_setcb()` function changes one or more of the callbacks of a bufferevent. The `readcb`, `writecb`, and `eventcb` functions are called (respectively) when enough data is read, when enough data is written, or when an event occurs. The first argument of each is the bufferevent that has had the event happen. The last argument is the value provided by the user in the cbarg parameter of `bufferevent_callcb()`: You can use this to pass data to your callbacks. The events argument of the event callback is a bitmask of event flags: see "callbacks and watermarks" above.
+The `bufferevent_setcb()` function changes one or more of the callbacks of a bufferevent. *The `readcb`, `writecb`, and `eventcb` functions are called (respectively) when enough data is read, when enough data is written, or when an event occurs*. The first argument of each is the bufferevent that has had the event happen. The last argument is the value provided by the user in the cbarg parameter of `bufferevent_callcb()`: You can use this to pass data to your callbacks. The `events` argument of the event callback is a bitmask of event flags: see "callbacks and watermarks" above.
 
-You can disable a callback by passing NULL instead of the callback function. Note all the callback functions on a bufferevent share a single cbarg value, so changing it will affect all of them.
+You can disable a callback by passing NULL instead of the callback function. Note all the callback functions on a bufferevent share a single `cbarg` value, so changing it will affect all of them.
 
 You can retrieve the currently set callbacks for a bufferevent by passing pointers to `bufferevent_getcb()`, which sets `*readcb_ptr` to the current read callback, `*writecb_ptr` to the current write callback, `*eventcb_ptr` to the current event callback, and `*cbarg_ptr` to the current callback argument field. Any of these pointers set to NULL will be ignored.
 
@@ -2862,9 +2863,9 @@ struct evbuffer *bufferevent_get_input(struct bufferevent *bufev);
 struct evbuffer *bufferevent_get_output(struct bufferevent *bufev);
 ```
 
-These two functions are very powerful fundamental: they return the input and output buffers respectively. For full information on all the operations you can perform on an evbuffer type, see the next chapter.
+*These two functions are very powerful fundamental: they return the input and output buffers respectively. For full information on all the operations you can perform on an evbuffer type*, see the next chapter.
 
-Note that the application may only remove (not add) data on the input buffer, and may only add (not remove) data from the output buffer.
+*Note that the application may only remove (not add) data on the input buffer, and may only add (not remove) data from the output buffer.*
 
 If writing on the bufferevent was stalled because of too little data (or if reading was stalled because of too much), then adding data to the output buffer (or removing data from the input buffer) will automatically restart it.
 
@@ -2875,7 +2876,7 @@ int bufferevent_write_buffer(struct bufferevent *bufev,
     struct evbuffer *buf);
 ```
 
-These functions add data to a bufferevent's output buffer. Calling `bufferevent_write()` adds size bytes from the memory at data to the end of the output buffer. Calling `bufferevent_write_buffer()` removes the entire contents of buf and puts them at the end of the output buffer. Both return 0 if successful, or -1 if an error occurred.
+These functions add data to a bufferevent's output buffer. Calling `bufferevent_write()` adds `size` bytes from the memory at `data` to the end of the output buffer. Calling `bufferevent_write_buffer()` removes the entire contents of `buf` and puts them at the end of the output buffer. Both return 0 if successful, or -1 if an error occurred.
 
 ```c++
 size_t bufferevent_read(struct bufferevent *bufev, void *data, size_t size);
@@ -2883,9 +2884,9 @@ int bufferevent_read_buffer(struct bufferevent *bufev,
     struct evbuffer *buf);
 ```
 
-These functions remove data from a bufferevent's input buffer. The `bufferevent_read()` function removes up to size bytes from the input buffer, storing them into the memory at data. It returns the number of bytes actually removed. The `bufferevent_read_buffer()` function drains the entire contents of the input buffer and places them into buf; it returns 0 on success and -1 on failure.
+These functions remove data from a bufferevent's input buffer. The `bufferevent_read()` function removes up to `size` bytes from the input buffer, storing them into the memory at `data`. It returns the number of bytes actually removed. The `bufferevent_read_buffer()` function drains the entire contents of the input buffer and places them into `buf`; it returns 0 on success and -1 on failure.
 
-Note that with `bufferevent_read()`, the memory chunk at data must actually have enough space to hold size bytes of data.
+Note that with `bufferevent_read()`, the memory chunk at `data` must actually have enough space to hold `size` bytes of data.
 
 ```c++
 #include <event2/bufferevent.h>
@@ -2963,7 +2964,7 @@ write_callback_fibonacci(struct bufferevent *bev, void *ctx)
 }
 ```
 
-#### Read- and write timeouts
+#### Read and write timeouts
 
 As with other events, you can have a timeout get invoked if a certain amount of time passes without any data having been successfully written or read by a bufferevent.
 
@@ -2976,7 +2977,7 @@ Setting a timeout to NULL is supposed to remove it; however before Libevent 2.1.
 
 The read timeout will trigger if the bufferevent waits at least `timeout_read` seconds while trying to read read. The write timeout will trigger if the bufferevent waits at least `timeout_write` seconds while trying to write data.
 
-Note that the timeouts only count when the bufferevent would like to read or write. In other words, the read timeout is not enabled if reading is disabled on the bufferevent, or if the input buffer is full (at its high-water mark). Similarly, the write timeout is not enabled if if writing is disabled, or if there is no data to write.
+*Note that the timeouts only count when the bufferevent would like to read or write.* In other words, the read timeout is not enabled if reading is disabled on the bufferevent, or if the input buffer is full (at its high-water mark). Similarly, the write timeout is not enabled if if writing is disabled, or if there is no data to write.
 
 When a read or write timeout occurs, the corresponding read or write operation becomes disabled on the bufferevent. The event callback is then invoked with either `BEV_EVENT_TIMEOUT|BEV_EVENT_READING` or `BEV_EVENT_TIMEOUT|BEV_EVENT_WRITING`.
 
@@ -2987,9 +2988,9 @@ int bufferevent_flush(struct bufferevent *bufev,
     short iotype, enum bufferevent_flush_mode state);
 ```
 
-Flushing a bufferevent tells the bufferevent to force as many bytes as possible to be read to or written from the underlying transport, ignoring other restrictions that might otherwise keep them from being written. Its detailed function depends on the type of the bufferevent.
+*Flushing a bufferevent tells the bufferevent to force as many bytes as possible to be read to or written from the underlying transport, ignoring other restrictions that might otherwise keep them from being written.* Its detailed function depends on the type of the bufferevent.
 
-The iotype argument should be `EV_READ`, `EV_WRITE`, or `EV_READ|EV_WRITE` to indicate whether bytes being read, written, or both should be processed. The state argument may be one of `BEV_NORMAL`, `BEV_FLUSH`, or `BEV_FINISHED`. `BEV_FINISHED` indicates that the other side should be told that no more data will be sent; the distinction between `BEV_NORMAL` and `BEV_FLUSH` depends on the type of the bufferevent.
+The `iotype` argument should be `EV_READ`, `EV_WRITE`, or `EV_READ|EV_WRITE` to indicate whether bytes being read, written, or both should be processed. The `state` argument may be one of `BEV_NORMAL`, `BEV_FLUSH`, or `BEV_FINISHED`. `BEV_FINISHED` indicates that the other side should be told that no more data will be sent; the distinction between `BEV_NORMAL` and `BEV_FLUSH` depends on the type of the bufferevent.
 
 The `bufferevent_flush()` function returns -1 on failure, 0 if no data was flushed, or 1 if some data was flushed.
 
@@ -3004,7 +3005,7 @@ int bufferevent_priority_set(struct bufferevent *bufev, int pri);
 int bufferevent_get_priority(struct bufferevent *bufev);
 ```
 
-This function adjusts the priority of the events used to implement bufev to pri. See `event_priority_set()` for more information on priorities.
+This function adjusts the priority of the events used to implement `bufev` to `pri`. See `event_priority_set()` for more information on priorities.
 
 This function returns 0 on success, and -1 on failure. It works on socket-based bufferevents only.
 
