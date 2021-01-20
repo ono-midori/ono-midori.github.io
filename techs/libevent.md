@@ -11,7 +11,7 @@
     - [Setting up a default event_base](#setting-up-a-default-event_base)
     - [Setting up a complicated event_base](#setting-up-a-complicated-event_base)
     - [Examining an event_base's backend method](#examining-an-event_bases-backend-method)
-    - [Deallocating an event_base](#deallocating-an-event_base)
+      - [Deallocating an event_base](#deallocating-an-event_base)
     - [Setting priorities on an event_base](#setting-priorities-on-an-event_base)
     - [Reinitializing an event_base after fork()](#reinitializing-an-event_base-after-fork)
     - [Obsolete event_base functions](#obsolete-event_base-functions)
@@ -2603,7 +2603,20 @@ int main_loop(void)
     sin.sin_addr.s_addr = htonl(0x7f000001); /* 127.0.0.1 */
     sin.sin_port = htons(8080); /* Port 8080 */
 
-    bev = buf
+    bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
+
+    bufferevent_setcb(bev, NULL, NULL, eventcb, NULL);
+
+    if (bufferevent_socket_connect(bev,
+        (struct sockaddr *)&sin, sizeof(sin)) < 0) {
+        /* Error starting connection */
+        bufferevent_free(bev);
+        return -1;
+    }
+
+    event_base_dispatch(base);
+    return 0;
+}
 ```
 
 The `bufferevent_socket_connect()` function was introduced in Libevent-2.0.2-alpha. Before then, you had to manually call `connect()` on your socket yourself, and when the connection was complete, the bufferevent would report it as a write.
