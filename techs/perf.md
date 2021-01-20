@@ -49,7 +49,7 @@
 
  ## Introduction
 
- Perf is a profiler tool for Linux 2.6+ based systems that abstracts away CPU hardware differences in Linux performance measurements and presents a simple commandline interface. Perf is based on the perf_events interface exported by recent versions of the Linux kernel. This article demonstrates the perf tool through example runs. Output was obtained on a Ubuntu 11.04 system with kernel 2.6.38-8-generic results running on an HP 6710b with dual-core Intel Core2 T7100 CPU). For readability, some output is abbreviated using ellipsis ([...]).
+Perf is a profiler tool for Linux 2.6+ based systems that *abstracts away CPU hardware differences in Linux performance measurements and presents a simple commandline interface*. Perf is based on the perf_events interface exported by recent versions of the Linux kernel. This article demonstrates the perf tool through example runs. Output was obtained on a Ubuntu 11.04 system with kernel 2.6.38-8-generic results running on an HP 6710b with dual-core Intel Core2 T7100 CPU). For readability, some output is abbreviated using ellipsis ([...]).
 
 ### Commands
 
@@ -114,7 +114,7 @@ Another source of events is the processor itself and its Performance Monitoring 
 
 The perf_events interface also provides a small set of common hardware events monikers. On each processor, those events get mapped onto an actual events provided by the CPU, if they exists, otherwise the event cannot be used. Somewhat confusingly, these are also called *hardware events* and *hardware cache events*.
 
-Finally, there are also *tracepoint events* which are implemented by the kernel ftrace infrastructure. Those are only available with the 2.6.3x and newer kernels.
+Finally, there are also *tracepoint events* which are implemented by the kernel `ftrace` infrastructure. Those are only available with the 2.6.3x and newer kernels.
 
 To obtain a list of supported events:
 
@@ -187,12 +187,12 @@ List of pre-defined events (to be used in -e):
 An event can have sub-events (or unit masks). On some processors and for some events, it may be possible to combine unit masks and measure when either sub-event occurs. Finally, an event can have modifiers, i.e., filters which alter when or how the event is counted.
 
 ### Hardware events
-PMU hardware events are CPU specific and documented by the CPU vendor. The perf tool, if linked against the libpfm4 library, provides some short description of the events. For a listing of PMU hardware events for Intel and AMD processors, see
+PMU hardware events are CPU specific and documented by the CPU vendor. The perf tool, if linked against the libpfm4 library, provides some short description of the events. For a listing of PMU hardware events for Intel and AMD processors, see:
 
 - Intel PMU event tables: Appendix A of manual [here](https://www.intel.com/content/www/us/en/architecture-and-technology/64-ia-32-architectures-software-developer-vol-3b-part-2-manual.html)
-- AMD PMU event table: section 3.14 of manual [here] (https://www.amd.com/en/support)
+- AMD PMU event table: section 3.14 of manual [here](https://www.amd.com/en/support)
 
-## Counting with `perf stat`
+## Counting with perf stat
 
 For any of the supported events, perf can keep a running count during process execution. In counting modes, the occurrences of events are simply aggregated and presented on standard output at the end of an application run. To generate these statistics, use the `stat` command of perf. For instance:
 
