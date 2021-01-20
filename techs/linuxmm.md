@@ -7,7 +7,7 @@
       - [Zone Watermarks](#zone-watermarks)
       - [Zone Wait Queue Table](#zone-wait-queue-table)
     - [Zone initialization](#zone-initialization)
-      - [initializing mem_map](#initializing-mem_map)
+      - [initializing `mem_map`](#initializing-mem_map)
     - [Pages](#pages)
   - [Page Table Management](#page-table-management)
     - [Describing the Page Directory](#describing-the-page-directory)
@@ -40,6 +40,25 @@
       - [Deleting a Memory Region](#deleting-a-memory-region)
       - [Deleting All Memory Regions](#deleting-all-memory-regions)
     - [Exception Handling](#exception-handling)
+    - [Page Faulting](#page-faulting)
+      - [Handling a Page Fault](#handling-a-page-fault)
+      - [Demand Allocation](#demand-allocation)
+        - [Handling anonymous pages](#handling-anonymous-pages)
+        - [Handling file/device backed pages](#handling-filedevice-backed-pages)
+      - [Demand Paging](#demand-paging)
+      - [Copy On Write (COW) Pages](#copy-on-write-cow-pages)
+    - [Copying To/From Userspace](#copying-tofrom-userspace)
+  - [Physical Page Allocation](#physical-page-allocation)
+    - [Managing Free Blocks](#managing-free-blocks)
+    - [Allocating Pages](#allocating-pages)
+    - [Free Pages](#free-pages)
+    - [Get Free Page (GFP) Flags](#get-free-page-gfp-flags)
+      - [Process Flags](#process-flags)
+    - [Avoiding Fragmentation](#avoiding-fragmentation)
+  - [Non-Contiguous Memory Allocation](#non-contiguous-memory-allocation)
+    - [Describing Virtual Memory Areas](#describing-virtual-memory-areas)
+    - [Allocating A Non-Contiguous Are](#allocating-a-non-contiguous-are)
+    - [Freeing A Non-Contiguous Are](#freeing-a-non-contiguous-are)
 
 ## Describing Physical Memory
 
@@ -844,3 +863,303 @@ At compile time, the linker creates an exception table in the `__ex_table` secti
 
 If the address of the current exception is found in the table, the corresponding location of the fixup code is returned and executed.
 
+### Page Faulting
+
+Pages in the process linear address space are not necessarily resident in memory. For example, allocations made on behalf of a process are not satisfied immediately as the space is just reserved within the `vm_area_struct`. Other examples of non-resident pages include the page having been swapped out to backing storage or writing a read-only page.
+
+Linux, like most operating systems, has a *Demand Fetch* policy as its fetch policy for dealing with pages that are not resident. This states that the page is only fetched from backing storage when the hardware raises a page fault exception which the operating system traps and allocates a page. The characteristics of backing storage imply that some sort of page prefetching policy would result in less page faults, but Linux is fairly primitive in this respect. When a page is paged in from swap space, a number of pages after it, up to 2<sup>page_cluster</sup> are read in by `swapin_readahead()` and placed in the swap cache. Unfortunately there is only a chance that pages likely to be used soon will be adjacent in the swap area making it a poor prepaging policy. Linux would likely benefit from a prepaging policy that adapts to program behaviour.
+
+There are two types of page fault, major and minor faults. Major page faults occur when data has to be read from disk which is an expensive operation, else the fault is referred to as a minor, or soft page fault. Linux maintains statistics on the number of these types of page faults with the `task_struct->maj_flt` and `task_struct->min_flt` fields respectively.
+
+The page fault handler in Linux is expected to recognise and act on a number of different types of page faults listed in Table 4.4 which will be discussed in detail later in this chapter.
+
+![](./pics/page_fault.png)
+
+Each architecture registers an architecture-specific function for the handling of page faults. While the name of this function is arbitrary, a common choice is do_page_fault() whose call graph for the x86 is shown in the following figure:
+
+![](./pics/understand-html020.png)
+
+This function is provided with a wealth of information such as the address of the fault, whether the page was simply not found or was a protection error, whether it was a read or write fault and whether it is a fault from user or kernel space. It is responsible for determining which type of fault has occurred and how it should be handled by the architecture-independent code. The flow chart, in the following figure, shows broadly speaking what this function does. In the figure, identifiers with a colon after them corresponds to the label as shown in the code.
+
+![](./pics/understand-html021.png)
+
+`handle_mm_fault()` is the architecture independent top level function for faulting in a page from backing storage, performing COW and so on. If it returns 1, it was a minor fault, 2 was a major fault, 0 sends a SIGBUS error and any other value invokes the out of memory handler.
+
+#### Handling a Page Fault
+
+Once the exception handler has decided the fault is a valid page fault in a valid memory region, the architecture-independent function `handle_mm_fault()`, whose call graph is shown in the following figure, takes over. It allocates the required page table entries if they do not already exist and calls `handle_pte_fault()`.
+
+Based on the properties of the PTE, one of the handler functions shown in the following figure will be used. The first stage of the decision is to check if the PTE is marked not present or if it has been allocated with which is checked by `pte_present()` and `pte_none()`. If no PTE has been allocated (`pte_none()` returned true), `do_no_page()` is called which handles Demand Allocation. Otherwise it is a page that has been swapped out to disk and `do_swap_page()` performs Demand Paging. There is a rare exception where swapped out pages belonging to a virtual file are handled by `do_no_page()`. This particular case is covered in Section 12.4.
+
+The second option is if the page is being written to. If the PTE is write protected, then `do_wp_page()` is called as the page is a *Copy-On-Write (COW)* page. A COW page is one which is shared between multiple processes(usually a parent and child) until a write occurs after which a private copy is made for the writing process. A COW page is recognised because the VMA for the region is marked writable even though the individual PTE is not. If it is not a COW page, the page is simply marked dirty as it has been written to.
+
+The last option is if the page has been read and is present but a fault still occurred. This can occur with some architectures that do not have a three level page table. In this case, the PTE is simply established and marked young.
+
+#### Demand Allocation
+
+When a process accesses a page for the very first time, the page has to be allocated and possibly filled with data by the `do_no_page()` function. If the `vm_operations_struct` associated with the parent VMA (`vma->vm_ops`) provides a `nopage()` function, it is called. This is of importance to a memory mapped device such as a video card which needs to allocate the page and supply data on access or to a mapped file which must retrieve its data from backing storage. We will first discuss the case where the faulting page is anonymous as this is the simpliest case.
+
+##### Handling anonymous pages
+
+If `vm_area_struct->vm_ops` field is not filled or a `nopage()` function is not supplied, the function `do_anonymous_page()` is called to handle an anonymous access. There are only two cases to handle, first time read and first time write. As it is an anonymous page, the first read is an easy case as no data exists. In this case, the system-wide `empty_zero_page`, which is just a page of zeros, is mapped for the PTE and the PTE is write protected. The write protection is set so that another page fault will occur if the process writes to the page. On the x86, the global zero-filled page is zerod out in the function `mem_init()`.
+
+![](./pics/understand-html023.png)
+
+If this is the first write to the page `alloc_page()` is called to allocate a free page (see Chapter 6) and is zero filled by `clear_user_highpage()`. Assuming the page was successfully allocated, the Resident Set Size (RSS) field in the `mm_struct` will be incremented; `flush_page_to_ram()` is called as required when a page has been inserted into a userspace process by some architectures to ensure cache coherency. The page is then inserted on the LRU lists so it may be reclaimed later by the page reclaiming code. Finally the page table entries for the process are updated for the new mapping.
+
+##### Handling file/device backed pages
+
+If backed by a file or device, a `nopage()` function will be provided within the VMAs `vm_operations_struct`. In the file-backed case, the function `filemap_nopage()` is frequently the `nopage()` function for allocating a page and reading a page-sized amount of data from disk. Pages backed by a virtual file, such as those provided by shmfs, will use the function `shmem_nopage()` (See Chapter 12). Each device driver provides a different `nopage()` whose internals are unimportant to us here as long as it returns a valid struct page to use.
+
+On return of the page, a check is made to ensure a page was successfully allocated and appropriate errors returned if not. A check is then made to see if an early COW break should take place. An early COW break will take place if the fault is a write to the page and the `VM_SHARED` flag is not included in the managing VMA. An early break is a case of allocating a new page and copying the data across before reducing the reference count to the page returned by the `nopage()` function.
+
+In either case, a check is then made with `pte_none()` to ensure there is not a PTE already in the page table that is about to be used. It is possible with SMP that two faults would occur for the same page at close to the same time and as the spinlocks are not held for the full duration of the fault, this check has to be made at the last instant. If there has been no race, the PTE is assigned, statistics updated and the architecture hooks for cache coherency called.
+
+#### Demand Paging
+
+When a page is swapped out to backing storage, the function `do_swap_page()` is responsible for reading the page back in, with the exception of virtual files which are covered in Section 12. The information needed to find it is stored within the PTE itself. The information within the PTE is enough to find the page in swap. As pages may be shared between multiple processes, they can not always be swapped out immediately. Instead, when a page is swapped out, it is placed within the swap cache.
+
+![](./pics/understand-html024.png)
+
+A shared page can not be swapped out immediately because there is no way of mapping a `struct page `to the PTEs of each process it is shared between. Searching the page tables of all processes is simply far too expensive. It is worth noting that the late 2.5.x kernels and 2.4.x with a custom patch have what is called *Reverse Mapping (RMAP)* which is discussed at the end of the chapter.
+
+With the swap cache existing, it is possible that when a fault occurs it still exists in the swap cache. If it is, the reference count to the page is simply increased and it is placed within the process page tables again and registers as a minor page fault.
+
+If the page exists only on disk `swapin_readahead()` is called which reads in the requested page and a number of pages after it. The number of pages read in is determined by the variable `page_cluster` defined in `mm/swap.c`. On low memory machines with less than 16MiB of RAM, it is initialised as 2 or 3 otherwise. The number of pages read in is 2<sup>page_cluster</sup> unless a bad or empty swap entry is encountered. This works on the premise that a seek is the most expensive operation in time so once the seek has completed, the succeeding pages should also be read in.
+
+#### Copy On Write (COW) Pages
+
+Once upon time, the full parent address space was duplicated for a child when a process forked. This was an extremely expensive operation as it is possible a significant percentage of the process would have to be swapped in from backing storage. To avoid this considerable overhead, a technique called *Copy-On-Write (COW)* is employed.
+
+![](./pics/understand-html025.png)
+
+During fork, the PTEs of the two processes are made read-only so that when a write occurs there will be a page fault. Linux recognises a COW page because even though the PTE is write protected, the controlling VMA shows the region is writable. It uses the function `do_wp_page()` to handle it by making a copy of the page and assigning it to the writing process. If necessary, a new swap slot will be reserved for the page. With this method, only the page table entries have to be copied during a fork.
+
+### Copying To/From Userspace
+
+It is not safe to access memory in the process address space directly as there is no way to quickly check if the page addressed is resident or not. Linux relies on the MMU to raise exceptions when the address is invalid and have the Page Fault Exception handler catch the exception and fix it up. In the x86 case, assembler is provided by the __copy_user() to trap exceptions where the address is totally useless. The location of the fixup code is found when the function search_exception_table() is called. Linux provides an ample API (mainly macros) for copying data to and from the user address space safely as shown in the following table:
+
+- `unsigned long copy_from_user(void *to, const void *from, unsigned long n)`: Copies `n` bytes from the user address(`from`) to the kernel address space(`to`)
+- `unsigned long copy_to_user(void *to, const void *from, unsigned long n)`: Copies `n` bytes from the kernel address(`from`) to the user address space(`to`)
+- `void copy_user_page(void *to, void *from, unsigned long address)`: This copies data to an anonymous or COW page in userspace. Ports are responsible for avoiding D-cache alises. It can do this by using a kernel virtual address that would use the same cache lines as the virtual address.
+- `void clear_user_page(void *page, unsigned long address)`: Similar to `copy_user_page()` except it is for zeroing a page
+- `void get_user(void *to, void *from)`: Copies an integer value from userspace (`from`) to kernel space (`to`)
+- `void put_user(void *from, void *to)`: Copies an integer value from kernel space (`from`) to userspace (`to`)
+- `long strncpy_from_user(char *dst, const char *src, long count)`: Copies a null terminated string of at most count bytes long from userspace (`src`) to kernel space (`dst`)
+- `long strlen_user(const char *s, long n)`: Returns the length, upper bound by `n`, of the userspace string including the terminating NULL
+- `int access_ok(int type, unsigned long addr, unsigned long size)`: Returns non-zero if the userspace block of memory is valid and zero otherwise
+
+All the macros map on to assembler functions which all follow similar patterns of implementation so for illustration purposes, we'll just trace how `copy_from_user()` is implemented on the x86.
+
+If the size of the copy is known at compile time, `copy_from_user()` calls `__constant_copy_from_user()` else `__generic_copy_from_user()` is used. If the size is known, there are different assembler optimisations to copy data in 1, 2 or 4 byte strides otherwise the distinction between the two copy functions is not important.
+
+The generic copy function eventually calls the function `__copy_user_zeroing()` in `<asm-i386/uaccess.h>` which has three important parts. The first part is the assembler for the actual copying of size number of bytes from userspace. If any page is not resident, a page fault will occur and if the address is valid, it will get swapped in as normal. The second part is “fixup” code and the third part is the `__ex_table mapping` the instructions from the first part to the fixup code in the second part.
+
+These pairings, as described in Section 4.5, copy the location of the copy instructions and the location of the fixup code the kernel exception handle table by the linker. If an invalid address is read, the function `do_page_fault()` will fall through, call `search_exception_table()` and find the EIP where the faulty read took place and jump to the fixup code which copies zeros into the remaining kernel space, fixes up registers and returns. In this manner, the kernel can safely access userspace with no expensive checks and letting the MMU hardware handle the exceptions.
+
+All the other functions that access userspace follow a similar pattern.
+
+## Physical Page Allocation
+
+This chapter describes how physical pages are managed and allocated in Linux. The principal algorithmm used is the *Binary Buddy Allocator*, devised by Knowlton and further described by Knuth. It is has been shown to be extremely fast in comparison to other allocators.
+
+This is an allocation scheme which combines a normal power-of-two allocator with free buffer coalescing and the basic concept behind it is quite simple. Memory is broken up into large blocks of pages where each block is a power of two number of pages. If a block of the desired size is not available, a large block is broken up in half and the two blocks are buddies to each other. One half is used for the allocation and the other is free. The blocks are continuously halved as necessary until a block of the desired size is available. When a block is later freed, the buddy is examined and the two coalesced if it is free.
+
+This chapter will begin with describing how Linux remembers what blocks of memory are free. After that the methods for allocating and freeing pages will be discussed in details. The subsequent section will cover the flags which affect the allocator behaviour and finally the problem of fragmentation and how the allocator handles it will be covered.
+
+### Managing Free Blocks
+
+As stated, the allocator maintains blocks of free pages where each block is a power of two number of pages. The exponent for the power of two sized block is referred to as the order. An array of `free_area_t` structs are maintained for each order that points to a linked list of blocks of pages that are free as indicated by the figure:
+
+![](./pics/understand-html029.png)
+
+Hence, the 0th element of the array will point to a list of free page blocks of size 20 or 1 page, the 1st element will be a list of 2<sup>1</sup> (2) pages up to 2<sup>MAX_ORDER−1</sup> number of pages, where the `MAX_ORDER` is currently defined as 10. This eliminates the chance that a larger block will be split to satisfy a request where a smaller block would have sufficed. The page blocks are maintained on a linear linked list via `page->list`.
+
+Each zone has a `free_area_t` struct array called `free_area[MAX_ORDER]`. It is declared in `<linux/mm.h>` as follows:
+
+```c++
+ 22 typedef struct free_area_struct {
+ 23         struct list_head        free_list;
+ 24         unsigned long           *map;
+ 25 } free_area_t; 
+```
+
+The fields in this struct are simply:
+
+- **free_list** A linked list of free page blocks;
+- **map** A bitmap representing the state of a pair of buddies.
+
+Linux saves memory by only using one bit instead of two to represent each pair of buddies. Each time a buddy is allocated or freed, the bit representing the pair of buddies is toggled so that the bit is zero if the pair of pages are both free or both full and 1 if only one buddy is in use. To toggle the correct bit, the macro `MARK_USED()` in `page_alloc.c` is used which is declared as follows:
+
+```c++
+164 #define MARK_USED(index, order, area) \
+165         __change_bit((index) >> (1+(order)), (area)->map)
+```
+
+`index` is the index of the page within the global `mem_map` array. By shifting it right by `1+order` bits, the bit within map representing the pair of buddies is revealed.
+
+### Allocating Pages
+
+parameter which is a set of flags that determine how the allocator will behave. The flags are discussed in Section 6.4.
+
+The allocation API functions all use the core function __alloc_pages() but the APIs exist so that the correct node and zone will be chosen. Different users will require different zones such as ZONE_DMA for certain device drivers or ZONE_NORMAL for disk buffers and callers should not have to be aware of what node is being used. A full list of page allocation APIs are listed in the table.
+
+- `struct page * alloc_page(unsigned int gfp_mask)`: Allocate a single page and return a struct address
+- `struct page * alloc_pages(unsigned int gfp_mask, unsigned int order)`: Allocate 2<sup>order</sup> number of pages and returns a struct page
+- `unsigned long get_free_page(unsigned int gfp_mask)`: Allocate a single page, zero it and return a virtual address
+- `unsigned long __get_free_page(unsigned int gfp_mask)`: Allocate a single page and return a virtual address
+- `unsigned long __get_free_pages(unsigned int gfp_mask, unsigned int order)`: Allocate 2<sup>order</sup> number of pages and return a virtual address
+- `struct page * __get_dma_pages(unsigned int gfp_mask, unsigned int order)`: Allocate 2<sup>order</sup> number of pages from the DMA zone and return a struct page
+
+Allocations are always for a specified order, 0 in the case where a single page is required. If a free block cannot be found of the requested order, a higher order block is split into two buddies. One is allocated and the other is placed on the free list for the lower order. Figure 6.2 shows where a 2<sup>4</sup> block is split and how the buddies are added to the free lists until a block for the process is available.
+
+![](./pics/understand-html030.png)
+
+When the block is later freed, the buddy will be checked. If both are free, they are merged to form a higher order block and placed on the higher free list where its buddy is checked and so on. If the buddy is not free, the freed block is added to the free list at the current order. During these list manipulations, interrupts have to be disabled to prevent an interrupt handler manipulating the lists while a process has them in an inconsistent state. This is achieved by using an interrupt safe spinlock.
+
+The second decision to make is which memory node or pg_data_t to use. Linux uses a node-local allocation policy which aims to use the memory bank associated with the CPU running the page allocating process. Here, the function `_alloc_pages()` is what is important as this function is different depending on whether the kernel is built for a UMA (function in `mm/page_alloc.c`) or NUMA (function in `mm/numa.c`) machine.
+
+Regardless of which API is used, `__alloc_pages()` in `mm/page_alloc.c` is the heart of the allocator. This function, which is never called directly, examines the selected zone and checks if it is suitable to allocate from based on the number of available pages. If the zone is not suitable, the allocator may fall back to other zones. The order of zones to fall back on are decided at boot time by the function `build_zonelists()` but generally `ZONE_HIGHMEM` will fall back to `ZONE_NORMAL` and that in turn will fall back to `ZONE_DMA`. If number of free pages reaches the pages_low watermark, it will wake **kswapd** to begin freeing up pages from zones and if memory is extremely tight, the caller will do the work of **kswapd** itself.
+
+![](./pics/understand-html031.png)
+
+Once the zone has finally been decided on, the function `rmqueue()` is called to allocate the block of pages or split higher level blocks if one of the appropriate size is not available.
+
+### Free Pages
+
+The API for the freeing of pages is a lot simpler and exists to help remember the order of the block to free as one disadvantage of a buddy allocator is that the caller has to remember the size of the original allocation. The API for freeing is listed in the table:
+
+- `void __free_pages(struct page *page, unsigned int order)`: Free an order number of pages from the given page
+- `void __free_page(struct page *page)`: Free a single page
+- `void free_page(void *addr)`: Free a page from the given virtual address
+- 
+The principal function for freeing pages is `__free_pages_ok()` and it should not be called directly. Instead the function `__free_pages()` is provided which performs simple checks first as indicated in the figure:
+
+![](./pics/understand-html032.png)
+
+When a buddy is freed, Linux tries to coalesce the buddies together immediately if possible. This is not optimal as the worst case scenario will have many coalitions followed by the immediate splitting of the same blocks.
+
+To detect if the buddies can be merged or not, Linux checks the bit corresponding to the affected pair of buddies in `free_area->map`. As one buddy has just been freed by this function, it is obviously known that at least one buddy is free. If the bit in the map is 0 after toggling, we know that the other buddy must also be free because if the bit is 0, it means both buddies are either both free or both allocated. If both are free, they may be merged.
+
+Calculating the address of the buddy is a well known concept. As the allocations are always in blocks of size 2<sup>k</sup>, the address of the block, or at least its offset within zone_mem_map will also be a power of 2<sup>k</sup>. The end result is that there will always be at least k number of zeros to the right of the address. To get the address of the buddy, the *k*th bit from the right is examined. If it is 0, then the buddy will have this bit flipped. To get this bit, Linux creates a mask which is calculated as
+
+```
+ mask = ( 0 << k) 
+``` 
+
+The mask we are interested in is
+
+```
+ imask = 1 +  mask 
+```
+
+Linux takes a shortcut in calculating this by noting that
+
+```
+ imask = -mask = 1 +  mask 
+``` 
+Once the buddy is merged, it is removed for the free list and the newly coalesced pair moves to the next higher order to see if it may also be merged.
+
+### Get Free Page (GFP) Flags
+
+A persistent concept through the whole VM is the *Get Free Page (GFP)* flags. These flags determine how the allocator and **kswapd** will behave for the allocation and freeing of pages. For example, an interrupt handler may not sleep so it will not have the `__GFP_WAIT` flag set as this flag indicates the caller may sleep. There are three sets of GFP flags, all defined in `<linux/mm.h>`.
+
+The first of the three is the set of zone modifiers listed in the table. These flags indicate that the caller must try to allocate from a particular zone. The reader will note there is not a zone modifier for `ZONE_NORMAL`. This is because the zone modifier flag is used as an offset within an array and 0 implicitly means allocate from `ZONE_NORMAL`.
+
+![](./pics/gfp.png)
+
+The next flags are action modifiers listed in the table. They change the behaviour of the VM and what the calling process may do. The low level flags on their own are too primitive to be easily used.
+
+![](./pics/gfp2.png)
+
+It is difficult to know what the correct combinations are for each instance so a few high level combinations are defined and listed in the table. For clarity the `__GFP_` is removed from the table combinations so, the `__GFP_HIGH` flag will read as `HIGH` below. The combinations to form the high level flags are listed in the second table To help understand this, take GFP_ATOMIC as an example. It has only the `__GFP_HIGH` flag set. This means it is high priority, will use emergency pools (if they exist) but will not sleep, perform IO or access the filesystem. This flag would be used by an interrupt handler for example.
+
+![](./pics/gfp3.png)
+
+- `GFP_ATOMIC`  This flag is used whenever the caller cannot sleep and must be serviced if at all possible. Any interrupt handler that requires memory must use this flag to avoid sleeping or performing IO. Many subsystems during init will use this system such as `buffer_init()` and `inode_init()`
+- `GFP_NOIO`	This is used by callers who are already performing an IO related function. For example, when the loop back device is trying to get a page for a buffer head, it uses this flag to make sure it will not perform some action that would result in more IO. If fact, it appears the flag was introduced specifically to avoid a deadlock in the loopback device.
+- `GFP_NOHIGHIO`	This is only used in one place in `alloc_bounce_page()` during the creating of a bounce buffer for IO in high memory
+- `GFP_NOFS`	This is only used by the buffer cache and filesystems to make sure they do not recursively call themselves by accident
+- `GFP_KERNEL`	The most liberal of the combined flags. It indicates that the caller is free to do whatever it pleases. Strictly speaking the difference between this flag and GFP_USER is that this could use emergency pools of pages but that is a no-op on 2.4.x kernels
+- `GFP_USER`	Another flag of historical significance. In the 2.2.x series, an allocation was given a `LOW`, `MEDIUM` or `HIGH` priority. If memory was tight, a request with `GFP_USER` (low) would fail where as the others would keep trying. Now it has no significance and is not treated any different to `GFP_KERNEL`
+- `GFP_HIGHUSER`	This flag indicates that the allocator should allocate from `ZONE_HIGHMEM` if possible. It is used when the page is allocated on behalf of a user process
+- `GFP_NFS`	This flag is defunct. In the 2.0.x series, this flag determined what the reserved page size was. Normally 20 free pages were reserved. If this flag was set, only 5 would be reserved. Now it is not treated differently anywhere
+- `GFP_KSWAPD`	More historical significance. In reality this is not treated any different to `GFP_KERNEL`
+
+#### Process Flags
+
+A process may also set flags in the task_struct which affects allocator behaviour. The full list of process flags are defined in <linux/sched.h> but only the ones affecting VM behaviour are listed in below:
+
+- `PF_MEMALLOC`	This flags the process as a memory allocator. **kswapd** sets this flag and it is set for any process that is about to be killed by the *Out Of Memory (OOM)* killer which is discussed in Chapter 13. It tells the buddy allocator to ignore zone watermarks and assign the pages if at all possible
+- `PF_MEMDIE`	This is set by the OOM killer and functions the same as the `PF_MEMALLOC` flag by telling the page allocator to give pages if at all possible as the process is about to die
+- `PF_FREE_PAGES`	Set when the buddy allocator calls `try_to_free_pages()` itself to indicate that free pages should be reserved for the calling process in `__free_pages_ok()` instead of returning to the free lists
+
+### Avoiding Fragmentation
+
+One important problem that must be addressed with any allocator is the problem of internal and external fragmentation. External fragmentation is the inability to service a request because the available memory exists only in small blocks. Internal fragmentation is defined as the wasted space where a large block had to be assigned to service a small request. In Linux, external fragmentation is not a serious problem as large requests for contiguous pages are rare and usually vmalloc() (see Chapter 7) is sufficient to service the request. The lists of free blocks ensure that large blocks do not have to be split unnecessarily.
+
+Internal fragmentation is the single most serious failing of the binary buddy system. While fragmentation is expected to be in the region of 28%, it has been shown that it can be in the region of 60%, in comparison to just 1% with the first fit allocator. It has also been shown that using variations of the buddy system will not help the situation significantly. To address this problem, Linux uses a slab allocator to carve up pages into small blocks of memory for allocation which is discussed further in Chapter 8. With this combination of allocators, the kernel can ensure that the amount of memory wasted due to internal fragmentation is kept to a minimum.
+
+## Non-Contiguous Memory Allocation
+
+It is preferable when dealing with large amounts of memory to use physically contiguous pages in memory both for cache related and memory access latency reasons. Unfortunately, due to external fragmentation problems with the buddy allocator, this is not always possible. Linux provides a mechanism via `vmalloc()` where non-contiguous physically memory can be used that is contiguous in virtual memory.
+
+An area is reserved in the virtual address space between `VMALLOC_START` and `VMALLOC_END`. The location of `VMALLOC_START` depends on the amount of available physical memory but the region will always be at least `VMALLOC_RESERVE` in size, which on the x86 is 128MiB. The exact size of the region is discussed in Section 4.1.
+
+The page tables in this region are adjusted as necessary to point to physical pages which are allocated with the normal physical page allocator. This means that allocation must be a multiple of the hardware page size. As allocations require altering the kernel page tables, there is a limitation on how much memory can be mapped with `vmalloc()` as only the virtual addresses space between `VMALLOC_START` and `VMALLOC_END` is available. As a result, it is used sparingly in the core kernel. In 2.4.22, it is only used for storing the swap map information (see Chapter 11) and for loading kernel modules into memory.
+
+This small chapter begins with a description of how the kernel tracks which areas in the vmalloc address space are used and how regions are allocated and freed.
+
+### Describing Virtual Memory Areas
+
+The vmalloc address space is managed with a resource map allocator. The struct vm_struct is responsible for storing the base,size pairs. It is defined in `<linux/vmalloc.h>` as:
+
+```c++
+ 14 struct vm_struct {
+ 15         unsigned long flags;
+ 16         void * addr;
+ 17         unsigned long size;
+ 18         struct vm_struct * next;
+ 19 };
+```
+
+A fully-fledged VMA could have been used but it contains extra information that does not apply to vmalloc areas and would be wasteful. Here is a brief description of the fields in this small struct.
+
+- **flags** These set either to `VM_ALLOC`, in the case of use with `vmalloc()` or `VM_IOREMAP` when ioremap is used to map high memory into the kernel virtual address space;
+- **addr** This is the starting address of the memory block;
+- **size** This is, predictably enough, the size in bytes;
+- ((next)) is a pointer to the next `vm_struct`. They are ordered by address and the list is protected by the `vmlist_lock` lock.
+
+As is clear, the areas are linked together via the next field and are ordered by address for simple searches. Each area is separated by at least one page to protect against overruns. This is illustrated by the gaps in the figure:
+
+![](./pics/understand-html033.png)
+
+When the kernel wishes to allocate a new area, the vm_struct list is searched linearly by the function `get_vm_area()`. Space for the struct is allocated with `kmalloc()`. When the virtual area is used for remapping an area for IO (commonly referred to as ioremapping), this function will be called directly to map the requested area.
+
+### Allocating A Non-Contiguous Are
+
+![](./pics/understand-html034.png)
+
+The functions `vmalloc()`, `vmalloc_dma()` and `vmalloc_32()` are provided to allocate a memory area that is contiguous in virtual address space. They all take a single parameter size which is rounded up to the next page alignment. They all return a linear address for the new allocated area.
+
+- `void * vmalloc(unsigned long size)`: Allocate a number of pages in vmalloc space that satisfy the requested size
+- `void * vmalloc_dma(unsigned long size)`: Allocate a number of pages from `ZONE_DMA`
+- `void * vmalloc_32(unsigned long size)`: Allocate memory that is suitable for 32 bit addressing. This ensures that the physical page frames are in `ZONE_NORMAL` which 32 bit devices will require
+
+As is clear from the call graph shown in the figure, there are two steps to allocating the area. The first step taken by `get_vm_area()` is to find a region large enough to store the request. It searches through a linear linked list of vm_structs and returns a new struct describing the allocated region.
+
+The second step is to allocate the necessary PGD entries with vmalloc_area_pages(), PMD entries with `alloc_area_pmd()` and PTE entries with `alloc_area_pte()` before finally allocating the page with `alloc_page()`.
+
+The page table updated by `vmalloc()` is not the current process but the reference page table stored at `init_mm->pgd`. This means that a process accessing the vmalloc area will cause a page fault exception as its page tables are not pointing to the correct area. There is a special case in the page fault handling code which knows that the fault occured in the vmalloc area and updates the current process page tables using information from the master page table. How the use of `vmalloc()` relates to the buddy allocator and page faulting is illustrated in the figure:
+
+![](./pics/understand-html035.png)
+
+### Freeing A Non-Contiguous Are
+
+The function `vfree()` is responsible for freeing a virtual area. It linearly searches the list of `vm_structs` looking for the desired region and then calls `vmfree_area_pages()` on the region of memory to be freed.
+
+![](./pics/understand-html036.png)
+
+`vmfree_area_pages()` is the exact opposite of `vmalloc_area_pages()`. It walks the page tables freeing up the page table entries and associated pages for the region.
+
+- `void vfree(void *addr)`: Free a region of memory allocated with `vmalloc()`, `vmalloc_dma()` or `vmalloc_32()`
