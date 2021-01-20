@@ -48,7 +48,7 @@
 
 [The Compiler Sanitizers and Valgrind for C/C++ Debugging](./techs/sanitizer.md)
 
-[The perf Tool and Performance Profiling of C++ program on Linux](./techs/val_perf.md)
+[The perf Tutorial](./techs/perf.md)
 
 [The Page Reclaimation Algorithm of Linux Kernel](./techs/linuxpra.md)
 

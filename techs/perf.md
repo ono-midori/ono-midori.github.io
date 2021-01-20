@@ -1,4 +1,6 @@
- - [Linux kernel profiling with perf](#linux-kernel-profiling-with-perf)
+ # The perf Tutorial
+
+- [The perf Tutorial](#the-perf-tutorial)
   - [Introduction](#introduction)
     - [Commands](#commands)
     - [Events](#events)
@@ -44,8 +46,6 @@
     - [Access Control](#access-control)
   - [Other Scenarios](#other-scenarios)
     - [Profiling sleep times](#profiling-sleep-times)
- 
- # Linux kernel profiling with perf
 
  ## Introduction
 
