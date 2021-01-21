@@ -1101,15 +1101,30 @@ A persistent concept through the whole VM is the *Get Free Page (GFP)* flags. Th
 
 The first of the three is the set of zone modifiers listed in the table. These flags indicate that the caller must try to allocate from a particular zone. The reader will note there is not a zone modifier for `ZONE_NORMAL`. This is because the zone modifier flag is used as an offset within an array and 0 implicitly means allocate from `ZONE_NORMAL`.
 
-![](./pics/gfp.png)
+- `__GFP_DMA`	Allocate from `ZONE_DMA` if possible
+- `__GFP_HIGHMEM`	Allocate from `ZONE_HIGHMEM` if possible
+- `GFP_DMA`	Alias for `__GFP_DMA`
 
 The next flags are action modifiers listed in the table. They change the behaviour of the VM and what the calling process may do. The low level flags on their own are too primitive to be easily used.
 
-![](./pics/gfp2.png)
+
+- `__GFP_WAIT`	Indicates that the caller is not high priority and can sleep or reschedule
+- `__GFP_HIGH`	Used by a high priority or kernel process. Kernel 2.2.x used it to determine if a process could access emergency pools of memory. In 2.4.x kernels, it does not appear to be used
+- `__GFP_IO`	Indicates that the caller can perform low level IO. In 2.4.x, the main affect this has is determining if try_to_free_buffers() can flush buffers or not. It is used by at least one journaled filesystem
+- `__GFP_HIGHIO`	Determines that IO can be performed on pages mapped in high memory. Only used in try_to_free_buffers()
+- `__GFP_FS`	Indicates if the caller can make calls to the filesystem layer. This is used when the caller is filesystem related, the buffer cache for instance, and wants to avoid recursively calling itself
 
 It is difficult to know what the correct combinations are for each instance so a few high level combinations are defined and listed in the table. For clarity the `__GFP_` is removed from the table combinations so, the `__GFP_HIGH` flag will read as `HIGH` below. The combinations to form the high level flags are listed in the second table To help understand this, take GFP_ATOMIC as an example. It has only the `__GFP_HIGH` flag set. This means it is high priority, will use emergency pools (if they exist) but will not sleep, perform IO or access the filesystem. This flag would be used by an interrupt handler for example.
 
-![](./pics/gfp3.png)
+- `GFP_ATOMIC`	HIGH
+- `GFP_NOIO`	HIGH | WAIT
+- `GFP_NOHIGHIO`	HIGH | WAIT | IO
+- `GFP_NOFS`	HIGH | WAIT | IO | HIGHIO
+- `GFP_KERNEL`	HIGH | WAIT | IO | HIGHIO | FS
+- `GFP_NFS`	HIGH | WAIT | IO | HIGHIO | FS
+- `GFP_USER`	WAIT | IO | HIGHIO | FS
+- `GFP_HIGHUSER`	WAIT | IO | HIGHIO | FS | HIGHMEM
+- `GFP_KSWAPD`	WAIT | IO | HIGHIO | FS
 
 - `GFP_ATOMIC`  This flag is used whenever the caller cannot sleep and must be serviced if at all possible. Any interrupt handler that requires memory must use this flag to avoid sleeping or performing IO. Many subsystems during init will use this system such as `buffer_init()` and `inode_init()`
 - `GFP_NOIO`	This is used by callers who are already performing an IO related function. For example, when the loop back device is trying to get a page for a buffer head, it uses this flag to make sure it will not perform some action that would result in more IO. If fact, it appears the flag was introduced specifically to avoid a deadlock in the loopback device.
