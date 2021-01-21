@@ -998,17 +998,17 @@ All the other functions that access userspace follow a similar pattern.
 
 This chapter describes how physical pages are managed and allocated in Linux. The principal algorithmm used is the *Binary Buddy Allocator*, devised by Knowlton and further described by Knuth. It is has been shown to be extremely fast in comparison to other allocators.
 
-This is an allocation scheme which combines a normal power-of-two allocator with free buffer coalescing and the basic concept behind it is quite simple. Memory is broken up into large blocks of pages where each block is a power of two number of pages. If a block of the desired size is not available, a large block is broken up in half and the two blocks are buddies to each other. One half is used for the allocation and the other is free. The blocks are continuously halved as necessary until a block of the desired size is available. When a block is later freed, the buddy is examined and the two coalesced if it is free.
+This is an allocation scheme which combines a normal power-of-two allocator with free buffer coalescing, and the basic concept behind it is quite simple. Memory is broken up into large blocks of pages where each block is a power of two number of pages. If a block of the desired size is not available, a large block is broken up in half and the two blocks are buddies to each other. One half is used for the allocation and the other is free. The blocks are continuously halved as necessary until a block of the desired size is available. When a block is later freed, the buddy is examined and the two coalesced if it is free.
 
 This chapter will begin with describing how Linux remembers what blocks of memory are free. After that the methods for allocating and freeing pages will be discussed in details. The subsequent section will cover the flags which affect the allocator behaviour and finally the problem of fragmentation and how the allocator handles it will be covered.
 
 ### Managing Free Blocks
 
-As stated, the allocator maintains blocks of free pages where each block is a power of two number of pages. The exponent for the power of two sized block is referred to as the order. An array of `free_area_t` structs are maintained for each order that points to a linked list of blocks of pages that are free as indicated by the figure:
+As stated, the allocator maintains blocks of free pages where each block is a power of two number of pages. The exponent for the power of two sized block is referred to as *the order*. An array of `free_area_t` structs are maintained for each order that points to a linked list of blocks of pages that are free as indicated by the figure:
 
 ![](./pics/understand-html029.png)
 
-Hence, the 0th element of the array will point to a list of free page blocks of size 20 or 1 page, the 1st element will be a list of 2<sup>1</sup> (2) pages up to 2<sup>MAX_ORDER−1</sup> number of pages, where the `MAX_ORDER` is currently defined as 10. This eliminates the chance that a larger block will be split to satisfy a request where a smaller block would have sufficed. The page blocks are maintained on a linear linked list via `page->list`.
+Hence, the 0th element of the array will point to a list of free page blocks of size 2<sup>0</sup> or 1 page, the 1st element will be a list of 2<sup>1</sup> (2) pages up to 2<sup>MAX_ORDER−1</sup> number of pages, where the `MAX_ORDER` is currently defined as 10. This eliminates the chance that a larger block will be split to satisfy a request where a smaller block would have sufficed. The page blocks are maintained on a linear linked list via `page->list`.
 
 Each zone has a `free_area_t` struct array called `free_area[MAX_ORDER]`. It is declared in `<linux/mm.h>` as follows:
 
@@ -1017,6 +1017,7 @@ Each zone has a `free_area_t` struct array called `free_area[MAX_ORDER]`. It is 
  23         struct list_head        free_list;
  24         unsigned long           *map;
  25 } free_area_t; 
+ // free_area_t free_area[MAX_ORDER];
 ```
 
 The fields in this struct are simply:
@@ -1035,9 +1036,9 @@ Linux saves memory by only using one bit instead of two to represent each pair o
 
 ### Allocating Pages
 
-parameter which is a set of flags that determine how the allocator will behave. The flags are discussed in Section 6.4.
+Linux provides a quite sizable API for the allocation of page frames. All of them take a `gfp_mask` as a parameter which is a set of flags that determine how the allocator will behave. The flags are discussed in the following section.
 
-The allocation API functions all use the core function __alloc_pages() but the APIs exist so that the correct node and zone will be chosen. Different users will require different zones such as ZONE_DMA for certain device drivers or ZONE_NORMAL for disk buffers and callers should not have to be aware of what node is being used. A full list of page allocation APIs are listed in the table.
+The allocation API functions all use the core function `__alloc_pages()` but the APIs exist so that the correct node and zone will be chosen. Different users will require different zones such as `ZONE_DMA` for certain device drivers or `ZONE_NORMAL` for disk buffers, and callers should not have to be aware of what node is being used. A full list of page allocation APIs are listed as follows:
 
 - `struct page * alloc_page(unsigned int gfp_mask)`: Allocate a single page and return a struct address
 - `struct page * alloc_pages(unsigned int gfp_mask, unsigned int order)`: Allocate 2<sup>order</sup> number of pages and returns a struct page
@@ -1046,15 +1047,15 @@ The allocation API functions all use the core function __alloc_pages() but the A
 - `unsigned long __get_free_pages(unsigned int gfp_mask, unsigned int order)`: Allocate 2<sup>order</sup> number of pages and return a virtual address
 - `struct page * __get_dma_pages(unsigned int gfp_mask, unsigned int order)`: Allocate 2<sup>order</sup> number of pages from the DMA zone and return a struct page
 
-Allocations are always for a specified order, 0 in the case where a single page is required. If a free block cannot be found of the requested order, a higher order block is split into two buddies. One is allocated and the other is placed on the free list for the lower order. Figure 6.2 shows where a 2<sup>4</sup> block is split and how the buddies are added to the free lists until a block for the process is available.
+*Allocations are always for a specified order,* 0 in the case where a single page is required. If a free block cannot be found of the requested order, a higher order block is split into two buddies. One is allocated and the other is placed on the free list for the lower order. The figure shows where a 2<sup>4</sup> block is split and how the buddies are added to the free lists until a block for the process is available.
 
 ![](./pics/understand-html030.png)
 
-When the block is later freed, the buddy will be checked. If both are free, they are merged to form a higher order block and placed on the higher free list where its buddy is checked and so on. If the buddy is not free, the freed block is added to the free list at the current order. During these list manipulations, interrupts have to be disabled to prevent an interrupt handler manipulating the lists while a process has them in an inconsistent state. This is achieved by using an interrupt safe spinlock.
+*When the block is later freed, the buddy will be checked. If both are free, they are merged to form a higher order block and placed on the higher free list where its buddy is checked and so on. If the buddy is not free, the freed block is added to the free list at the current order. During these list manipulations, interrupts have to be disabled to prevent an interrupt handler manipulating the lists while a process has them in an inconsistent state. This is achieved by using an interrupt safe spinlock.*
 
-The second decision to make is which memory node or pg_data_t to use. Linux uses a node-local allocation policy which aims to use the memory bank associated with the CPU running the page allocating process. Here, the function `_alloc_pages()` is what is important as this function is different depending on whether the kernel is built for a UMA (function in `mm/page_alloc.c`) or NUMA (function in `mm/numa.c`) machine.
+*The second decision to make is which memory node or `pg_data_t` to use. Linux uses a node-local allocation policy which aims to use the memory bank associated with the CPU running the page allocating process.* Here, the function `_alloc_pages()` is what is important, as this function is different depending on whether the kernel is built for a UMA (function in `mm/page_alloc.c`) or NUMA (function in `mm/numa.c`) machine.
 
-Regardless of which API is used, `__alloc_pages()` in `mm/page_alloc.c` is the heart of the allocator. This function, which is never called directly, examines the selected zone and checks if it is suitable to allocate from based on the number of available pages. If the zone is not suitable, the allocator may fall back to other zones. The order of zones to fall back on are decided at boot time by the function `build_zonelists()` but generally `ZONE_HIGHMEM` will fall back to `ZONE_NORMAL` and that in turn will fall back to `ZONE_DMA`. If number of free pages reaches the pages_low watermark, it will wake **kswapd** to begin freeing up pages from zones and if memory is extremely tight, the caller will do the work of **kswapd** itself.
+Regardless of which API is used, *`__alloc_pages()` in `mm/page_alloc.c` is the heart of the allocator. This function, which is never called directly, examines the selected zone and checks if it is suitable to allocate from based on the number of available pages. If the zone is not suitable, the allocator may fall back to other zones.* The order of zones to fall back on are decided at boot time by the function `build_zonelists()` but generally `ZONE_HIGHMEM` will fall back to `ZONE_NORMAL` and that in turn will fall back to `ZONE_DMA`. If number of free pages reaches the `pages_low` watermark, it will wake **kswapd** to begin freeing up pages from zones and if memory is extremely tight, the caller will do the work of **kswapd** itself.
 
 ![](./pics/understand-html031.png)
 
@@ -1062,21 +1063,21 @@ Once the zone has finally been decided on, the function `rmqueue()` is called to
 
 ### Free Pages
 
-The API for the freeing of pages is a lot simpler and exists to help remember the order of the block to free as one disadvantage of a buddy allocator is that the caller has to remember the size of the original allocation. The API for freeing is listed in the table:
+The API for the freeing of pages is a lot simpler, and exists to help remember the order of the block to free, because one disadvantage of a buddy allocator is that the caller has to remember the size of the original allocation. The API for freeing is listed in the table:
 
-- `void __free_pages(struct page *page, unsigned int order)`: Free an order number of pages from the given page
-- `void __free_page(struct page *page)`: Free a single page
+- `void __free_pages(struct page *page, unsigned int order)`: Free an `order` number of pages from the given `page`
+- `void __free_page(struct page *page)`: Free a single `page`
 - `void free_page(void *addr)`: Free a page from the given virtual address
 - 
 The principal function for freeing pages is `__free_pages_ok()` and it should not be called directly. Instead the function `__free_pages()` is provided which performs simple checks first as indicated in the figure:
 
 ![](./pics/understand-html032.png)
 
-When a buddy is freed, Linux tries to coalesce the buddies together immediately if possible. This is not optimal as the worst case scenario will have many coalitions followed by the immediate splitting of the same blocks.
+When a buddy is freed, Linux tries to coalesce the buddies together immediately if possible. This is not optimal, because the worst case scenario will have many coalitions followed by the immediate splitting of the same blocks.
 
 To detect if the buddies can be merged or not, Linux checks the bit corresponding to the affected pair of buddies in `free_area->map`. As one buddy has just been freed by this function, it is obviously known that at least one buddy is free. If the bit in the map is 0 after toggling, we know that the other buddy must also be free because if the bit is 0, it means both buddies are either both free or both allocated. If both are free, they may be merged.
 
-Calculating the address of the buddy is a well known concept. As the allocations are always in blocks of size 2<sup>k</sup>, the address of the block, or at least its offset within zone_mem_map will also be a power of 2<sup>k</sup>. The end result is that there will always be at least k number of zeros to the right of the address. To get the address of the buddy, the *k*th bit from the right is examined. If it is 0, then the buddy will have this bit flipped. To get this bit, Linux creates a mask which is calculated as
+Calculating the address of the buddy is a well known concept. As the allocations are always in blocks of size 2<sup>k</sup>, the address of the block, or at least its offset within `zone_mem_map` will also be a power of 2<sup>k</sup>. The end result is that there will always be at least *k* number of zeros to the right of the address. To get the address of the buddy, the *k*th bit from the right is examined. If it is 0, then the buddy will have this bit flipped. To get this bit, Linux creates a mask which is calculated as
 
 ```
  mask = ( 0 << k) 
@@ -1110,21 +1111,23 @@ The next flags are action modifiers listed in the table. They change the behavio
 
 - `__GFP_WAIT`	Indicates that the caller is not high priority and can sleep or reschedule
 - `__GFP_HIGH`	Used by a high priority or kernel process. Kernel 2.2.x used it to determine if a process could access emergency pools of memory. In 2.4.x kernels, it does not appear to be used
-- `__GFP_IO`	Indicates that the caller can perform low level IO. In 2.4.x, the main affect this has is determining if try_to_free_buffers() can flush buffers or not. It is used by at least one journaled filesystem
-- `__GFP_HIGHIO`	Determines that IO can be performed on pages mapped in high memory. Only used in try_to_free_buffers()
+- `__GFP_IO`	Indicates that the caller can perform low level IO. In 2.4.x, the main affect this has is determining whether `try_to_free_buffers()` can flush buffers or not. It is used by at least one journaled filesystem
+- `__GFP_HIGHIO`	Determines that IO can be performed on pages mapped in high memory. Only used in `try_to_free_buffers()`
 - `__GFP_FS`	Indicates if the caller can make calls to the filesystem layer. This is used when the caller is filesystem related, the buffer cache for instance, and wants to avoid recursively calling itself
 
-It is difficult to know what the correct combinations are for each instance so a few high level combinations are defined and listed in the table. For clarity the `__GFP_` is removed from the table combinations so, the `__GFP_HIGH` flag will read as `HIGH` below. The combinations to form the high level flags are listed in the second table To help understand this, take GFP_ATOMIC as an example. It has only the `__GFP_HIGH` flag set. This means it is high priority, will use emergency pools (if they exist) but will not sleep, perform IO or access the filesystem. This flag would be used by an interrupt handler for example.
+It is difficult to know what the correct combinations are for each instance, so a few high level combinations are defined and listed in the table. For clarity the `__GFP_` is removed from the table combinations so, the `__GFP_HIGH` flag will read as `HIGH` below. The combinations to form the high level flags are listed in the second table. To help understand this, take `GFP_ATOMIC` as an example. It has only the `__GFP_HIGH` flag set. This means it is high priority, will use emergency pools (if they exist) but will not sleep, perform IO or access the filesystem. This flag would be used by an interrupt handler for example.
 
-- `GFP_ATOMIC`	HIGH
-- `GFP_NOIO`	HIGH | WAIT
-- `GFP_NOHIGHIO`	HIGH | WAIT | IO
-- `GFP_NOFS`	HIGH | WAIT | IO | HIGHIO
-- `GFP_KERNEL`	HIGH | WAIT | IO | HIGHIO | FS
-- `GFP_NFS`	HIGH | WAIT | IO | HIGHIO | FS
-- `GFP_USER`	WAIT | IO | HIGHIO | FS
-- `GFP_HIGHUSER`	WAIT | IO | HIGHIO | FS | HIGHMEM
-- `GFP_KSWAPD`	WAIT | IO | HIGHIO | FS
+- `GFP_ATOMIC`	`HIGH`
+- `GFP_NOIO`	`HIGH | WAIT`
+- `GFP_NOHIGHIO`	`HIGH | WAIT | IO`
+- `GFP_NOFS`	`HIGH | WAIT | IO | HIGHIO`
+- `GFP_KERNEL`	`HIGH | WAIT | IO | HIGHIO | FS`
+- `GFP_NFS`	`HIGH | WAIT | IO | HIGHIO | FS`
+- `GFP_USER`	`WAIT | IO | HIGHIO | FS`
+- `GFP_HIGHUSER`	`WAIT | IO | HIGHIO | FS | HIGHMEM`
+- `GFP_KSWAPD`	`WAIT | IO | HIGHIO | FS`
+
+
 
 - `GFP_ATOMIC`  This flag is used whenever the caller cannot sleep and must be serviced if at all possible. Any interrupt handler that requires memory must use this flag to avoid sleeping or performing IO. Many subsystems during init will use this system such as `buffer_init()` and `inode_init()`
 - `GFP_NOIO`	This is used by callers who are already performing an IO related function. For example, when the loop back device is trying to get a page for a buffer head, it uses this flag to make sure it will not perform some action that would result in more IO. If fact, it appears the flag was introduced specifically to avoid a deadlock in the loopback device.
