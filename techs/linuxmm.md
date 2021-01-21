@@ -59,6 +59,12 @@
     - [Describing Virtual Memory Areas](#describing-virtual-memory-areas)
     - [Allocating A Non-Contiguous Are](#allocating-a-non-contiguous-are)
     - [Freeing A Non-Contiguous Are](#freeing-a-non-contiguous-are)
+  - [Slab Allocator](#slab-allocator)
+    - [Caches](#caches)
+      - [Cache Descriptor](#cache-descriptor)
+      - [Cache Static Flags](#cache-static-flags)
+      - [Cache Dynamic Flags](#cache-dynamic-flags)
+      - [Cache Allocation Flags](#cache-allocation-flags)
 
 ## Describing Physical Memory
 
@@ -1163,3 +1169,237 @@ The function `vfree()` is responsible for freeing a virtual area. It linearly se
 `vmfree_area_pages()` is the exact opposite of `vmalloc_area_pages()`. It walks the page tables freeing up the page table entries and associated pages for the region.
 
 - `void vfree(void *addr)`: Free a region of memory allocated with `vmalloc()`, `vmalloc_dma()` or `vmalloc_32()`
+
+## Slab Allocator
+
+In this chapter, the general-purpose allocator is described. It is a slab allocator which is very similar in many respects to the general kernel allocator used in Solaris. Linux's implementation is heavily based on the first slab allocator paper by Bonwick with many improvements that bear a close resemblance to those described in his later paper. We will begin with a quick overview of the allocator followed by a description of the different structures used before giving an in-depth tour of each task the allocator is responsible for.
+
+The basic idea behind the slab allocator is to have caches of commonly used objects kept in an initialised state available for use by the kernel. Without an object based allocator, the kernel will spend much of its time allocating, initialising and freeing the same object. The slab allocator aims to to cache the freed object so that the basic structure is preserved between uses.
+
+The slab allocator consists of a variable number of caches that are linked together on a doubly linked circular list called a cache chain. A cache, in the context of the slab allocator, is a manager for a number of objects of a particular type like the mm_struct or fs_cache cache and is managed by a struct kmem_cache_s discussed in detail later. The caches are linked via the next field in the cache struct.
+
+Each cache maintains blocks of contiguous pages in memory called slabs which are carved up into small chunks for the data structures and objects the cache manages. The relationship between these different structures is illustrated in the figure:
+
+![](./pics/understand-html037.png)
+
+The slab allocator has three principle aims:
+
+- The allocation of small blocks of memory to help eliminate internal fragmentation that would be otherwise caused by the buddy system;
+- The caching of commonly used objects so that the system does not waste time allocating, initialising and destroying objects. Benchmarks on Solaris showed excellent speed improvements for allocations with the slab allocator in use;
+- The better utilisation of hardware cache by aligning objects to the L1 or L2 caches.
+
+To help eliminate internal fragmentation normally caused by a binary buddy allocator, two sets of caches of small memory buffers ranging from 2<sup>5</sup> (32) bytes to 2<sup>17</sup> (131072) bytes are maintained. One cache set is suitable for use with DMA devices. These caches are called size-N and size-N(DMA) where N is the size of the allocation, and a function kmalloc() (see Section 8.4.1) is provided for allocating them. With this, the single greatest problem with the low level page allocator is addressed. The sizes caches are discussed in further detail.
+
+The second task of the slab allocator is to maintain caches of commonly used objects. For many structures used in the kernel, the time needed to initialise an object is comparable to, or exceeds, the cost of allocating space for it. When a new slab is created, a number of objects are packed into it and initialised using a constructor if available. When an object is freed, it is left in its initialised state so that object allocation will be quick.
+
+The final task of the slab allocator is hardware cache utilization. If there is space left over after objects are packed into a slab, the remaining space is used to color the slab. Slab coloring is a scheme which attempts to have objects in different slabs use different lines in the cache. By placing objects at a different starting offset within the slab, it is likely that objects will use different lines in the CPU cache helping ensure that objects from the same slab cache will be unlikely to flush each other. With this scheme, space that would otherwise be wasted fulfills a new function. Figure ?? shows how a page allocated from the buddy allocator is used to store objects that using coloring to align the objects to the L1 CPU cache.
+
+![](./pics/understand-html038.png)
+
+Linux does not attempt to color page allocations based on their physical address, or order where objects are placed such as those described for data or code segments but the scheme used does help improve cache line usage. Cache colouring is further discussed in Section 8.1.5. On an SMP system, a further step is taken to help cache utilization where each cache has a small array of objects reserved for each CPU. This is discussed further in Section 8.5.
+
+The slab allocator provides the additional option of slab debugging if the option is set at compile time with CONFIG_SLAB_DEBUG. Two debugging features are providing called red zoning and object poisoning. With red zoning, a marker is placed at either end of the object. If this mark is disturbed, the allocator knows the object where a buffer overflow occured and reports it. Poisoning an object will fill it with a predefined bit pattern(defined 0x5A in mm/slab.c) at slab creation and after a free. At allocation, this pattern is examined and if it is changed, the allocator knows that the object was used before it was allocated and flags it.
+
+The small, but powerful, API which the allocator exports is listed in the table:
+
+- `kmem_cache_t * kmem_cache_create(const char *name, size_t size, size_t offset, unsigned long flags, void (*ctor)(void*, kmem_cache_t *, unsigned long), void (*dtor)(void*, kmem_cache_t *, unsigned long))`: Creates a new cache and adds it to the cache chain
+- `int kmem_cache_reap(int gfp_mask)`: Scans at most REAP_SCANLEN caches and selects one for reaping all per-cpu objects and free slabs from. Called when memory is tight
+- `int kmem_cache_shrink(kmem_cache_t *cachep)`: This function will delete all per-cpu objects associated with a cache and delete all slabs in the slabs_free list. It returns the number of pages freed.
+- `void * kmem_cache_alloc(kmem_cache_t *cachep, int flags)`: Allocate a single object from the cache and return it to the caller
+- `void kmem_cache_free(kmem_cache_t *cachep, void *objp)`: Free an object and return it to the cache
+- `void * kmalloc(size_t size, int flags)`: Allocate a block of memory from one of the sizes cache
+- `void kfree(const void *objp)`: Free a block of memory allocated with kmalloc
+- `int kmem_cache_destroy(kmem_cache_t * cachep)`: Destroys all objects in all slabs and frees up all associated memory before removing the cache from the chain
+
+
+### Caches
+
+One cache exists for each type of object that is to be cached. For a full list of caches available on a running system, run cat /proc/slabinfo . This file gives some basic information on the caches. An excerpt from the output of this file looks like;
+
+```
+slabinfo - version: 1.1 (SMP)
+kmem_cache            80     80    248    5    5    1 :  252  126
+urb_priv               0      0     64    0    0    1 :  252  126
+tcp_bind_bucket       15    226     32    2    2    1 :  252  126
+inode_cache         5714   5992    512  856  856    1 :  124   62
+dentry_cache        5160   5160    128  172  172    1 :  252  126
+mm_struct            240    240    160   10   10    1 :  252  126
+vm_area_struct      3911   4480     96  112  112    1 :  252  126
+size-64(DMA)           0      0     64    0    0    1 :  252  126
+size-64              432   1357     64   23   23    1 :  252  126
+size-32(DMA)          17    113     32    1    1    1 :  252  126
+size-32              850   2712     32   24   24    1 :  252  126
+```
+
+Each of the column fields correspond to a field in the struct kmem_cache_s structure. The columns listed in the excerpt above are:
+
+- **cache-name** A human readable name such as “tcp_bind_bucket”;
+- **num-active-objs** Number of objects that are in use;
+- **total-objs** How many objects are available in total including unused;
+- **obj-size** The size of each object, typically quite small;
+- **num-active-slabs** Number of slabs containing objects that are active;
+- **total-slabs** How many slabs in total exist;
+- **num-pages-per-slab** The pages required to create one slab, typically 1.
+
+If SMP is enabled like in the example excerpt, two more columns will be displayed after a colon. They refer to the per CPU cache described in Section 8.5. The columns are:
+
+- **limit** This is the number of free objects the pool can have before half of it is given to the global free pool;
+- **batchcount** The number of objects allocated for the processor in a block when no objects are free.
+
+To speed allocation and freeing of objects and slabs they are arranged into three lists; slabs_full, slabs_partial and slabs_free. slabs_full has all its objects in use. slabs_partial has free objects in it and so is a prime candidate for allocation of objects. slabs_free has no allocated objects and so is a prime candidate for slab destruction.
+
+#### Cache Descriptor
+
+All information describing a cache is stored in a struct kmem_cache_s declared in mm/slab.c. This is an extremely large struct and so will be described in parts.
+
+```c++
+190 struct kmem_cache_s {
+193     struct list_head        slabs_full;
+194     struct list_head        slabs_partial;
+195     struct list_head        slabs_free;
+196     unsigned int            objsize;
+197     unsigned int            flags;
+198     unsigned int            num;
+199     spinlock_t              spinlock;
+200 #ifdef CONFIG_SMP
+201     unsigned int            batchcount;
+202 #endif
+203 
+```
+
+Most of these fields are of interest when allocating or freeing objects.
+
+- **slabs_*** These are the three lists where the slabs are stored as described in the previous section;
+- **objsize** This is the size of each object packed into the slab;
+- **flags** These flags determine how parts of the allocator will behave when dealing with the cache. See Section 8.1.2;
+- **num** This is the number of objects contained in each slab;
+- **spinlock** A spinlock protecting the structure from concurrent accessses;
+- **batchcount** This is the number of objects that will be allocated in batch for the per-cpu caches as described in the previous section.
+
+```c++
+206     unsigned int            gfporder;
+209     unsigned int            gfpflags;
+210 
+211     size_t                  colour;
+212     unsigned int            colour_off;
+213     unsigned int            colour_next;
+214     kmem_cache_t            *slabp_cache;
+215     unsigned int            growing;
+216     unsigned int            dflags;
+217 
+219     void (*ctor)(void *, kmem_cache_t *, unsigned long);
+222     void (*dtor)(void *, kmem_cache_t *, unsigned long);
+223 
+224     unsigned long           failures;
+225 
+```
+
+This block deals with fields of interest when allocating or freeing slabs from the cache.
+
+- **gfporder** This indicates the size of the slab in pages. Each slab consumes 2gfporder pages as these are the allocation sizes the buddy allocator provides;
+- **gfpflags** The GFP flags used when calling the buddy allocator to allocate pages are stored here. See Section 6.4 for a full list;
+- **colour** Each slab stores objects in different cache lines if possible. Cache colouring will be further discussed in Section 8.1.5;
+- **colour_off** This is the byte alignment to keep slabs at. For example, slabs for the size-X caches are aligned on the L1 cache;
+- **colour_next** This is the next colour line to use. This value wraps back to 0 when it reaches colour;
+- **growing** This flag is set to indicate if the cache is growing or not. If it is, it is much less likely this cache will be selected to reap free slabs under memory pressure;
+- **dflags** These are the dynamic flags which change during the cache lifetime. See Section 8.1.3;
+- **ctor** A complex object has the option of providing a constructor function to be called to initialise each new object. This is a pointer to that function and may be NULL;
+- **dtor** This is the complementing object destructor and may be NULL;
+- **failures** This field is not used anywhere in the code other than being initialised to 0.
+
+```c++
+227     char                    name[CACHE_NAMELEN];
+228     struct list_head        next;
+```
+
+These are set during cache creation
+
+- **name** This is the human readable name of the cache;
+- **next** This is the next cache on the cache chain.
+
+```c++
+229 #ifdef CONFIG_SMP
+231     cpucache_t              *cpudata[NR_CPUS];
+232 #endif
+```
+
+- **cpudata** This is the per-cpu data and is discussed further in Section 8.5.
+
+```c++
+233 #if STATS
+234     unsigned long           num_active;
+235     unsigned long           num_allocations;
+236     unsigned long           high_mark;
+237     unsigned long           grown;
+238     unsigned long           reaped;
+239     unsigned long           errors;
+240 #ifdef CONFIG_SMP
+241     atomic_t                allochit;
+242     atomic_t                allocmiss;
+243     atomic_t                freehit;
+244     atomic_t                freemiss;
+245 #endif
+246 #endif
+247 };
+```
+
+These figures are only available if the CONFIG_SLAB_DEBUG option is set during compile time. They are all beancounters and not of general interest. The statistics for /proc/slabinfo are calculated when the proc entry is read by another process by examining every slab used by each cache rather than relying on these fields to be available.
+
+- **num_active** The current number of active objects in the cache is stored here;
+- **num_allocations** A running total of the number of objects that have been allocated on this cache is stored in this field;
+- **high_mark** This is the highest value num_active has had to date;
+- **grown** This is the number of times kmem_cache_grow() has been called;
+- **reaped** The number of times this cache has been reaped is kept here;
+- **errors** This field is never used;
+- **allochit** This is the total number of times an allocation has used the per-cpu cache;
+- **allocmiss** To complement allochit, this is the number of times an allocation has missed the per-cpu cache;
+- **freehit** This is the number of times a free was placed on a per-cpu cache;
+- **freemiss** This is the number of times an object was freed and placed on the global pool.
+
+#### Cache Static Flags
+
+A number of flags are set at cache creation time that remain the same for the lifetime of the cache. They affect how the slab is structured and how objects are stored within it. All the flags are stored in a bitmask in the flags field of the cache descriptor. The full list of possible flags that may be used are declared in <linux/slab.h>.
+
+There are three principle sets. The first set is internal flags which are set only by the slab allocator and are listed in Table 8.2. The only relevant flag in the set is the CFGS_OFF_SLAB flag which determines where the slab descriptor is stored.
+
+- `CFGS_OFF_SLAB`	Indicates that the slab managers for this cache are kept off-slab. This is discussed further in Section 8.2.1
+- `CFLGS_OPTIMIZE`	This flag is only ever set and never used
+
+The second set are set by the cache creator and they determine how the allocator treats the slab and how objects are stored. They are listed in Table 8.3.
+
+- `SLAB_HWCACHE_ALIGN`	Align the objects to the L1 CPU cache
+- `SLAB_MUST_HWCACHE_ALIGN`	Force alignment to the L1 CPU cache even if it is very wasteful or slab debugging is enabled
+- `SLAB_NO_REAP`	Never reap slabs in this cache
+- `SLAB_CACHE_DMA`	Allocate slabs with memory from ZONE_DMA
+
+The last flags are only available if the compile option CONFIG_SLAB_DEBUG is set. They determine what additional checks will be made to slabs and objects and are primarily of interest only when new caches are being developed.
+
+`SLAB_DEBUG_FREE`	Perform expensive checks on free
+`SLAB_DEBUG_INITIAL`	On free, call the constructor as a verifier to ensure the object is still initialised correctly
+`SLAB_RED_ZONE`	This places a marker at either end of objects to trap overflows
+`SLAB_POISON`	Poison objects with a known pattern for trapping changes made to objects not allocated or initialised
+
+To prevent callers using the wrong flags a CREATE_MASK is defined in mm/slab.c consisting of all the allowable flags. When a cache is being created, the requested flags are compared against the CREATE_MASK and reported as a bug if invalid flags are used.
+
+#### Cache Dynamic Flags
+
+The dflags field has only one flag, DFLGS_GROWN, but it is important. The flag is set during kmem_cache_grow() so that kmem_cache_reap() will be unlikely to choose the cache for reaping. When the function does find a cache with this flag set, it skips the cache and removes the flag.
+
+#### Cache Allocation Flags
+
+These flags correspond to the GFP page flag options for allocating pages for slabs. Callers sometimes call with either SLAB_* or GFP_* flags, but they really should use only SLAB_* flags. They correspond directly to the flags described in Section 6.4 so will not be discussed in detail here. It is presumed the existence of these flags are for clarity and in case the slab allocator needed to behave differently in response to a particular flag but in reality, there is no difference.
+
+- `SLAB_ATOMIC`	Equivalent to `GFP_ATOMIC`
+- `SLAB_DMA`	Equivalent to `GFP_DMA`
+- `SLAB_KERNEL`	Equivalent to `GFP_KERNEL`
+- `SLAB_NFS`	Equivalent to `GFP_NFS`
+- `SLAB_NOFS`	Equivalent to `GFP_NOFS`
+- `SLAB_NOHIGHIO`	Equivalent to `GFP_NOHIGHIO`
+- `SLAB_NOIO`	Equivalent to `GFP_NOIO`
+- `SLAB_USER`	Equivalent to `GFP_USER`
+
+A very small number of flags may be passed to constructor and destructor functions which are listed in the table:
+
+- `SLAB_CTOR_CONSTRUCTOR`	Set if the function is being called as a constructor for caches which use the same function as a constructor and a destructor
+- `SLAB_CTOR_ATOMIC`	Indicates that the constructor may not sleep
+- `SLAB_CTOR_VERIFY`	Indicates that the constructor should just verify the object is initialised correctly
