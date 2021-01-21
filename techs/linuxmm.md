@@ -7,7 +7,7 @@
       - [Zone Watermarks](#zone-watermarks)
       - [Zone Wait Queue Table](#zone-wait-queue-table)
     - [Zone initialization](#zone-initialization)
-      - [initializing `mem_map`](#initializing-mem_map)
+      - [initializing mem_map](#initializing-mem_map)
     - [Pages](#pages)
   - [Page Table Management](#page-table-management)
     - [Describing the Page Directory](#describing-the-page-directory)
@@ -16,7 +16,7 @@
     - [Translating and Setting Page Table Entries](#translating-and-setting-page-table-entries)
     - [Allocating and Freeing Page Tables](#allocating-and-freeing-page-tables)
     - [Kernel Page Tables](#kernel-page-tables)
-    - [Mapping Addresses to a `struct page`](#mapping-addresses-to-a-struct-page)
+    - [Mapping Addresses to a struct page](#mapping-addresses-to-a-struct-page)
       - [Mapping Physical to Virtual Kernel Addresses](#mapping-physical-to-virtual-kernel-addresses)
     - [Translation Lookaside Buffer (TLB)](#translation-lookaside-buffer-tlb)
     - [Level 1 CPU Cache Management](#level-1-cpu-cache-management)
@@ -181,7 +181,7 @@ It is possible to have just one wait queue in the zone, but that would mean that
 
 It is the core function `free_area_init_core()` which is responsible for filling in each `zone_t` with the relevant information and the allocation of the `mem_map` array for the node. Note that information on what pages are free for the zones is not determined at this point. That information is not known until the boot memory allocator is being retired.
 
-#### initializing `mem_map`
+#### initializing mem_map
 
 The `mem_map` area is created during system startup in one of two fashions. On NUMA systems, the global `mem_map` is treated as a virtual array starting at `PAGE_OFFSET`. `free_area_init_node()` is called for each active node in the system, which *allocates the portion of this array for the node being initialized*. On UMA systems, `free_area_init()` uses `contig_page_data` as the node and the global `mem_map` as the "local" `mem_map` for this node. The callgraph for both functions is shown in the following figure.
 
@@ -339,7 +339,7 @@ Once `pagetable_init()` returns, the page tables for kernel space are now full i
 
 The next task of the `paging_init()` is responsible for calling `kmap_init()` to initialize each of the PTEs with the `PAGE_KERNEL` protection flags. The final task is to call `zone_sizes_init()` which initializes all the zone structures used.
 
-### Mapping Addresses to a `struct page`
+### Mapping Addresses to a struct page
 
 There is requirement for Linux to have a fast method of mapping virtual addresses to physical addresses, and for mapping `struct page`s to their physical address. Linux achieves this by knowing where the global `mem_map` array is as the global array has pointers to all `struct page`s representing physical memory in the system.
 
@@ -1045,7 +1045,7 @@ Calculating the address of the buddy is a well known concept. As the allocations
 
 ```
  mask = ( 0 << k) 
-``` 
+```
 
 The mask we are interested in is
 
@@ -1057,7 +1057,7 @@ Linux takes a shortcut in calculating this by noting that
 
 ```
  imask = -mask = 1 +  mask 
-``` 
+```
 Once the buddy is merged, it is removed for the free list and the newly coalesced pair moves to the next higher order to see if it may also be merged.
 
 ### Get Free Page (GFP) Flags
