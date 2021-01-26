@@ -57,7 +57,7 @@
     - [Avoiding Fragmentation](#avoiding-fragmentation)
   - [Non-Contiguous Memory Allocation](#non-contiguous-memory-allocation)
     - [Describing Virtual Memory Areas](#describing-virtual-memory-areas)
-    - [Allocating A Non-Contiguous Are](#allocating-a-non-contiguous-are)
+    - [Allocating A Non-Contiguous Area](#allocating-a-non-contiguous-area)
     - [Freeing A Non-Contiguous Are](#freeing-a-non-contiguous-are)
   - [Slab Allocator](#slab-allocator)
     - [Caches](#caches)
@@ -178,7 +178,7 @@ When allocating a page, Linux uses a *node-local allocation policy* to allocate 
 - **page_min, page_low, page_high**: These are zone watermarks.
 - **need_balance**: This flag that tells the pageout **kswapd** to balance the zone. A zone is said to need balance when the number of available pages reaches one of the *zone watermarks*.
 - **free_area**: Free area bitmaps used by the buddy allocator.
-- **wait_table**: A hash table of wait queues of processes waiting on a page to be freed. While processed could all wait on one queue, this would cause all waiting processes to race for pages still locked when woken up (a thundering herd).
+- **wait_table**: A hash table of wait queues of processes waiting on a page to be freed. While processes could all wait on one queue, this would cause all waiting processes to race for pages still locked when woken up (a thundering herd).
 - **wait_table_size**: Number of queues in the hash table, which is a power of 2.
 - **zone_pgdat**: Points to the parent `pg_data_t`.
 - **zone_mem_map**: The first page in the global `mem_map` this zone refers to.
@@ -1133,7 +1133,7 @@ It is difficult to know what the correct combinations are for each instance, so 
 - `GFP_NOIO`	This is used by callers who are already performing an IO related function. For example, when the loop back device is trying to get a page for a buffer head, it uses this flag to make sure it will not perform some action that would result in more IO. If fact, it appears the flag was introduced specifically to avoid a deadlock in the loopback device.
 - `GFP_NOHIGHIO`	This is only used in one place in `alloc_bounce_page()` during the creating of a bounce buffer for IO in high memory
 - `GFP_NOFS`	This is only used by the buffer cache and filesystems to make sure they do not recursively call themselves by accident
-- `GFP_KERNEL`	The most liberal of the combined flags. It indicates that the caller is free to do whatever it pleases. Strictly speaking the difference between this flag and GFP_USER is that this could use emergency pools of pages but that is a no-op on 2.4.x kernels
+- `GFP_KERNEL`	The most liberal of the combined flags. It indicates that the caller is free to do whatever it pleases. Strictly speaking the difference between this flag and `GFP_USER` is that this could use emergency pools of pages but that is a no-op on 2.4.x kernels
 - `GFP_USER`	Another flag of historical significance. In the 2.2.x series, an allocation was given a `LOW`, `MEDIUM` or `HIGH` priority. If memory was tight, a request with `GFP_USER` (low) would fail where as the others would keep trying. Now it has no significance and is not treated any different to `GFP_KERNEL`
 - `GFP_HIGHUSER`	This flag indicates that the allocator should allocate from `ZONE_HIGHMEM` if possible. It is used when the page is allocated on behalf of a user process
 - `GFP_NFS`	This flag is defunct. In the 2.0.x series, this flag determined what the reserved page size was. Normally 20 free pages were reserved. If this flag was set, only 5 would be reserved. Now it is not treated differently anywhere
@@ -1141,7 +1141,7 @@ It is difficult to know what the correct combinations are for each instance, so 
 
 #### Process Flags
 
-A process may also set flags in the task_struct which affects allocator behaviour. The full list of process flags are defined in <linux/sched.h> but only the ones affecting VM behaviour are listed in below:
+A process may also set flags in the `task_struct` which affects allocator behaviour. The full list of process flags are defined in `<linux/sched.h>` but only the ones affecting VM behaviour are listed in below:
 
 - `PF_MEMALLOC`	This flags the process as a memory allocator. **kswapd** sets this flag and it is set for any process that is about to be killed by the *Out Of Memory (OOM)* killer which is discussed in Chapter 13. It tells the buddy allocator to ignore zone watermarks and assign the pages if at all possible
 - `PF_MEMDIE`	This is set by the OOM killer and functions the same as the `PF_MEMALLOC` flag by telling the page allocator to give pages if at all possible as the process is about to die
@@ -1149,7 +1149,7 @@ A process may also set flags in the task_struct which affects allocator behaviou
 
 ### Avoiding Fragmentation
 
-One important problem that must be addressed with any allocator is the problem of internal and external fragmentation. External fragmentation is the inability to service a request because the available memory exists only in small blocks. Internal fragmentation is defined as the wasted space where a large block had to be assigned to service a small request. In Linux, external fragmentation is not a serious problem as large requests for contiguous pages are rare and usually vmalloc() (see Chapter 7) is sufficient to service the request. The lists of free blocks ensure that large blocks do not have to be split unnecessarily.
+One important problem that must be addressed with any allocator is the problem of internal and external fragmentation. External fragmentation is the inability to service a request because the available memory exists only in small blocks. Internal fragmentation is defined as the wasted space where a large block had to be assigned to service a small request. In Linux, external fragmentation is not a serious problem as large requests for contiguous pages are rare and usually `vmalloc()` (see Chapter 7) is sufficient to service the request. The lists of free blocks ensure that large blocks do not have to be split unnecessarily.
 
 Internal fragmentation is the single most serious failing of the binary buddy system. While fragmentation is expected to be in the region of 28%, it has been shown that it can be in the region of 60%, in comparison to just 1% with the first fit allocator. It has also been shown that using variations of the buddy system will not help the situation significantly. To address this problem, Linux uses a slab allocator to carve up pages into small blocks of memory for allocation which is discussed further in Chapter 8. With this combination of allocators, the kernel can ensure that the amount of memory wasted due to internal fragmentation is kept to a minimum.
 
@@ -1163,9 +1163,9 @@ The page tables in this region are adjusted as necessary to point to physical pa
 
 This small chapter begins with a description of how the kernel tracks which areas in the vmalloc address space are used and how regions are allocated and freed.
 
-### Describing Virtual Memory Areas
+### Describing Virtual Memory Areas  
 
-The vmalloc address space is managed with a resource map allocator. The struct vm_struct is responsible for storing the base,size pairs. It is defined in `<linux/vmalloc.h>` as:
+The vmalloc address space is managed with a resource map allocator. The struct `vm_struct` is responsible for storing the `base,size` pairs. It is defined in `<linux/vmalloc.h>` as:
 
 ```c++
  14 struct vm_struct {
@@ -1189,7 +1189,7 @@ As is clear, the areas are linked together via the next field and are ordered by
 
 When the kernel wishes to allocate a new area, the vm_struct list is searched linearly by the function `get_vm_area()`. Space for the struct is allocated with `kmalloc()`. When the virtual area is used for remapping an area for IO (commonly referred to as ioremapping), this function will be called directly to map the requested area.
 
-### Allocating A Non-Contiguous Are
+### Allocating A Non-Contiguous Area
 
 ![](./pics/understand-html034.png)
 

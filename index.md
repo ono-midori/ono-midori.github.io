@@ -50,7 +50,7 @@
 
 [The perf Tutorial](./techs/perf.md)
 
-[The Page Reclaimation Algorithm of Linux Kernel](./techs/linuxpra.md)
+[ZeroMQ Guide](./techs/zguide.md)
 
 [The CFS Algorithm of Linux Kernel](./techs/linuxcfs.md)
 
