@@ -138,7 +138,7 @@ int main () {
         std::cout << "Received Hello" << std::endl;
 
         //  Do some 'work'
-    	sleep(1);
+    	  sleep(1);
 
         //  Send reply back to client
         zmq::message_t reply (5);
@@ -175,7 +175,7 @@ ZeroMQ uses C as its reference language and this is the main language we'll use 
 int main () {
     //  Prepare our context and socket
     zmq::context_t context (1);
-    zmq::socket_t socket (context, ZMQ_REP);
+    zmq::socket_t socket (context, ZMQ_REP); /// ZMQ_REP
     socket.bind ("tcp://*:5555");
 
     while (true) {
@@ -186,7 +186,7 @@ int main () {
         std::cout << "Received Hello" << std::endl;
 
         //  Do some 'work'
-    	sleep(1);
+      	sleep(1);
 
         //  Send reply back to client
         zmq::message_t reply (5);
@@ -213,7 +213,7 @@ int main ()
 {
     //  Prepare our context and socket
     zmq::context_t context (1);
-    zmq::socket_t socket (context, ZMQ_REQ);
+    zmq::socket_t socket (context, ZMQ_REQ); /// ZMQ_REQ
 
     std::cout << "Connecting to hello world server..." << std::endl;
     socket.connect ("tcp://localhost:5555");
@@ -238,7 +238,7 @@ Now this looks too simple to be realistic, but ZeroMQ sockets have, as we alread
 
 Let us explain briefly what these two programs are actually doing. They create a ZeroMQ context to work with, and a socket. Don't worry what the words mean. You'll pick it up. The server binds its REP (reply) socket to port 5555. The server waits for a request in a loop, and responds each time with a reply. The client sends a request and reads the reply back from the server.
 
-If you kill the server (Ctrl-C) and restart it, the client won't recover properly. Recovering from crashing processes isn't quite that easy. Making a reliable request-reply flow is complex enough that we won't cover it until Chapter 4 - Reliable Request-Reply Patterns.
+If you kill the server (Ctrl-C) and restart it, the client won't recover properly. Recovering from crashing processes isn't quite that easy. Making a reliable request-reply flow is complex enough that we won't cover it until *Chapter 4 - Reliable Request-Reply Patterns*.
 
 There is a lot happening behind the scenes but what matters to us programmers is how short and sweet the code is, and how often it doesn't crash, even under a heavy load. This is the request-reply pattern, probably the simplest way to use ZeroMQ. It maps to RPC and the classic client/server model.
 
@@ -248,10 +248,17 @@ ZeroMQ doesn't know anything about the data you send except its size in bytes. T
 
 In C and some other languages, strings are terminated with a null byte. We could send a string like "HELLO" with that extra null byte:
 
+```c++
 zmq_send (requester, "Hello", 6, 0);
+```
+
 However, if you send a string from another language, it probably will not include that null byte. For example, when we send that same string in Python, we do this:
 
+```python
 socket.send ("Hello")
+```
+
+
 Then what goes onto the wire is a length (one byte for shorter strings) and the string contents as individual characters.
 
 ![](./pics/zmq/fig3.png)
@@ -281,13 +288,13 @@ s_recv (void *socket) {
 }
 ```
 
-This makes a handy helper function and in the spirit of making things we can reuse profitably, let's write a similar s_send function that sends strings in the correct ZeroMQ format, and package this into a header file we can reuse.
+This makes a handy helper function and in the spirit of making things we can reuse profitably, let's write a similar `s_send` function that sends strings in the correct ZeroMQ format, and package this into a header file we can reuse.
 
-The result is zhelpers.h, which lets us write sweeter and shorter ZeroMQ applications in C. It is a fairly long source, and only fun for C developers, so read it at leisure.
+The result is `zhelpers.h`, which lets us write sweeter and shorter ZeroMQ applications in C. It is a fairly long source, and only fun for C developers, so read it at leisure.
 
 ### A Note on the Naming Convention
 
-The prefix s_ used in zhelpers.h and the examples which follow in this guide is an indicator for static methods or variables.
+The prefix `s_` used in `zhelpers.h` and the examples which follow in this guide is an indicator for static methods or variables.
 
 ### Getting the Message Out
 
@@ -316,7 +323,7 @@ int main () {
 
     //  Prepare our context and publisher
     zmq::context_t context (1);
-    zmq::socket_t publisher (context, ZMQ_PUB);
+    zmq::socket_t publisher (context, ZMQ_PUB); /// ZMQ_PUB
     publisher.bind("tcp://*:5556");
     publisher.bind("ipc://weather.ipc");				// Not usable on Windows.
 
@@ -363,11 +370,11 @@ int main (int argc, char *argv[])
 
     //  Socket to talk to server
     std::cout << "Collecting updates from weather server...\n" << std::endl;
-    zmq::socket_t subscriber (context, ZMQ_SUB);
+    zmq::socket_t subscriber (context, ZMQ_SUB); /// ZMQ_SUB
     subscriber.connect("tcp://localhost:5556");
 
     //  Subscribe to zipcode, default is NYC, 10001
-	const char *filter = (argc > 1)? argv [1]: "10001 ";
+	  const char *filter = (argc > 1)? argv [1]: "10001 ";
     subscriber.setsockopt(ZMQ_SUBSCRIBE, filter, strlen (filter));
 
     //  Process 100 updates
@@ -381,9 +388,9 @@ int main (int argc, char *argv[])
         subscriber.recv(&update);
 
         std::istringstream iss(static_cast<char*>(update.data()));
-		iss >> zipcode >> temperature >> relhumidity ;
+	    	iss >> zipcode >> temperature >> relhumidity ;
 
-		total_temp += temperature;
+	    	total_temp += temperature;
     }
     std::cout 	<< "Average temperature for zipcode '"<< filter
     			<<"' was "<<(int) (total_temp / update_nbr) <<"F"
@@ -394,23 +401,24 @@ int main (int argc, char *argv[])
 
 ![](./pics/zmq/fig4.png)
 
-Note that when you use a SUB socket you must set a subscription using zmq_setsockopt() and SUBSCRIBE, as in this code. If you don't set any subscription, you won't get any messages. It's a common mistake for beginners. The subscriber can set many subscriptions, which are added together. That is, if an update matches ANY subscription, the subscriber receives it. The subscriber can also cancel specific subscriptions. A subscription is often, but not always, a printable string. See zmq_setsockopt() for how this works.
+Note that when you use a SUB socket you must set a subscription using `zmq_setsockopt()` and `SUBSCRIBE`, as in this code. If you don't set any subscription, you won't get any messages. It's a common mistake for beginners. The subscriber can set many subscriptions, which are added together. That is, if an update matches `ANY` subscription, the subscriber receives it. The subscriber can also cancel specific subscriptions. A subscription is often, but not always, a printable string. See `zmq_setsockopt()` for how this works.
 
-The PUB-SUB socket pair is asynchronous. The client does zmq_recv(), in a loop (or once if that's all it needs). Trying to send a message to a SUB socket will cause an error. Similarly, the service does zmq_send() as often as it needs to, but must not do zmq_recv() on a PUB socket.
+The PUB-SUB socket pair is asynchronous. The client does `zmq_recv()`, in a loop (or once if that's all it needs). Trying to send a message to a SUB socket will cause an error. Similarly, the service does `zmq_send()` as often as it needs to, but must not do `zmq_recv()` on a PUB socket.
 
 In theory with ZeroMQ sockets, it does not matter which end connects and which end binds. However, in practice there are undocumented differences that I'll come to later. For now, bind the PUB and connect the SUB, unless your network design makes that impossible.
 
-There is one more important thing to know about PUB-SUB sockets: you do not know precisely when a subscriber starts to get messages. Even if you start a subscriber, wait a while, and then start the publisher, the subscriber will always miss the first messages that the publisher sends. This is because as the subscriber connects to the publisher (something that takes a small but non-zero time), the publisher may already be sending messages out.
+There is one more important thing to know about PUB-SUB sockets: *you do not know precisely when a subscriber starts to get messages*. Even if you start a subscriber, wait a while, and then start the publisher, the subscriber will always miss the first messages that the publisher sends. This is because as the subscriber connects to the publisher (something that takes a small but non-zero time), the publisher may already be sending messages out.
 
 This "slow joiner" symptom hits enough people often enough that we're going to explain it in detail. Remember that ZeroMQ does asynchronous I/O, i.e., in the background. Say you have two nodes doing this, in this order:
 
-Subscriber connects to an endpoint and receives and counts messages.
-Publisher binds to an endpoint and immediately sends 1,000 messages.
+1. Subscriber connects to an endpoint and receives and counts messages.
+2. Publisher binds to an endpoint and immediately sends 1,000 messages.
+
 Then the subscriber will most likely not receive anything. You'll blink, check that you set a correct filter and try again, and the subscriber will still not receive anything.
 
 Making a TCP connection involves to and from handshaking that takes several milliseconds depending on your network and the number of hops between peers. In that time, ZeroMQ can send many messages. For sake of argument assume it takes 5 msecs to establish a connection, and that same link can handle 1M messages per second. During the 5 msecs that the subscriber is connecting to the publisher, it takes the publisher only 1 msec to send out those 1K messages.
 
-In Chapter 2 - Sockets and Patterns we'll explain how to synchronize a publisher and subscribers so that you don't start to publish data until the subscribers really are connected and ready. There is a simple and stupid way to delay the publisher, which is to sleep. Don't do this in a real application, though, because it is extremely fragile as well as inelegant and slow. Use sleeps to prove to yourself what's happening, and then wait for Chapter 2 - Sockets and Patterns to see how to do this right.
+In *Chapter 2 - Sockets and Patterns* we'll explain how to synchronize a publisher and subscribers so that you don't start to publish data until the subscribers really are connected and ready. There is a simple and stupid way to delay the publisher, which is to sleep. Don't do this in a real application, though, because it is extremely fragile as well as inelegant and slow. Use sleeps to prove to yourself what's happening, and then wait for *Chapter 2 - Sockets and Patterns* to see how to do this right.
 
 The alternative to synchronization is to simply assume that the published data stream is infinite and has no start and no end. One also assumes that the subscriber doesn't care what transpired before it started up. This is how we built our weather client example.
 
@@ -418,13 +426,11 @@ So the client subscribes to its chosen zip code and collects 100 updates for tha
 
 Some points about the publish-subscribe (pub-sub) pattern:
 
-A subscriber can connect to more than one publisher, using one connect call each time. Data will then arrive and be interleaved ("fair-queued") so that no single publisher drowns out the others.
+- A subscriber can connect to more than one publisher, using one connect call each time. Data will then arrive and be interleaved ("fair-queued") so that no single publisher drowns out the others.
+- If a publisher has no connected subscribers, then it will simply drop all messages.
+- If you're using TCP and a subscriber is slow, messages will queue up on the publisher. We'll look at how to protect publishers against this using the "high-water mark" later.
 
-If a publisher has no connected subscribers, then it will simply drop all messages.
-
-If you're using TCP and a subscriber is slow, messages will queue up on the publisher. We'll look at how to protect publishers against this using the "high-water mark" later.
-
-From ZeroMQ v3.x, filtering happens at the publisher side when using a connected protocol (tcp:@<>@ or ipc:@<>@). Using the epgm:@<//>@ protocol, filtering happens at the subscriber side. In ZeroMQ v2.x, all filtering happened at the subscriber side.
+From ZeroMQ v3.x, filtering happens at the publisher side when using a connected protocol (`tcp:<>` or `ipc:<>`). Using the `epgm:<>` protocol, filtering happens at the subscriber side. In ZeroMQ v2.x, all filtering happened at the subscriber side.
 
 This is how long it takes to receive and filter 10M messages on my laptop, which is an 2011-era Intel i5, decent but nothing special:
 
@@ -444,9 +450,10 @@ sys     0m0.008s
 
 As a final example (you are surely getting tired of juicy code and want to delve back into philological discussions about comparative abstractive norms), let's do a little supercomputing. Then coffee. Our supercomputing application is a fairly typical parallel processing model. We have:
 
-A ventilator that produces tasks that can be done in parallel
-A set of workers that process tasks
-A sink that collects results back from the worker processes
+- A ventilator that produces tasks that can be done in parallel
+- A set of workers that process tasks
+- A sink that collects results back from the worker processes
+
 In reality, workers run on superfast boxes, perhaps using GPUs (graphic processing units) to do the hard math. Here is the ventilator. It generates 100 tasks, each a message telling the worker to sleep for some number of milliseconds:
 
 ```c++
@@ -619,9 +626,10 @@ int main (int argc, char *argv[])
 
 The average cost of a batch is 5 seconds. When we start 1, 2, or 4 workers we get results like this from the sink:
 
-1 worker: total elapsed time: 5034 msecs.
-2 workers: total elapsed time: 2421 msecs.
-4 workers: total elapsed time: 1018 msecs.
+- 1 worker: total elapsed time: 5034 msecs.
+- 2 workers: total elapsed time: 2421 msecs.
+- 4 workers: total elapsed time: 1018 msecs.
+
 Let's look at some aspects of this code in more detail:
 
 The workers connect upstream to the ventilator, and downstream to the sink. This means you can add workers arbitrarily. If the workers bound to their endpoints, you would need (a) more endpoints and (b) to modify the ventilator and/or the sink each time you added a worker. We say that the ventilator and sink are stable parts of our architecture and the workers are dynamic parts of it.
@@ -2337,6 +2345,7 @@ To be honest, the use cases for strict request-reply or extended request-reply a
 - You can use this with a hash table (with the identity as key) to track new peers as they arrive.
 - ROUTER will route messages asynchronously to any peer connected to it, if you prefix the identity as the first frame of the message.
   
+
 ROUTER sockets don’t care about the whole envelope. They don’t know anything about the empty delimiter. All they care about is that one identity frame that lets them figure out which connection to send a message to.
 
 #### Recap of Request-Reply Socket
@@ -2361,6 +2370,7 @@ These are the legal combinations:
 - DEALER to DEALER
 - ROUTER to ROUTER
   
+
 And these combinations are invalid (and I’ll explain why):
 
 - REQ to REQ
@@ -3470,6 +3480,7 @@ Here’s how it works:
 - Clients can send multiple requests without waiting for a reply.
 - Servers can send multiple replies without waiting for new requests.
   
+
 Here’s code that shows how this works:
 
 ```c++
@@ -6705,6 +6716,7 @@ However, the asynchronous Majordomo pattern isn’t all roses. It has a fundamen
 - Tracking and holding onto all outstanding requests in the client API, i.e., those for which no reply has yet been received.
 - In case of failover, for the client API to resend all outstanding requests to the broker.
   
+
 It’s not a deal breaker, but it does show that performance often means complexity. Is this worth doing for Majordomo? It depends on your use case. For a name lookup service you call once per session, no. For a web frontend serving thousands of clients, probably yes.
 
 ### Service Discovery
