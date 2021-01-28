@@ -634,7 +634,7 @@ Let's look at some aspects of this code in more detail:
 
 The workers connect upstream to the ventilator, and downstream to the sink. This means you can add workers arbitrarily. If the workers bound to their endpoints, you would need (a) more endpoints and (b) to modify the ventilator and/or the sink each time you added a worker. We say that the ventilator and sink are stable parts of our architecture and the workers are dynamic parts of it.
 
-We have to synchronize the start of the batch with all workers being up and running. This is a fairly common gotcha in ZeroMQ and there is no easy solution. The zmq_connect method takes a certain time. So when a set of workers connect to the ventilator, the first one to successfully connect will get a whole load of messages in that short time while the others are also connecting. If you don't synchronize the start of the batch somehow, the system won't run in parallel at all. Try removing the wait in the ventilator, and see what happens.
+We have to synchronize the start of the batch with all workers being up and running. This is a fairly common gotcha in ZeroMQ and there is no easy solution. The `zmq_connect` method takes a certain time. So when a set of workers connect to the ventilator, the first one to successfully connect will get a whole load of messages in that short time while the others are also connecting. If you don't synchronize the start of the batch somehow, the system won't run in parallel at all. Try removing the wait in the ventilator, and see what happens.
 
 The ventilator's PUSH socket distributes tasks to workers (assuming they are all connected before the batch starts going out) evenly. This is called load balancing and it's something we'll look at again in more detail.
 
@@ -642,7 +642,7 @@ The sink's PULL socket collects results from workers evenly. This is called fair
 
 ![](./pics/zmq/fig6.png)
 
-The pipeline pattern also exhibits the "slow joiner" syndrome, leading to accusations that PUSH sockets don't load balance properly. If you are using PUSH and PULL, and one of your workers gets way more messages than the others, it's because that PULL socket has joined faster than the others, and grabs a lot of messages before the others manage to connect. If you want proper load balancing, you probably want to look at the load balancing pattern in Chapter 3 - Advanced Request-Reply Patterns.
+The pipeline pattern also exhibits the "slow joiner" syndrome, leading to accusations that PUSH sockets don't load balance properly. If you are using PUSH and PULL, and one of your workers gets way more messages than the others, it's because that PULL socket has joined faster than the others, and grabs a lot of messages before the others manage to connect. If you want proper load balancing, you probably want to look at the load balancing pattern in *Chapter 3 - Advanced Request-Reply Patterns*.
 
 ### Programming with ZeroMQ
 
@@ -656,32 +656,32 @@ Having seen some examples, you must be eager to start using ZeroMQ in some apps.
 
 #### Getting the Context Right
 
-ZeroMQ applications always start by creating a context, and then using that for creating sockets. In C, it's the zmq_ctx_new() call. You should create and use exactly one context in your process. Technically, the context is the container for all sockets in a single process, and acts as the transport for inproc sockets, which are the fastest way to connect threads in one process. If at runtime a process has two contexts, these are like separate ZeroMQ instances. If that's explicitly what you want, OK, but otherwise remember:
+ZeroMQ applications always start by creating a context, and then using that for creating sockets. In C, it's the `zmq_ctx_new()` call. You should create and use exactly one context in your process. Technically, the context is the container for all sockets in a single process, and acts as the transport for inproc sockets, which are the fastest way to connect threads in one process. If at runtime a process has two contexts, these are like separate ZeroMQ instances. If that's explicitly what you want, OK, but otherwise remember:
 
-Call zmq_ctx_new() once at the start of a process, and zmq_ctx_destroy() once at the end.
+> Call `zmq_ctx_new()` once at the start of a process, and `zmq_ctx_destroy()` once at the end.
 
-If you're using the fork() system call, do zmq_ctx_new() after the fork and at the beginning of the child process code. In general, you want to do interesting (ZeroMQ) stuff in the children, and boring process management in the parent.
+If you're using the `fork()` system call, do `zmq_ctx_new()` after the fork and at the beginning of the child process code. In general, you want to do interesting (ZeroMQ) stuff in the children, and boring process management in the parent.
 
 #### Making a Clean Exit
 
 Classy programmers share the same motto as classy hit men: always clean-up when you finish the job. When you use ZeroMQ in a language like Python, stuff gets automatically freed for you. But when using C, you have to carefully free objects when you're finished with them or else you get memory leaks, unstable applications, and generally bad karma.
 
-Memory leaks are one thing, but ZeroMQ is quite finicky about how you exit an application. The reasons are technical and painful, but the upshot is that if you leave any sockets open, the zmq_ctx_destroy() function will hang forever. And even if you close all sockets, zmq_ctx_destroy() will by default wait forever if there are pending connects or sends unless you set the LINGER to zero on those sockets before closing them.
+Memory leaks are one thing, but ZeroMQ is quite finicky about how you exit an application. The reasons are technical and painful, but the upshot is that if you leave any sockets open, the `zmq_ctx_destroy()` function will hang forever. And even if you close all sockets, `zmq_ctx_destroy()` will by default wait forever if there are pending connects or sends unless you set the LINGER to zero on those sockets before closing them.
 
 The ZeroMQ objects we need to worry about are messages, sockets, and contexts. Luckily it's quite simple, at least in simple programs:
 
-- Use zmq_send() and zmq_recv() when you can, as it avoids the need to work with zmq_msg_t objects.
-- If you do use zmq_msg_recv(), always release the received message as soon as you're done with it, by calling zmq_msg_close().
+- Use `zmq_send()` and `zmq_recv()` when you can, as it avoids the need to work with zmq_msg_t objects.
+- If you do use `zmq_msg_recv()`, always release the received message as soon as you're done with it, by calling `zmq_msg_close()`.
 - If you are opening and closing a lot of sockets, that's probably a sign that you need to redesign your application. In some cases socket handles won't be freed until you destroy the context.
-- When you exit the program, close your sockets and then call zmq_ctx_destroy(). This destroys the context.
+- When you exit the program, close your sockets and then call `zmq_ctx_destroy()`. This destroys the context.
 
 This is at least the case for C development. In a language with automatic object destruction, sockets and contexts will be destroyed as you leave the scope. If you use exceptions you'll have to do the clean-up in something like a "final" block, the same as for any resource.
 
 If you're doing multithreaded work, it gets rather more complex than this. We'll get to multithreading in the next chapter, but because some of you will, despite warnings, try to run before you can safely walk, below is the quick and dirty guide to making a clean exit in a multithreaded ZeroMQ application.
 
-First, do not try to use the same socket from multiple threads. Please don't explain why you think this would be excellent fun, just please don't do it. Next, you need to shut down each socket that has ongoing requests. The proper way is to set a low LINGER value (1 second), and then close the socket. If your language binding doesn't do this for you automatically when you destroy a context, I'd suggest sending a patch.
+First, *do not try to use the same socket from multiple threads*. Please don't explain why you think this would be excellent fun, just please don't do it. Next, *you need to shut down each socket that has ongoing requests. The proper way is to set a low LINGER value (1 second), and then close the socket*. If your language binding doesn't do this for you automatically when you destroy a context, I'd suggest sending a patch.
 
-Finally, destroy the context. This will cause any blocking receives or polls or sends in attached threads (i.e., which share the same context) to return with an error. Catch that error, and then set linger on, and close sockets in that thread, and exit. Do not destroy the same context twice. The zmq_ctx_destroy in the main thread will block until all sockets it knows about are safely closed.
+Finally, destroy the context. This will cause any blocking receives or polls or sends in attached threads (i.e., which share the same context) to return with an error. Catch that error, and then set linger on, and close sockets in that thread, and exit. Do not destroy the same context twice. The `zmq_ctx_destroy` in the main thread will block until all sockets it knows about are safely closed.
 
 Voila! It's complex and painful enough that any language binding author worth his or her salt will do this automatically and make the socket closing dance unnecessary.
 
@@ -715,7 +715,7 @@ Let's look at the typical problems we face when we start to connect pieces using
 
 - How do we handle network errors? Do we wait and retry, ignore them silently, or abort?
 
-Take a typical open source project like Hadoop Zookeeper and read the C API code in src/c/src/zookeeper.c. When I read this code, in January 2013, it was 4,200 lines of mystery and in there is an undocumented, client/server network communication protocol. I see it's efficient because it uses poll instead of select. But really, Zookeeper should be using a generic messaging layer and an explicitly documented wire level protocol. It is incredibly wasteful for teams to be building this particular wheel over and over.
+Take a typical open source project like Hadoop Zookeeper and read the C API code in `src/c/src/zookeeper.c`. When I read this code, in January 2013, it was 4,200 lines of mystery and in there is an undocumented, client/server network communication protocol. I see it's efficient because it uses poll instead of select. But really, Zookeeper should be using a generic messaging layer and an explicitly documented wire level protocol. It is incredibly wasteful for teams to be building this particular wheel over and over.
 
 But how to make a reusable messaging layer? Why, when so many projects need this technology, are people still doing it the hard way by driving TCP sockets in their code, and solving the problems in that long list over and over?
 
@@ -733,35 +733,22 @@ So small to medium application developers are trapped. Either they avoid network
 
 What we need is something that does the job of messaging, but does it in such a simple and cheap way that it can work in any application, with close to zero cost. It should be a library which you just link, without any other dependencies. No additional moving pieces, so no additional risk. It should run on any OS and work with any programming language.
 
-And this is ZeroMQ: an efficient, embeddable library that solves most of the problems an application needs to become nicely elastic across a network, without much cost.
+And this is ZeroMQ: an efficient, embeddable library that solves most of the problems an application needs to become nicely elastic across a network, without much cost. Specifically:
 
-Specifically:
-
-It handles I/O asynchronously, in background threads. These communicate with application threads using lock-free data structures, so concurrent ZeroMQ applications need no locks, semaphores, or other wait states.
-
-Components can come and go dynamically and ZeroMQ will automatically reconnect. This means you can start components in any order. You can create "service-oriented architectures" (SOAs) where services can join and leave the network at any time.
-
+- It handles I/O asynchronously, in background threads. These communicate with application threads using lock-free data structures, so concurrent ZeroMQ applications need no locks, semaphores, or other wait states.
+- Components can come and go dynamically and ZeroMQ will automatically reconnect. This means you can start components in any order. You can create "service-oriented architectures" (SOAs) where services can join and leave the network at any time.
 - It queues messages automatically when needed. It does this intelligently, pushing messages as close as possible to the receiver before queuing them.
-
-It has ways of dealing with over-full queues (called "high water mark"). When a queue is full, ZeroMQ automatically blocks senders, or throws away messages, depending on the kind of messaging you are doing (the so-called "pattern").
-
-It lets your applications talk to each other over arbitrary transports: TCP, multicast, in-process, inter-process. You don't need to change your code to use a different transport.
-
-It handles slow/blocked readers safely, using different strategies that depend on the messaging pattern.
-
-It lets you route messages using a variety of patterns such as request-reply and pub-sub. These patterns are how you create the topology, the structure of your network.
-
-It lets you create proxies to queue, forward, or capture messages with a single call. Proxies can reduce the interconnection complexity of a network.
-
-It delivers whole messages exactly as they were sent, using a simple framing on the wire. If you write a 10k message, you will receive a 10k message.
-
-It does not impose any format on messages. They are blobs from zero to gigabytes large. When you want to represent data you choose some other product on top, such as msgpack, Google's protocol buffers, and others.
-
-It handles network errors intelligently, by retrying automatically in cases where it makes sense.
-
+- It has ways of dealing with over-full queues (called "high water mark"). *When a queue is full, ZeroMQ automatically blocks senders, or throws away messages, depending on the kind of messaging you are doing (the so-called "pattern").
+- It lets your applications talk to each other over arbitrary transports: TCP, multicast, in-process, inter-process. You don't need to change your code to use a different transport.
+- It handles slow/blocked readers safely, using different strategies that depend on the messaging pattern.
+- It lets you route messages using a variety of patterns such as request-reply and pub-sub. These patterns are how you create the topology, the structure of your network.
+- It lets you create proxies to queue, forward, or capture messages with a single call. Proxies can reduce the interconnection complexity of a network.
+- It delivers whole messages exactly as they were sent, using a simple framing on the wire. If you write a 10k message, you will receive a 10k message.
+- It does not impose any format on messages. They are blobs from zero to gigabytes large. When you want to represent data you choose some other product on top, such as msgpack, Google's protocol buffers, and others.
+- It handles network errors intelligently, by retrying automatically in cases where it makes sense.
 - It reduces your carbon footprint. Doing more with less CPU means your boxes use less power, and you can keep your old boxes in use for longer. Al Gore would love ZeroMQ.
 
-Actually ZeroMQ does rather more than this. It has a subversive effect on how you develop network-capable applications. Superficially, it's a socket-inspired API on which you do zmq_recv() and zmq_send(). But message processing rapidly becomes the central loop, and your application soon breaks down into a set of message processing tasks. It is elegant and natural. And it scales: each of these tasks maps to a node, and the nodes talk to each other across arbitrary transports. Two nodes in one process (node is a thread), two nodes on one box (node is a process), or two nodes on one network (node is a box)–it's all the same, with no application code changes.
+Actually ZeroMQ does rather more than this. It has a subversive effect on how you develop network-capable applications. Superficially, it's a socket-inspired API on which you do `zmq_recv()` and `zmq_send()`. But message processing rapidly becomes the central loop, and your application soon breaks down into a set of message processing tasks. It is elegant and natural. And it scales: each of these tasks maps to a node, and the nodes talk to each other across arbitrary transports. Two nodes in one process (node is a thread), two nodes on one box (node is a process), or two nodes on one network (node is a box)–it's all the same, with no application code changes.
 
 ### Socket Scalability
 
@@ -792,7 +779,7 @@ Let's think for a second about what is happening here. The weather server has a 
 
 ## Sockets and Patterns
 
-In Chapter 1 - Basics we took ZeroMQ for a drive, with some basic examples of the main ZeroMQ patterns: request-reply, pub-sub, and pipeline. In this chapter, we're going to get our hands dirty and start to learn how to use these tools in real programs.
+In *Chapter 1 - Basics* we took ZeroMQ for a drive, with some basic examples of the main ZeroMQ patterns: request-reply, pub-sub, and pipeline. In this chapter, we're going to get our hands dirty and start to learn how to use these tools in real programs.
 
 We'll cover:
 
@@ -826,7 +813,7 @@ Like a favorite dish, ZeroMQ sockets are easy to digest. Sockets have a life in 
 - Plugging sockets into the network topology by creating ZeroMQ connections to and from them (see `zmq_bind()`, `zmq_connect()`).
 - Using the sockets to carry data by writing and receiving messages on them (see `zmq_msg_send()`, `zmq_msg_recv()`).
 
-Note that sockets are always void pointers, and messages (which we'll come to very soon) are structures. So in C you pass sockets as-such, but you pass addresses of messages in all functions that work with messages, like `zmq_msg_send()` and `zmq_msg_recv()`. As a mnemonic, realize that "in ZeroMQ, all your sockets are belong to us", but messages are things you actually own in your code.
+Note that sockets are always `void` pointers, and messages (which we'll come to very soon) are structures. So in C you pass sockets as-such, but you pass addresses of messages in all functions that work with messages, like `zmq_msg_send()` and `zmq_msg_recv()`. As a mnemonic, realize that "*in ZeroMQ, all your sockets are belong to us*", *but messages are things you actually own in your code*.
 
 Creating, destroying, and configuring sockets works as you'd expect for any object. But remember that ZeroMQ is an asynchronous, elastic fabric. This has some impact on how we plug sockets into the network topology and how we use the sockets after that.
 
@@ -838,13 +825,13 @@ ZeroMQ connections are somewhat different from classic TCP connections. The main
 
 - They go across an arbitrary transport (inproc, ipc, tcp, pgm, or epgm). See `zmq_inproc()`, `zmq_ipc()`, `zmq_tcp()`, `zmq_pgm()`, and `zmq_epgm()`.
 - One socket may have many outgoing and many incoming connections.
-- There is no `zmq_accept()` method. When a socket is bound to an endpoint it automatically starts accepting connections.
-- The network connection itself happens in the background, and ZeroMQ will automatically reconnect if the network connection is broken (e.g., if the peer disappears and then comes back).
+- *There is no `zmq_accept()` method. When a socket is bound to an endpoint it automatically starts accepting connections*.
+- *The network connection itself happens in the background, and ZeroMQ will automatically reconnect if the network connection is broken* (e.g., if the peer disappears and then comes back).
 - Your application code cannot work with these connections directly; they are encapsulated under the socket.
 
-Many architectures follow some kind of client/server model, where the server is the component that is most static, and the clients are the components that are most dynamic, i.e., they come and go the most. There are sometimes issues of addressing: servers will be visible to clients, but not necessarily vice versa. So mostly it's obvious which node should be doing zmq_bind() (the server) and which should be doing zmq_connect() (the client). It also depends on the kind of sockets you're using, with some exceptions for unusual network architectures. We'll look at socket types later.
+Many architectures follow some kind of client/server model, where the server is the component that is most static, and the clients are the components that are most dynamic, i.e., they come and go the most. There are sometimes issues of addressing: servers will be visible to clients, but not necessarily vice versa. So mostly it's obvious which node should be doing `zmq_bind()` (the server) and which should be doing `zmq_connect()` (the client). It also depends on the kind of sockets you're using, with some exceptions for unusual network architectures. We'll look at socket types later.
 
-Now, imagine we start the client before we start the server. In traditional networking, we get a big red Fail flag. But ZeroMQ lets us start and stop pieces arbitrarily. As soon as the client node does zmq_connect(), the connection exists and that node can start to write messages to the socket. At some stage (hopefully before messages queue up so much that they start to get discarded, or the client blocks), the server comes alive, does a zmq_bind(), and ZeroMQ starts to deliver messages.
+Now, imagine we start the client before we start the server. In traditional networking, we get a big red Fail flag. But ZeroMQ lets us start and stop pieces arbitrarily. As soon as the client node does `zmq_connect()`, the connection exists and that node can start to write messages to the socket. At some stage (hopefully before messages queue up so much that they start to get discarded, or the client blocks), the server comes alive, does a zmq_bind(), and ZeroMQ starts to deliver messages.
 
 A server node can bind to many endpoints (that is, a combination of protocol and address) and it can do this using a single socket. This means it will accept connections across different transports:
 
@@ -856,7 +843,7 @@ zmq_bind (socket, "inproc://somename");
 
 With most transports, you cannot bind to the same endpoint twice, unlike for example in UDP. The ipc transport does, however, let one process bind to an endpoint already used by a first process. It's meant to allow a process to recover after a crash.
 
-Although ZeroMQ tries to be neutral about which side binds and which side connects, there are differences. We'll see these in more detail later. The upshot is that you should usually think in terms of "servers" as static parts of your topology that bind to more or less fixed endpoints, and "clients" as dynamic parts that come and go and connect to these endpoints. Then, design your application around this model. The chances that it will "just work" are much better like that.
+Although ZeroMQ tries to be neutral about which side binds and which side connects, there are differences. We'll see these in more detail later. *The upshot is that you should usually think in terms of "servers" as static parts of your topology that bind to more or less fixed endpoints, and "clients" as dynamic parts that come and go and connect to these endpoints*. Then, design your application around this model. The chances that it will "just work" are much better like that.
 
 Sockets have types. The socket type defines the semantics of the socket, its policies for routing messages inwards and outwards, queuing, etc. You can connect certain types of socket together, e.g., a publisher socket and a subscriber socket. Sockets work together in "messaging patterns". We'll look at this in more detail later.
 
@@ -864,25 +851,25 @@ It's the ability to connect sockets in these different ways that gives ZeroMQ it
 
 #### Sending and Receiving Messages
 
-To send and receive messages you use the zmq_msg_send() and zmq_msg_recv() methods. The names are conventional, but ZeroMQ's I/O model is different enough from the classic TCP model that you will need time to get your head around it.
+To send and receive messages you use the `zmq_msg_send()` and `zmq_msg_recv()` methods. The names are conventional, but ZeroMQ's I/O model is different enough from the classic TCP model that you will need time to get your head around it.
 
 ![](./pics/zmq/fig9.png)
 
 Let’s look at the main differences between TCP sockets and ZeroMQ sockets when it comes to working with data:
 
-- ZeroMQ sockets carry messages, like UDP, rather than a stream of bytes as TCP does. A ZeroMQ message is length-specified binary data. We’ll come to messages shortly; their design is optimized for performance and so a little tricky.
-- ZeroMQ sockets do their I/O in a background thread. This means that messages arrive in local input queues and are sent from local output queues, no matter what your application is busy doing.
-- ZeroMQ sockets have one-to-N routing behavior built-in, according to the socket type.
+- *ZeroMQ sockets carry messages, like UDP, rather than a stream of bytes as TCP does. A ZeroMQ message is length-specified binary data.* We’ll come to messages shortly; their design is optimized for performance and so a little tricky.
+- *ZeroMQ sockets do their I/O in a background thread. This means that messages arrive in local input queues and are sent from local output queues, no matter what your application is busy doing.*
+- *ZeroMQ sockets have one-to-N routing behavior built-in, according to the socket type*.
 
-The zmq_send() method does not actually send the message to the socket connection(s). It queues the message so that the I/O thread can send it asynchronously. It does not block except in some exception cases. So the message is not necessarily sent when zmq_send() returns to your application.
+*The `zmq_send()` method does not actually send the message to the socket connection(s). It queues the message so that the I/O thread can send it asynchronously.* It does not block except in some exception cases. So the message is not necessarily sent when `zmq_send()` returns to your application.
 
 #### Unicast Transports
 
 ZeroMQ provides a set of unicast transports (inproc, ipc, and tcp) and multicast transports (epgm, pgm). Multicast is an advanced technique that we’ll come to later. Don’t even start using it unless you know that your fan-out ratios will make 1-to-N unicast impossible.
 
-For most common cases, use tcp, which is a disconnected TCP transport. It is elastic, portable, and fast enough for most cases. We call this disconnected because ZeroMQ’s tcp transport doesn’t require that the endpoint exists before you connect to it. Clients and servers can connect and bind at any time, can go and come back, and it remains transparent to applications.
+*For most common cases, use tcp, which is a disconnected TCP transport.* It is elastic, portable, and fast enough for most cases. *We call this disconnected because ZeroMQ’s tcp transport doesn’t require that the endpoint exists before you connect to it.* Clients and servers can connect and bind at any time, can go and come back, and it remains transparent to applications.
 
-The inter-process ipc transport is disconnected, like tcp. It has one limitation: it does not yet work on Windows. By convention we use endpoint names with an “.ipc” extension to avoid potential conflict with other file names. On UNIX systems, if you use ipc endpoints you need to create these with appropriate permissions otherwise they may not be shareable between processes running under different user IDs. You must also make sure all processes can access the files, e.g., by running in the same working directory.
+*The inter-process ipc transport is disconnected, like tcp*. It has one limitation: it does not yet work on Windows. By convention we use endpoint names with an “.ipc” extension to avoid potential conflict with other file names. On UNIX systems, if you use ipc endpoints you need to create these with appropriate permissions otherwise they may not be shareable between processes running under different user IDs. You must also make sure all processes can access the files, e.g., by running in the same working directory.
 
 The inter-thread transport, inproc, is a connected signaling transport. It is much faster than tcp or ipc. This transport has a specific limitation compared to tcp and ipc: the server must issue a bind before any client issues a connect. This is something future versions of ZeroMQ may fix, but at present this defines how you use inproc sockets. We create and bind one socket and start the child threads, which create and connect the other sockets.
 
@@ -894,17 +881,17 @@ The answer used to be “this is not how it works”. ZeroMQ is not a neutral ca
 
 ![](./pics/zmq/fig10.png)
 
-The HTTP request uses CR-LF as its simplest framing delimiter, whereas ZeroMQ uses a length-specified frame. So you could write an HTTP-like protocol using ZeroMQ, using for example the request-reply socket pattern. But it would not be HTTP.
+The HTTP request uses CR-LF as its simplest framing delimiter, whereas *ZeroMQ uses a length-specified frame*. So you could write an HTTP-like protocol using ZeroMQ, using for example the request-reply socket pattern. But it would not be HTTP.
 
 ![](./pics/zmq/fig11.png)
 
-Since v3.3, however, ZeroMQ has a socket option called ZMQ_ROUTER_RAW that lets you read and write data without the ZeroMQ framing. You could use this to read and write proper HTTP requests and responses. Hardeep Singh contributed this change so that he could connect to Telnet servers from his ZeroMQ application. At time of writing this is still somewhat experimental, but it shows how ZeroMQ keeps evolving to solve new problems. Maybe the next patch will be yours.
+Since v3.3, however, ZeroMQ has a socket option called `ZMQ_ROUTER_RAW` that lets you read and write data without the ZeroMQ framing. You could use this to read and write proper HTTP requests and responses. Hardeep Singh contributed this change so that he could connect to Telnet servers from his ZeroMQ application. At time of writing this is still somewhat experimental, but it shows how ZeroMQ keeps evolving to solve new problems. Maybe the next patch will be yours.
 
 #### I/O Threads
 
-We said that ZeroMQ does I/O in a background thread. One I/O thread (for all sockets) is sufficient for all but the most extreme applications. When you create a new context, it starts with one I/O thread. The general rule of thumb is to allow one I/O thread per gigabyte of data in or out per second. To raise the number of I/O threads, use the zmq_ctx_set() call before creating any sockets:
+We said that ZeroMQ does I/O in a background thread. One I/O thread (for all sockets) is sufficient for all but the most extreme applications. *When you create a new context, it starts with one I/O thread*. The general rule of thumb is to *allow one I/O thread per gigabyte of data in or out per second*. To raise the number of I/O threads, use the zmq_ctx_set() call before creating any sockets:
 
-```c++
+```c
 int io_threads = 4;
 void *context = zmq_ctx_new ();
 zmq_ctx_set (context, ZMQ_IO_THREADS, io_threads);
@@ -919,20 +906,20 @@ If you are using ZeroMQ for inter-thread communications only (i.e., a multithrea
 
 Underneath the brown paper wrapping of ZeroMQ’s socket API lies the world of messaging patterns. If you have a background in enterprise messaging, or know UDP well, these will be vaguely familiar. But to most ZeroMQ newcomers, they are a surprise. We’re so used to the TCP paradigm where a socket maps one-to-one to another node.
 
-Let’s recap briefly what ZeroMQ does for you. It delivers blobs of data (messages) to nodes, quickly and efficiently. You can map nodes to threads, processes, or nodes. ZeroMQ gives your applications a single socket API to work with, no matter what the actual transport (like in-process, inter-process, TCP, or multicast). It automatically reconnects to peers as they come and go. It queues messages at both sender and receiver, as needed. It limits these queues to guard processes against running out of memory. It handles socket errors. It does all I/O in background threads. It uses lock-free techniques for talking between nodes, so there are never locks, waits, semaphores, or deadlocks.
+Let’s recap briefly what ZeroMQ does for you. *It delivers blobs of data (messages) to nodes, quickly and efficiently. You can map nodes to threads, processes, or nodes. ZeroMQ gives your applications a single socket API to work with, no matter what the actual transport (like in-process, inter-process, TCP, or multicast). It automatically reconnects to peers as they come and go. It queues messages at both sender and receiver, as needed. It limits these queues to guard processes against running out of memory. It handles socket errors. It does all I/O in background threads. It uses lock-free techniques for talking between nodes, so there are never locks, waits, semaphores, or deadlocks.*
 
-But cutting through that, it routes and queues messages according to precise recipes called patterns. It is these patterns that provide ZeroMQ’s intelligence. They encapsulate our hard-earned experience of the best ways to distribute data and work. ZeroMQ’s patterns are hard-coded but future versions may allow user-definable patterns.
+But cutting through that, *it routes and queues messages according to precise recipes called patterns.* It is these patterns that provide ZeroMQ’s intelligence. They encapsulate our hard-earned experience of the best ways to distribute data and work. ZeroMQ’s patterns are hard-coded but future versions may allow user-definable patterns.
 
 ZeroMQ patterns are implemented by pairs of sockets with matching types. In other words, to understand ZeroMQ patterns you need to understand socket types and how they work together. Mostly, this just takes study; there is little that is obvious at this level.
 
 The built-in core ZeroMQ patterns are:
 
-- Request-reply, which connects a set of clients to a set of services. This is a remote procedure call and task distribution pattern.
-- Pub-sub, which connects a set of publishers to a set of subscribers. This is a data distribution pattern.
-- Pipeline, which connects nodes in a fan-out/fan-in pattern that can have multiple steps and loops. This is a parallel task distribution and collection pattern.
-- Exclusive pair, which connects two sockets exclusively. This is a pattern for connecting two threads in a process, not to be confused with “normal” pairs of sockets.
+- *Request-reply, which connects a set of clients to a set of services.* This is a remote procedure call and task distribution pattern.
+- *Pub-sub, which connects a set of publishers to a set of subscribers.* This is a data distribution pattern.
+- *Pipeline, which connects nodes in a fan-out/fan-in pattern that can have multiple steps and loops*. This is a parallel task distribution and collection pattern.
+- *Exclusive pair, which connects two sockets exclusively*. This is a pattern for connecting two threads in a process, not to be confused with “normal” pairs of sockets.
 
-We looked at the first three of these in Chapter 1 - Basics, and we’ll see the exclusive pair pattern later in this chapter. The zmq_socket() man page is fairly clear about the patterns – it’s worth reading several times until it starts to make sense. These are the socket combinations that are valid for a connect-bind pair (either side can bind):
+We looked at the first three of these in *Chapter 1 - Basics*, and we’ll see the exclusive pair pattern later in this chapter. The `zmq_socket()` man page is fairly clear about the patterns – it’s worth reading several times until it starts to make sense. These are the socket combinations that are valid for a connect-bind pair (either side can bind):
 
 - PUB and SUB
 - REQ and REP
@@ -950,39 +937,39 @@ You’ll also see references to XPUB and XSUB sockets, which we’ll come to lat
 
 These four core patterns are cooked into ZeroMQ. They are part of the ZeroMQ API, implemented in the core C++ library, and are guaranteed to be available in all fine retail stores.
 
-On top of those, we add high-level messaging patterns. We build these high-level patterns on top of ZeroMQ and implement them in whatever language we’re using for our application. They are not part of the core library, do not come with the ZeroMQ package, and exist in their own space as part of the ZeroMQ community. For example the Majordomo pattern, which we explore in Chapter 4 - Reliable Request-Reply Patterns, sits in the GitHub Majordomo project in the ZeroMQ organization.
+On top of those, we add high-level messaging patterns. We build these high-level patterns on top of ZeroMQ and implement them in whatever language we’re using for our application. They are not part of the core library, do not come with the ZeroMQ package, and exist in their own space as part of the ZeroMQ community. For example the Majordomo pattern, which we explore in *Chapter 4 - Reliable Request-Reply Patterns*, sits in the GitHub Majordomo project in the ZeroMQ organization.
 
 One of the things we aim to provide you with in this book are a set of such high-level patterns, both small (how to handle messages sanely) and large (how to make a reliable pub-sub architecture).
 
 #### Working with Messages
 
-The libzmq core library has in fact two APIs to send and receive messages. The zmq_send() and zmq_recv() methods that we’ve already seen and used are simple one-liners. We will use these often, but zmq_recv() is bad at dealing with arbitrary message sizes: it truncates messages to whatever buffer size you provide. So there’s a second API that works with zmq_msg_t structures, with a richer but more difficult API:
+The libzmq core library has in fact two APIs to send and receive messages. The `zmq_send()` and `zmq_recv()` methods that we’ve already seen and used are simple one-liners. We will use these often, but `zmq_recv()` is bad at dealing with arbitrary message sizes: it truncates messages to whatever buffer size you provide. So there’s a second API that works with zmq_msg_t structures, with a richer but more difficult API:
 
-- Initialise a message: zmq_msg_init(), zmq_msg_init_size(), zmq_msg_init_data().
-- Sending and receiving a message: zmq_msg_send(), zmq_msg_recv().
-- Release a message: zmq_msg_close().
-- Access message content: zmq_msg_data(), zmq_msg_size(), zmq_msg_more().
-- Work with message properties: zmq_msg_get(), zmq_msg_set().
-- Message manipulation: zmq_msg_copy(), zmq_msg_move().
+- Initialise a message: `zmq_msg_init()`, `zmq_msg_init_size()`, `zmq_msg_init_data()`.
+- Sending and receiving a message: `zmq_msg_send()`, `zmq_msg_recv()`.
+- Release a message: `zmq_msg_close()`.
+- Access message content: `zmq_msg_data()`, `zmq_msg_size()`, `zmq_msg_more()`.
+- Work with message properties: `zmq_msg_get()`, `zmq_msg_set()`.
+- Message manipulation: `zmq_msg_copy()`, `zmq_msg_move()`.
 
 On the wire, ZeroMQ messages are blobs of any size from zero upwards that fit in memory. You do your own serialization using protocol buffers, msgpack, JSON, or whatever else your applications need to speak. It’s wise to choose a data representation that is portable, but you can make your own decisions about trade-offs.
 
-In memory, ZeroMQ messages are zmq_msg_t structures (or classes depending on your language). Here are the basic ground rules for using ZeroMQ messages in C:
+In memory, ZeroMQ messages are `zmq_msg_t` structures (or classes depending on your language). Here are the basic ground rules for using ZeroMQ messages in C:
 
-- You create and pass around zmq_msg_t objects, not blocks of data.
-- To read a message, you use zmq_msg_init() to create an empty message, and then you pass that to zmq_msg_recv().
-- To write a message from new data, you use zmq_msg_init_size() to create a message and at the same time allocate a block of data of some size. You then fill that data using memcpy, and pass the message to zmq_msg_send().
-- To release (not destroy) a message, you call zmq_msg_close(). This drops a reference, and eventually ZeroMQ will destroy the message.
-- To access the message content, you use zmq_msg_data(). To know how much data the message contains, use zmq_msg_size().
-- Do not use zmq_msg_move(), zmq_msg_copy(), or zmq_msg_init_data() unless you read the man pages and know precisely why you need these.
-- After you pass a message to zmq_msg_send(), ØMQ will clear the message, i.e., set the size to zero. You cannot send the same message twice, and you cannot access the message data after sending it.
-- These rules don’t apply if you use zmq_send() and zmq_recv(), to which you pass byte arrays, not message structures.
+- You create and pass around `zmq_msg_t` objects, not blocks of data.
+- To read a message, you use `zmq_msg_init()` to create an empty message, and then you pass that to `zmq_msg_recv()`.
+- To write a message from new data, you use `zmq_msg_init_size()` to create a message and at the same time allocate a block of data of some size. You then fill that data using `memcpy`, and pass the message to `zmq_msg_send()`.
+- To release (not destroy) a message, you call `zmq_msg_close()`. This drops a reference, and eventually ZeroMQ will destroy the message.
+- To access the message content, you use `zmq_msg_data()`. To know how much data the message contains, use `zmq_msg_size()`.
+- Do not use `zmq_msg_move()`, `zmq_msg_copy()`, or `zmq_msg_init_data()` unless you read the man pages and know precisely why you need these.
+- *After you pass a message to `zmq_msg_send()`, ØMQ will clear the message, i.e., set the size to zero. You cannot send the same message twice, and you cannot access the message data after sending it.*
+- These rules don’t apply if you use `zmq_send()` and `zmq_recv()`, to which you pass byte arrays, not message structures.
 
-If you want to send the same message more than once, and it’s sizable, create a second message, initialize it using zmq_msg_init(), and then use zmq_msg_copy() to create a copy of the first message. This does not copy the data but copies a reference. You can then send the message twice (or more, if you create more copies) and the message will only be finally destroyed when the last copy is sent or closed.
+If you want to send the same message more than once, and it’s sizable, create a second message, initialize it using `zmq_msg_init()`, and then use `zmq_msg_copy()` to create a copy of the first message. This does not copy the data but copies a reference. You can then send the message twice (or more, if you create more copies) and the message will only be finally destroyed when the last copy is sent or closed.
 
-ZeroMQ also supports multipart messages, which let you send or receive a list of frames as a single on-the-wire message. This is widely used in real applications and we’ll look at that later in this chapter and in Chapter 3 - Advanced Request-Reply Patterns.
+ZeroMQ also supports multipart messages, which let you send or receive a list of frames as a single on-the-wire message. This is widely used in real applications and we’ll look at that later in this chapter and in *Chapter 3 - Advanced Request-Reply Patterns*.
 
-Frames (also called “message parts” in the ZeroMQ reference manual pages) are the basic wire format for ZeroMQ messages. A frame is a length-specified block of data. The length can be zero upwards. If you’ve done any TCP programming you’ll appreciate why frames are a useful answer to the question “how much data am I supposed to read of this network socket now?”
+*Frames (also called “message parts” in the ZeroMQ reference manual pages) are the basic wire format for ZeroMQ messages. A frame is a length-specified block of data.* The length can be zero upwards. If you’ve done any TCP programming you’ll appreciate why frames are a useful answer to the question “how much data am I supposed to read of this network socket now?”
 
 There is a wire-level protocol called ZMTP that defines how ZeroMQ reads and writes frames on a TCP connection. If you’re interested in how this works, the spec is quite short.
 
@@ -992,19 +979,19 @@ In the low-level ZeroMQ API and the reference manual, therefore, there’s some 
 
 - A message can be one or more parts.
 - These parts are also called “frames”.
-- Each part is a zmq_msg_t object.
+- Each part is a `zmq_msg_t` object.
 - You send and receive each part separately, in the low-level API.
 - Higher-level APIs provide wrappers to send entire multipart messages.
 
 Some other things that are worth knowing about messages:
 
 - You may send zero-length messages, e.g., for sending a signal from one thread to another.
-- ZeroMQ guarantees to deliver all the parts (one or more) for a message, or none of them.
-- ZeroMQ does not send the message (single or multipart) right away, but at some indeterminate later time. A multipart message must therefore fit in memory.
-- A message (single or multipart) must fit in memory. If you want to send files of arbitrary sizes, you should break them into pieces and send each piece as separate single-part messages. Using multipart data will not reduce memory consumption.
-- You must call zmq_msg_close() when finished with a received message, in languages that don’t automatically destroy objects when a scope closes. You don’t call this method after sending a message.
+- *ZeroMQ guarantees to deliver all the parts (one or more) for a message, or none of them.*
+- *ZeroMQ does not send the message (single or multipart) right away, but at some indeterminate later time*. A multipart message must therefore fit in memory.
+- *A message (single or multipart) must fit in memory. If you want to send files of arbitrary sizes, you should break them into pieces and send each piece as separate single-part messages. Using multipart data will not reduce memory consumption.*
+- You must call `zmq_msg_close()` when finished with a received message, in languages that don’t automatically destroy objects when a scope closes. You don’t call this method after sending a message.
 
-And to be repetitive, do not use zmq_msg_init_data() yet. This is a zero-copy method and is guaranteed to create trouble for you. There are far more important things to learn about ZeroMQ before you start to worry about shaving off microseconds.
+And to be repetitive, do not use `zmq_msg_init_data()` yet. This is a zero-copy method and is guaranteed to create trouble for you. There are far more important things to learn about ZeroMQ before you start to worry about shaving off microseconds.
 
 This rich API can be tiresome to work with. The methods are optimized for performance, not simplicity. If you start using these you will almost definitely get them wrong until you’ve read the man pages with some care. So one of the main jobs of a good language binding is to wrap this API up in classes that are easier to use.
 
@@ -1018,7 +1005,7 @@ In all the examples so far, the main loop of most examples has been:
 
 What if we want to read from multiple endpoints at the same time? The simplest way is to connect one socket to all the endpoints and get ZeroMQ to do the fan-in for us. This is legal if the remote endpoints are in the same pattern, but it would be wrong to connect a PULL socket to a PUB endpoint.
 
-To actually read from multiple sockets all at once, use zmq_poll(). An even better way might be to wrap zmq_poll() in a framework that turns it into a nice event-driven reactor, but it’s significantly more work than we want to cover here.
+To actually read from multiple sockets all at once, use `zmq_poll()`. An even better way might be to wrap `zmq_poll()` in a framework that turns it into a nice event-driven reactor, but it’s significantly more work than we want to cover here.
 
 ```c++
 //
@@ -1052,9 +1039,9 @@ int main (int argc, char *argv[])
         bool rc;
         do {
         	zmq::message_t task;
-            if ((rc = receiver.recv(&task, ZMQ_DONTWAIT)) == true) {
-                //  process task
-            }
+          if ((rc = receiver.recv(&task, ZMQ_DONTWAIT)) == true) {
+              //  process task
+          }
         } while(rc == true);
         
         //  Process any waiting weather updates
@@ -1073,11 +1060,11 @@ int main (int argc, char *argv[])
 }
 ```
 
-The cost of this approach is some additional latency on the first message (the sleep at the end of the loop, when there are no waiting messages to process). This would be a problem in applications where submillisecond latency was vital. Also, you need to check the documentation for nanosleep() or whatever function you use to make sure it does not busy-loop.
+The cost of this approach is some additional latency on the first message (the sleep at the end of the loop, when there are no waiting messages to process). This would be a problem in applications where submillisecond latency was vital. Also, you need to check the documentation for `nanosleep()` or whatever function you use to make sure it does not busy-loop.
 
 You can treat the sockets fairly by reading first from one, then the second rather than prioritizing them as we did in this example.
 
-Now let’s see the same senseless little application done right, using zmq_poll():
+Now let’s see the same senseless little application done right, using `zmq_poll()`:
 
 ```c++
 //
@@ -1098,7 +1085,7 @@ int main (int argc, char *argv[])
 
     //  Connect to weather server
     zmq::socket_t subscriber(context, ZMQ_SUB);
-	subscriber.connect("tcp://localhost:5556");
+  	subscriber.connect("tcp://localhost:5556");
     subscriber.setsockopt(ZMQ_SUBSCRIBE, "10001 ", 6);
 
     //  Initialize poll set
@@ -1137,11 +1124,11 @@ typedef struct {
 
 #### Multipart Messages
 
-ZeroMQ lets us compose a message out of several frames, giving us a “multipart message”. Realistic applications use multipart messages heavily, both for wrapping messages with address information and for simple serialization. We’ll look at reply envelopes later.
+ZeroMQ lets us compose a message out of several frames, giving us a “multipart message”. *Realistic applications use multipart messages heavily, both for wrapping messages with address information and for simple serialization*. We’ll look at reply envelopes later.
 
 What we’ll learn now is simply how to blindly and safely read and write multipart messages in any application (such as a proxy) that needs to forward messages without inspecting them.
 
-When you work with multipart messages, each part is a zmq_msg item. E.g., if you are sending a message with five parts, you must construct, send, and destroy five zmq_msg items. You can do this in advance (and store the zmq_msg items in an array or other structure), or as you send them, one-by-one.
+When you work with multipart messages, each part is a `zmq_msg` item. E.g., *if you are sending a message with five parts, you must construct, send, and destroy five `zmq_msg` items*. You can do this in advance (and store the `zmq_msg` items in an array or other structure), or as you send them, one-by-one.
 
 Here is how we send the frames in a multipart message (we receive each frame into a message object):
 
@@ -1170,13 +1157,13 @@ while (1) {
 
 Some things to know about multipart messages:
 
-- When you send a multipart message, the first part (and all following parts) are only actually sent on the wire when you send the final part.
-- If you are using zmq_poll(), when you receive the first part of a message, all the rest has also arrived.
-- You will receive all parts of a message, or none at all.
-- Each part of a message is a separate zmq_msg item.
+- *When you send a multipart message, the first part (and all following parts) are only actually sent on the wire when you send the final part*.
+- If you are using `zmq_poll()`, when you receive the first part of a message, all the rest has also arrived.
+- *You will receive all parts of a message, or none at all*.
+- *Each part of a message is a separate `zmq_msg` item*.
 - You will receive all parts of a message whether or not you check the more property.
-- On sending, ZeroMQ queues message frames in memory until the last is received, then sends them all.
-- There is no way to cancel a partially sent message, except by closing the socket.
+- *On sending, ZeroMQ queues message frames in memory until the last is received, then sends them all*.
+- *There is no way to cancel a partially sent message, except by closing the socket*.
 
 #### Intermediaries and Proxies 
 
@@ -1192,7 +1179,7 @@ There are several solutions to dynamic discovery. The simplest is to entirely av
 
 ![](./pics/zmq/fig12.png)
 
-In practice, this leads to increasingly fragile and unwieldy architectures. Let’s say you have one publisher and a hundred subscribers. You connect each subscriber to the publisher by configuring a publisher endpoint in each subscriber. That’s easy. Subscribers are dynamic; the publisher is static. Now say you add more publishers. Suddenly, it’s not so easy any more. If you continue to connect each subscriber to each publisher, the cost of avoiding dynamic discovery gets higher and higher.
+In practice, this leads to increasingly fragile and unwieldy architectures. Let’s say you have one publisher and a hundred subscribers. You connect each subscriber to the publisher by configuring a publisher endpoint in each subscriber. That’s easy. Subscribers are dynamic; the publisher is static. *Now say you add more publishers. Suddenly, it’s not so easy any more.* If you continue to connect each subscriber to each publisher, the cost of avoiding dynamic discovery gets higher and higher.
 
 ![](./pics/zmq/fig13.png)
 
@@ -1200,7 +1187,7 @@ There are quite a few answers to this, but the very simplest answer is to add an
 
 You might wonder, if all networks eventually get large enough to need intermediaries, why don’t we simply have a message broker in place for all applications? For beginners, it’s a fair compromise. Just always use a star topology, forget about performance, and things will usually work. However, message brokers are greedy things; in their role as central intermediaries, they become too complex, too stateful, and eventually a problem.
 
-It’s better to think of intermediaries as simple stateless message switches. A good analogy is an HTTP proxy; it’s there, but doesn’t have any special role. Adding a pub-sub proxy solves the dynamic discovery problem in our example. We set the proxy in the “middle” of the network. The proxy opens an XSUB socket, an XPUB socket, and binds each to well-known IP addresses and ports. Then, all other processes connect to the proxy, instead of to each other. It becomes trivial to add more subscribers or publishers.
+It’s better to think of intermediaries as simple stateless message switches. A good analogy is an HTTP proxy; it’s there, but doesn’t have any special role. *Adding a pub-sub proxy solves the dynamic discovery problem in our example*. We set the proxy in the “middle” of the network. The proxy opens an XSUB socket, an XPUB socket, and binds each to well-known IP addresses and ports. Then, all other processes connect to the proxy, instead of to each other. It becomes trivial to add more subscribers or publishers.
 
 ![](./pics/zmq/fig14.png)
 
@@ -1218,15 +1205,15 @@ This design lets you add more clients cheaply. You can also add more services. E
 
 That’s clearly not the kind of thing we want to be doing at 3 a.m. when our supercomputing cluster has run out of resources and we desperately need to add a couple of hundred of new service nodes. Too many static pieces are like liquid concrete: knowledge is distributed and the more static pieces you have, the more effort it is to change the topology. What we want is something sitting in between clients and services that centralizes all knowledge of the topology. Ideally, we should be able to add and remove services or clients at any time without touching any other part of the topology.
 
-So we’ll write a little message queuing broker that gives us this flexibility. The broker binds to two endpoints, a frontend for clients and a backend for services. It then uses zmq_poll() to monitor these two sockets for activity and when it has some, it shuttles messages between its two sockets. It doesn’t actually manage any queues explicitly–ZeroMQ does that automatically on each socket.
+*So we’ll write a little message queuing broker that gives us this flexibility. The broker binds to two endpoints, a frontend for clients and a backend for services. It then uses `zmq_poll()` to monitor these two sockets for activity and when it has some, it shuttles messages between its two sockets.* It doesn’t actually manage any queues explicitly–ZeroMQ does that automatically on each socket.
 
 When you use REQ to talk to REP, you get a strictly synchronous request-reply dialog. The client sends a request. The service reads the request and sends a reply. The client then reads the reply. If either the client or the service try to do anything else (e.g., sending two requests in a row without waiting for a response), they will get an error.
 
-But our broker has to be nonblocking. Obviously, we can use zmq_poll() to wait for activity on either socket, but we can’t use REP and REQ.
+But our broker has to be nonblocking. Obviously, we can use `zmq_poll()` to wait for activity on either socket, but we can’t use REP and REQ.
 
 ![](./pics/zmq/fig16.png)
 
-Luckily, there are two sockets called DEALER and ROUTER that let you do nonblocking request-response. You’ll see in Chapter 3 - Advanced Request-Reply Patterns how DEALER and ROUTER sockets let you build all kinds of asynchronous request-reply flows. For now, we’re just going to see how DEALER and ROUTER let us extend REQ-REP across an intermediary, that is, our little broker.
+Luckily, there are two sockets called DEALER and ROUTER that let you do nonblocking request-response. You’ll see in *Chapter 3 - Advanced Request-Reply Patterns* how DEALER and ROUTER sockets let you build all kinds of asynchronous request-reply flows. For now, we’re just going to see how DEALER and ROUTER let us extend REQ-REP across an intermediary, that is, our little broker.
 
 In this simple extended request-reply pattern, REQ talks to ROUTER and DEALER talks to REP. In between the DEALER and ROUTER, we have to have code (like our broker) that pulls messages off the one socket and shoves them onto the other.
 
@@ -1242,7 +1229,7 @@ The request-reply broker binds to two endpoints, one for clients to connect to (
  
 int main (int argc, char *argv[])
 {
-    zmq::context_t context(1);
+  zmq::context_t context(1);
 
 	zmq::socket_t requester(context, ZMQ_REQ);
 	requester.connect("tcp://localhost:5559");
@@ -1272,7 +1259,7 @@ Here is the worker:
  
 int main (int argc, char *argv[])
 {
-    zmq::context_t context(1);
+  zmq::context_t context(1);
 
 	zmq::socket_t responder(context, ZMQ_REP);
 	responder.connect("tcp://localhost:5560");
@@ -1285,7 +1272,7 @@ int main (int argc, char *argv[])
 		std::cout << "Received request: " << string << std::endl;
 		
 		// Do some 'work'
-        sleep (1);
+    sleep (1);
         
         //  Send reply back to client
 		s_send (responder, "World");
