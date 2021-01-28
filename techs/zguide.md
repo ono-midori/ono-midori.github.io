@@ -100,6 +100,30 @@
       - [Model Two: Brutal Shotgun Massacre](#model-two-brutal-shotgun-massacre)
       - [Model Three: Complex and Nasty](#model-three-complex-and-nasty)
       - [Conclusion](#conclusion)
+  - [Advanced Pub-Sub Patterns](#advanced-pub-sub-patterns)
+    - [Pros and Cons of Pub-Sub](#pros-and-cons-of-pub-sub)
+    - [Pub-Sub Tracing (Espresso Pattern)](#pub-sub-tracing-espresso-pattern)
+    - [Last Value Caching](#last-value-caching)
+    - [Slow Subscriber Detection (Suicidal Snail Pattern)](#slow-subscriber-detection-suicidal-snail-pattern)
+    - [High-Speed Subscribers (Black Box Pattern)](#high-speed-subscribers-black-box-pattern)
+    - [Reliable Pub-Sub (Clone Pattern)](#reliable-pub-sub-clone-pattern)
+      - [Centralized Versus Decentralized](#centralized-versus-decentralized)
+      - [Representing State as Key-Value Pairs](#representing-state-as-key-value-pairs)
+      - [Getting an Out-of-Band Snapshot](#getting-an-out-of-band-snapshot)
+      - [Republishing Updates from Clients](#republishing-updates-from-clients)
+      - [Working with Subtrees](#working-with-subtrees)
+      - [Ephemeral Values](#ephemeral-values)
+      - [Using a Reactor](#using-a-reactor)
+      - [Adding the Binary Star Pattern for Reliability](#adding-the-binary-star-pattern-for-reliability)
+      - [The Clustered Hashmap Protocol](#the-clustered-hashmap-protocol)
+        - [Goals](#goals)
+        - [Architecture](#architecture)
+        - [Ports and Connections](#ports-and-connections)
+        - [State Synchronization](#state-synchronization)
+        - [Server-to-Client Updates](#server-to-client-updates)
+        - [Client-to-Server Updates](#client-to-server-updates)
+        - [Security](#security)
+      - [Building a Multithreaded Stack and API](#building-a-multithreaded-stack-and-api)
 
 ## Basics
 
@@ -8968,3 +8992,3587 @@ This API implementation is fairly sophisticated and uses a couple of techniques 
 #### Conclusion
 In this chapter, we’ve seen a variety of reliable request-reply mechanisms, each with certain costs and benefits. The example code is largely ready for real use, though it is not optimized. Of all the different patterns, the two that stand out for production use are the Majordomo pattern, for broker-based reliability, and the Freelance pattern, for brokerless reliability.
 
+## Advanced Pub-Sub Patterns
+
+In Chapter 3 - Advanced Request-Reply Patterns and Chapter 4 - Reliable Request-Reply Patterns we looked at advanced use of ZeroMQ’s request-reply pattern. If you managed to digest all that, congratulations. In this chapter we’ll focus on publish-subscribe and extend ZeroMQ’s core pub-sub pattern with higher-level patterns for performance, reliability, state distribution, and monitoring.
+
+We’ll cover:
+
+When to use publish-subscribe
+How to handle too-slow subscribers (the Suicidal Snail pattern)
+How to design high-speed subscribers (the Black Box pattern)
+How to monitor a pub-sub network (the Espresso pattern)
+How to build a shared key-value store (the Clone pattern)
+How to use reactors to simplify complex servers
+How to use the Binary Star pattern to add failover to a server
+
+### Pros and Cons of Pub-Sub
+
+ZeroMQ’s low-level patterns have their different characters. Pub-sub addresses an old messaging problem, which is multicast or group messaging. It has that unique mix of meticulous simplicity and brutal indifference that characterizes ZeroMQ. It’s worth understanding the trade-offs that pub-sub makes, how these benefit us, and how we can work around them if needed.
+
+First, PUB sends each message to “all of many”, whereas PUSH and DEALER rotate messages to “one of many”. You cannot simply replace PUSH with PUB or vice versa and hope that things will work. This bears repeating because people seem to quite often suggest doing this.
+
+More profoundly, pub-sub is aimed at scalability. This means large volumes of data, sent rapidly to many recipients. If you need millions of messages per second sent to thousands of points, you’ll appreciate pub-sub a lot more than if you need a few messages a second sent to a handful of recipients.
+
+To get scalability, pub-sub uses the same trick as push-pull, which is to get rid of back-chatter. This means that recipients don’t talk back to senders. There are some exceptions, e.g., SUB sockets will send subscriptions to PUB sockets, but it’s anonymous and infrequent.
+
+Killing back-chatter is essential to real scalability. With pub-sub, it’s how the pattern can map cleanly to the PGM multicast protocol, which is handled by the network switch. In other words, subscribers don’t connect to the publisher at all, they connect to a multicast group on the switch, to which the publisher sends its messages.
+
+When we remove back-chatter, our overall message flow becomes much simpler, which lets us make simpler APIs, simpler protocols, and in general reach many more people. But we also remove any possibility to coordinate senders and receivers. What this means is:
+
+Publishers can’t tell when subscribers are successfully connected, both on initial connections, and on reconnections after network failures.
+
+Subscribers can’t tell publishers anything that would allow publishers to control the rate of messages they send. Publishers only have one setting, which is full-speed, and subscribers must either keep up or lose messages.
+
+Publishers can’t tell when subscribers have disappeared due to processes crashing, networks breaking, and so on.
+
+The downside is that we actually need all of these if we want to do reliable multicast. The ZeroMQ pub-sub pattern will lose messages arbitrarily when a subscriber is connecting, when a network failure occurs, or just if the subscriber or network can’t keep up with the publisher.
+
+The upside is that there are many use cases where almost reliable multicast is just fine. When we need this back-chatter, we can either switch to using ROUTER-DEALER (which I tend to do for most normal volume cases), or we can add a separate channel for synchronization (we’ll see an example of this later in this chapter).
+
+Pub-sub is like a radio broadcast; you miss everything before you join, and then how much information you get depends on the quality of your reception. Surprisingly, this model is useful and widespread because it maps perfectly to real world distribution of information. Think of Facebook and Twitter, the BBC World Service, and the sports results.
+
+As we did for request-reply, let’s define reliability in terms of what can go wrong. Here are the classic failure cases for pub-sub:
+
+Subscribers join late, so they miss messages the server already sent.
+Subscribers can fetch messages too slowly, so queues build up and then overflow.
+Subscribers can drop off and lose messages while they are away.
+Subscribers can crash and restart, and lose whatever data they already received.
+Networks can become overloaded and drop data (specifically, for PGM).
+Networks can become too slow, so publisher-side queues overflow and publishers crash.
+A lot more can go wrong but these are the typical failures we see in a realistic system. Since v3.x, ZeroMQ forces default limits on its internal buffers (the so-called high-water mark or HWM), so publisher crashes are rarer unless you deliberately set the HWM to infinite.
+
+All of these failure cases have answers, though not always simple ones. Reliability requires complexity that most of us don’t need, most of the time, which is why ZeroMQ doesn’t attempt to provide it out of the box (even if there was one global design for reliability, which there isn’t).
+
+### Pub-Sub Tracing (Espresso Pattern)
+
+Let’s start this chapter by looking at a way to trace pub-sub networks. In Chapter 2 - Sockets and Patterns we saw a simple proxy that used these to do transport bridging. The zmq_proxy() method has three arguments: a frontend and backend socket that it bridges together, and a capture socket to which it will send all messages.
+
+The code is deceptively simple:
+
+```c++
+//  Espresso Pattern
+//  This shows how to capture data using a pub-sub proxy
+
+#include "czmq.h"
+
+//  The subscriber thread requests messages starting with
+//  A and B, then reads and counts incoming messages.
+
+static void
+subscriber_thread (void *args, zctx_t *ctx, void *pipe)
+{
+    //  Subscribe to "A" and "B"
+    void *subscriber = zsocket_new (ctx, ZMQ_SUB);
+    zsocket_connect (subscriber, "tcp://localhost:6001");
+    zsocket_set_subscribe (subscriber, "A");
+    zsocket_set_subscribe (subscriber, "B");
+
+    int count = 0;
+    while (count < 5) {
+        char *string = zstr_recv (subscriber);
+        if (!string)
+            break;              //  Interrupted
+        free (string);
+        count++;
+    }
+    zsocket_destroy (ctx, subscriber);
+}
+
+//  .split publisher thread
+//  The publisher sends random messages starting with A-J:
+
+static void
+publisher_thread (void *args, zctx_t *ctx, void *pipe)
+{
+    void *publisher = zsocket_new (ctx, ZMQ_PUB);
+    zsocket_bind (publisher, "tcp://*:6000");
+
+    while (!zctx_interrupted) {
+        char string [10];
+        sprintf (string, "%c-%05d", randof (10) + 'A', randof (100000));
+        if (zstr_send (publisher, string) == -1)
+            break;              //  Interrupted
+        zclock_sleep (100);     //  Wait for 1/10th second
+    }
+}
+
+//  .split listener thread
+//  The listener receives all messages flowing through the proxy, on its
+//  pipe. In CZMQ, the pipe is a pair of ZMQ_PAIR sockets that connect
+//  attached child threads. In other languages your mileage may vary:
+
+static void
+listener_thread (void *args, zctx_t *ctx, void *pipe)
+{
+    //  Print everything that arrives on pipe
+    while (true) {
+        zframe_t *frame = zframe_recv (pipe);
+        if (!frame)
+            break;              //  Interrupted
+        zframe_print (frame, NULL);
+        zframe_destroy (&frame);
+    }
+}
+
+//  .split main thread
+//  The main task starts the subscriber and publisher, and then sets
+//  itself up as a listening proxy. The listener runs as a child thread:
+
+int main (void)
+{
+    //  Start child threads
+    zctx_t *ctx = zctx_new ();
+    zthread_fork (ctx, publisher_thread, NULL);
+    zthread_fork (ctx, subscriber_thread, NULL);
+
+    void *subscriber = zsocket_new (ctx, ZMQ_XSUB);
+    zsocket_connect (subscriber, "tcp://localhost:6000");
+    void *publisher = zsocket_new (ctx, ZMQ_XPUB);
+    zsocket_bind (publisher, "tcp://*:6001");
+    void *listener = zthread_fork (ctx, listener_thread, NULL);
+    zmq_proxy (subscriber, publisher, listener);
+
+    puts (" interrupted");
+    //  Tell attached threads to exit
+    zctx_destroy (&ctx);
+    return 0;
+}
+```
+
+Espresso works by creating a listener thread that reads a PAIR socket and prints anything it gets. That PAIR socket is one end of a pipe; the other end (another PAIR) is the socket we pass to zmq_proxy(). In practice, you’d filter interesting messages to get the essence of what you want to track (hence the name of the pattern).
+
+The subscriber thread subscribes to “A” and “B”, receives five messages, and then destroys its socket. When you run the example, the listener prints two subscription messages, five data messages, two unsubscribe messages, and then silence:
+
+```
+[002] 0141
+[002] 0142
+[007] B-91164
+[007] B-12979
+[007] A-52599
+[007] A-06417
+[007] A-45770
+[002] 0041
+[002] 0042
+```
+
+This shows neatly how the publisher socket stops sending data when there are no subscribers for it. The publisher thread is still sending messages. The socket just drops them silently.
+
+### Last Value Caching
+
+If you’ve used commercial pub-sub systems, you may be used to some features that are missing in the fast and cheerful ZeroMQ pub-sub model. One of these is last value caching (LVC). This solves the problem of how a new subscriber catches up when it joins the network. The theory is that publishers get notified when a new subscriber joins and subscribes to some specific topics. The publisher can then rebroadcast the last message for those topics.
+
+I’ve already explained why publishers don’t get notified when there are new subscribers, because in large pub-sub systems, the volumes of data make it pretty much impossible. To make really large-scale pub-sub networks, you need a protocol like PGM that exploits an upscale Ethernet switch’s ability to multicast data to thousands of subscribers. Trying to do a TCP unicast from the publisher to each of thousands of subscribers just doesn’t scale. You get weird spikes, unfair distribution (some subscribers getting the message before others), network congestion, and general unhappiness.
+
+PGM is a one-way protocol: the publisher sends a message to a multicast address at the switch, which then rebroadcasts that to all interested subscribers. The publisher never sees when subscribers join or leave: this all happens in the switch, which we don’t really want to start reprogramming.
+
+However, in a lower-volume network with a few dozen subscribers and a limited number of topics, we can use TCP and then the XSUB and XPUB sockets do talk to each other as we just saw in the Espresso pattern.
+
+Can we make an LVC using ZeroMQ? The answer is yes, if we make a proxy that sits between the publisher and subscribers; an analog for the PGM switch, but one we can program ourselves.
+
+I’ll start by making a publisher and subscriber that highlight the worst case scenario. This publisher is pathological. It starts by immediately sending messages to each of a thousand topics, and then it sends one update a second to a random topic. A subscriber connects, and subscribes to a topic. Without LVC, a subscriber would have to wait an average of 500 seconds to get any data. To add some drama, let’s pretend there’s an escaped convict called Gregor threatening to rip the head off Roger the toy bunny if we can’t fix that 8.3 minutes’ delay.
+
+Here’s the publisher code. Note that it has the command line option to connect to some address, but otherwise binds to an endpoint. We’ll use this later to connect to our last value cache:
+
+```c++
+//  Pathological publisher
+//  Sends out 1,000 topics and then one random update per second
+
+#include <thread>
+#include <chrono>
+#include "zhelpers.hpp"
+
+int main (int argc, char *argv [])
+{
+    zmq::context_t context(1);
+    zmq::socket_t publisher(context, ZMQ_PUB);
+
+    //  Initialize random number generator
+    srandom ((unsigned) time (NULL));
+
+    if (argc == 2)
+        publisher.bind(argv [1]);
+    else
+        publisher.bind("tcp://*:5556");
+
+    //  Ensure subscriber connection has time to complete
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    //  Send out all 1,000 topic messages
+    int topic_nbr;
+    for (topic_nbr = 0; topic_nbr < 1000; topic_nbr++) {
+        std::stringstream ss;
+        ss << std::dec << std::setw(3) << std::setfill('0') << topic_nbr;
+
+        s_sendmore (publisher, ss.str());
+        s_send (publisher, "Save Roger");
+    }
+
+    //  Send one random update per second
+    while (1) {
+
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::stringstream ss;
+        ss << std::dec << std::setw(3) << std::setfill('0') << within(1000);
+
+        s_sendmore (publisher, ss.str());
+        s_send (publisher, "Off with his head!");
+    }
+    return 0;
+}
+```
+
+And here’s the subscriber:
+
+```c++
+//  Pathological subscriber
+//  Subscribes to one random topic and prints received messages
+
+#include "zhelpers.hpp"
+
+int main (int argc, char *argv [])
+{
+    zmq::context_t context(1);
+    zmq::socket_t subscriber (context, ZMQ_SUB);
+
+    //  Initialize random number generator
+    srandom ((unsigned) time (NULL));
+
+    if (argc == 2)
+        subscriber.connect(argv [1]);
+    else
+        subscriber.connect("tcp://localhost:5556");
+
+    std::stringstream ss;
+    ss << std::dec << std::setw(3) << std::setfill('0') << within(1000);
+    std::cout << "topic:" << ss.str() << std::endl;
+
+    subscriber.setsockopt( ZMQ_SUBSCRIBE, ss.str().c_str(), ss.str().size());
+
+    while (1) {
+		std::string topic = s_recv (subscriber);
+		std::string data = s_recv (subscriber);
+        if (topic != ss.str())
+            break;
+        std::cout << data << std::endl;
+    }
+    return 0;
+}
+```
+
+Try building and running these: first the subscriber, then the publisher. You’ll see the subscriber reports getting “Save Roger” as you’d expect:
+
+```
+./pathosub &
+./pathopub
+```
+
+It’s when you run a second subscriber that you understand Roger’s predicament. You have to leave it an awful long time before it reports getting any data. So, here’s our last value cache. As I promised, it’s a proxy that binds to two sockets and then handles messages on both:
+
+```c++
+//  Last value cache
+//  Uses XPUB subscription messages to re-send data
+
+#include <unordered_map>
+#include "zhelpers.hpp"
+
+int main ()
+{
+    zmq::context_t context(1);
+    zmq::socket_t  frontend(context, ZMQ_SUB);
+    zmq::socket_t  backend(context, ZMQ_XPUB);
+
+    frontend.connect("tcp://localhost:5557");
+    backend.bind("tcp://*:5558");
+
+    //  Subscribe to every single topic from publisher
+    frontend.setsockopt(ZMQ_SUBSCRIBE, "", 0);
+
+    //  Store last instance of each topic in a cache
+    std::unordered_map<std::string, std::string> cache_map;
+
+    zmq::pollitem_t items[2] = {
+        { static_cast<void*>(frontend), 0, ZMQ_POLLIN, 0 },
+        { static_cast<void*>(backend), 0, ZMQ_POLLIN, 0 }
+    };
+
+    //  .split main poll loop
+    //  We route topic updates from frontend to backend, and we handle
+    //  subscriptions by sending whatever we cached, if anything:
+    while (1)
+    {
+        if (zmq::poll(items, 2, 1000) == -1)
+            break; //  Interrupted
+
+        //  Any new topic data we cache and then forward
+        if (items[0].revents & ZMQ_POLLIN)
+        {
+            std::string topic = s_recv(frontend);
+            std::string data  = s_recv(frontend);
+
+            if (topic.empty())
+                break;
+
+            cache_map[topic] = data;
+
+            s_sendmore(backend, topic);
+            s_send(backend, data);
+        }
+
+        //  .split handle subscriptions
+        //  When we get a new subscription, we pull data from the cache:
+        if (items[1].revents & ZMQ_POLLIN) {
+            zmq::message_t msg;
+
+            backend.recv(&msg);
+            if (msg.size() == 0)
+                break;
+
+            //  Event is one byte 0=unsub or 1=sub, followed by topic
+            uint8_t *event = (uint8_t *)msg.data();
+            if (event[0] == 1) {
+                std::string topic((char *)(event+1), msg.size()-1);
+
+                auto i = cache_map.find(topic);
+                if (i != cache_map.end())
+                {
+                    s_sendmore(backend, topic);
+                    s_send(backend, i->second);
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+```
+
+Now, run the proxy, and then the publisher:
+
+```
+./lvcache &
+./pathopub tcp://localhost:5557
+```
+
+And now run as many instances of the subscriber as you want to try, each time connecting to the proxy on port 5558:
+
+```
+./pathosub tcp://localhost:5558
+```
+
+Each subscriber happily reports “Save Roger”, and Gregor the Escaped Convict slinks back to his seat for dinner and a nice cup of hot milk, which is all he really wanted in the first place.
+
+One note: by default, the XPUB socket does not report duplicate subscriptions, which is what you want when you’re naively connecting an XPUB to an XSUB. Our example sneakily gets around this by using random topics so the chance of it not working is one in a million. In a real LVC proxy, you’ll want to use the ZMQ_XPUB_VERBOSE option that we implement in Chapter 6 - The ZeroMQ Community as an exercise.
+
+### Slow Subscriber Detection (Suicidal Snail Pattern)
+
+A common problem you will hit when using the pub-sub pattern in real life is the slow subscriber. In an ideal world, we stream data at full speed from publishers to subscribers. In reality, subscriber applications are often written in interpreted languages, or just do a lot of work, or are just badly written, to the extent that they can’t keep up with publishers.
+
+How do we handle a slow subscriber? The ideal fix is to make the subscriber faster, but that might take work and time. Some of the classic strategies for handling a slow subscriber are:
+
+- Queue messages on the publisher. This is what Gmail does when I don’t read my email for a couple of hours. But in high-volume messaging, pushing queues upstream has the thrilling but unprofitable result of making publishers run out of memory and crash–especially if there are lots of subscribers and it’s not possible to flush to disk for performance reasons.
+- Queue messages on the subscriber. This is much better, and it’s what ZeroMQ does by default if the network can keep up with things. If anyone’s going to run out of memory and crash, it’ll be the subscriber rather than the publisher, which is fair. This is perfect for “peaky” streams where a subscriber can’t keep up for a while, but can catch up when the stream slows down. However, it’s no answer to a subscriber that’s simply too slow in general.
+- Stop queuing new messages after a while. This is what Gmail does when my mailbox overflows its precious gigabytes of space. New messages just get rejected or dropped. This is a great strategy from the perspective of the publisher, and it’s what ZeroMQ does when the publisher sets a HWM. However, it still doesn’t help us fix the slow subscriber. Now we just get gaps in our message stream.
+- Punish slow subscribers with disconnect. This is what Hotmail (remember that?) did when I didn’t log in for two weeks, which is why I was on my fifteenth Hotmail account when it hit me that there was perhaps a better way. It’s a nice brutal strategy that forces subscribers to sit up and pay attention and would be ideal, but ZeroMQ doesn’t do this, and there’s no way to layer it on top because subscribers are invisible to publisher applications.
+
+None of these classic strategies fit, so we need to get creative. Rather than disconnect the publisher, let’s convince the subscriber to kill itself. This is the Suicidal Snail pattern. When a subscriber detects that it’s running too slowly (where “too slowly” is presumably a configured option that really means “so slowly that if you ever get here, shout really loudly because I need to know, so I can fix this!"), it croaks and dies.
+
+How can a subscriber detect this? One way would be to sequence messages (number them in order) and use a HWM at the publisher. Now, if the subscriber detects a gap (i.e., the numbering isn’t consecutive), it knows something is wrong. We then tune the HWM to the “croak and die if you hit this” level.
+
+There are two problems with this solution. One, if we have many publishers, how do we sequence messages? The solution is to give each publisher a unique ID and add that to the sequencing. Second, if subscribers use ZMQ_SUBSCRIBE filters, they will get gaps by definition. Our precious sequencing will be for nothing.
+
+Some use cases won’t use filters, and sequencing will work for them. But a more general solution is that the publisher timestamps each message. When a subscriber gets a message, it checks the time, and if the difference is more than, say, one second, it does the “croak and die” thing, possibly firing off a squawk to some operator console first.
+
+The Suicide Snail pattern works especially when subscribers have their own clients and service-level agreements and need to guarantee certain maximum latencies. Aborting a subscriber may not seem like a constructive way to guarantee a maximum latency, but it’s the assertion model. Abort today, and the problem will be fixed. Allow late data to flow downstream, and the problem may cause wider damage and take longer to appear on the radar.
+
+Here is a minimal example of a Suicidal Snail:
+
+```c++
+//
+// Suicidal Snail
+//
+// Andreas Hoelzlwimmer <andreas.hoelzlwimmer@fh-hagenberg.at>
+#include "zhelpers.hpp"
+
+// ---------------------------------------------------------------------
+// This is our subscriber
+// It connects to the publisher and subscribes to everything. It
+// sleeps for a short time between messages to simulate doing too
+// much work. If a message is more than 1 second late, it croaks.
+
+#define MAX_ALLOWED_DELAY 1000 // msecs
+
+static void *
+subscriber (void *args) {
+    zmq::context_t context(1);
+
+    // Subscribe to everything
+    zmq::socket_t subscriber(context, ZMQ_SUB);
+    subscriber.connect("tcp://localhost:5556");
+    subscriber.setsockopt (ZMQ_SUBSCRIBE, "", 0);
+
+    std::stringstream ss;
+    // Get and process messages
+    while (1) {
+        ss.clear();
+        ss.str(s_recv (subscriber));
+        int64_t clock;
+        assert ((ss >> clock));
+
+        // Suicide snail logic
+        if (s_clock () - clock > MAX_ALLOWED_DELAY) {
+            std::cerr << "E: subscriber cannot keep up, aborting" << std::endl;
+            break;
+        }
+        // Work for 1 msec plus some random additional time
+        s_sleep(1000*(1+within(2)));
+    }
+    return (NULL);
+}
+
+
+// ---------------------------------------------------------------------
+// This is our server task
+// It publishes a time-stamped message to its pub socket every 1ms.
+
+static void *
+publisher (void *args) {
+    zmq::context_t context (1);
+
+    // Prepare publisher
+    zmq::socket_t publisher(context, ZMQ_PUB);
+    publisher.bind("tcp://*:5556");
+
+    std::stringstream ss;
+
+    while (1) {
+        // Send current clock (msecs) to subscribers
+        ss.str("");
+        ss << s_clock();
+        s_send (publisher, ss.str());
+
+        s_sleep(1);
+    }
+    return 0;
+}
+
+
+// This main thread simply starts a client, and a server, and then
+// waits for the client to croak.
+//
+int main (void)
+{
+    pthread_t server_thread;
+    pthread_create (&server_thread, NULL, publisher, NULL);
+
+    pthread_t client_thread;
+    pthread_create (&client_thread, NULL, subscriber, NULL);
+    pthread_join (client_thread, NULL);
+
+    return 0;
+}
+```
+
+Here are some things to note about the Suicidal Snail example:
+
+- The message here consists simply of the current system clock as a number of milliseconds. In a realistic application, you’d have at least a message header with the timestamp and a message body with data.
+- The example has subscriber and publisher in a single process as two threads. In reality, they would be separate processes. Using threads is just convenient for the demonstration.
+
+### High-Speed Subscribers (Black Box Pattern)
+
+Now lets look at one way to make our subscribers faster. A common use case for pub-sub is distributing large data streams like market data coming from stock exchanges. A typical setup would have a publisher connected to a stock exchange, taking price quotes, and sending them out to a number of subscribers. If there are a handful of subscribers, we could use TCP. If we have a larger number of subscribers, we’d probably use reliable multicast, i.e., PGM.
+
+![](./pics/zmq/fig56.png)
+
+Let’s imagine our feed has an average of 100,000 100-byte messages a second. That’s a typical rate, after filtering market data we don’t need to send on to subscribers. Now we decide to record a day’s data (maybe 250 GB in 8 hours), and then replay it to a simulation network, i.e., a small group of subscribers. While 100K messages a second is easy for a ZeroMQ application, we want to replay it much faster.
+
+So we set up our architecture with a bunch of boxes–one for the publisher and one for each subscriber. These are well-specified boxes–eight cores, twelve for the publisher.
+
+And as we pump data into our subscribers, we notice two things:
+
+1. When we do even the slightest amount of work with a message, it slows down our subscriber to the point where it can’t catch up with the publisher again.
+2. We’re hitting a ceiling, at both publisher and subscriber, to around 6M messages a second, even after careful optimization and TCP tuning.
+
+The first thing we have to do is break our subscriber into a multithreaded design so that we can do work with messages in one set of threads, while reading messages in another. Typically, we don’t want to process every message the same way. Rather, the subscriber will filter some messages, perhaps by prefix key. When a message matches some criteria, the subscriber will call a worker to deal with it. In ZeroMQ terms, this means sending the message to a worker thread.
+
+So the subscriber looks something like a queue device. We could use various sockets to connect the subscriber and workers. If we assume one-way traffic and workers that are all identical, we can use PUSH and PULL and delegate all the routing work to ZeroMQ. This is the simplest and fastest approach.
+
+The subscriber talks to the publisher over TCP or PGM. The subscriber talks to its workers, which are all in the same process, over `inproc:@<//>@`.
+
+![](./pics/zmq/fig57.png)
+
+Now to break that ceiling. The subscriber thread hits 100% of CPU and because it is one thread, it cannot use more than one core. A single thread will always hit a ceiling, be it at 2M, 6M, or more messages per second. We want to split the work across multiple threads that can run in parallel.
+
+The approach used by many high-performance products, which works here, is sharding. Using sharding, we split the work into parallel and independent streams, such as half of the topic keys in one stream, and half in another. We could use many streams, but performance won’t scale unless we have free cores. So let’s see how to shard into two streams.
+
+With two streams, working at full speed, we would configure ZeroMQ as follows:
+
+Two I/O threads, rather than one.
+Two network interfaces (NIC), one per subscriber.
+Each I/O thread bound to a specific NIC.
+Two subscriber threads, bound to specific cores.
+Two SUB sockets, one per subscriber thread.
+The remaining cores assigned to worker threads.
+Worker threads connected to both subscriber PUSH sockets.
+
+Ideally, we want to match the number of fully-loaded threads in our architecture with the number of cores. When threads start to fight for cores and CPU cycles, the cost of adding more threads outweighs the benefits. There would be no benefit, for example, in creating more I/O threads.
+
+### Reliable Pub-Sub (Clone Pattern)
+
+As a larger worked example, we’ll take the problem of making a reliable pub-sub architecture. We’ll develop this in stages. The goal is to allow a set of applications to share some common state. Here are our technical challenges:
+
+- We have a large set of client applications, say thousands or tens of thousands.
+- They will join and leave the network arbitrarily.
+- These applications must share a single eventually-consistent state.
+  
+Any application can update the state at any point in time.
+Let’s say that updates are reasonably low-volume. We don’t have real time goals. The whole state can fit into memory. Some plausible use cases are:
+
+- A configuration that is shared by a group of cloud servers.
+- Some game state shared by a group of players.
+- Exchange rate data that is updated in real time and available to applications.
+
+#### Centralized Versus Decentralized
+
+A first decision we have to make is whether we work with a central server or not. It makes a big difference in the resulting design. The trade-offs are these:
+
+- Conceptually, a central server is simpler to understand because networks are not naturally symmetrical. With a central server, we avoid all questions of discovery, bind versus connect, and so on.
+- Generally, a fully-distributed architecture is technically more challenging but ends up with simpler protocols. That is, each node must act as server and client in the right way, which is delicate. When done right, the results are simpler than using a central server. We saw this in the Freelance pattern in Chapter 4 - Reliable Request-Reply Patterns.
+- A central server will become a bottleneck in high-volume use cases. If handling scale in the order of millions of messages a second is required, we should aim for decentralization right away.
+- Ironically, a centralized architecture will scale to more nodes more easily than a decentralized one. That is, it’s easier to connect 10,000 nodes to one server than to each other.
+
+So, for the Clone pattern we’ll work with a server that publishes state updates and a set of clients that represent applications.
+
+#### Representing State as Key-Value Pairs
+
+We’ll develop Clone in stages, solving one problem at a time. First, let’s look at how to update a shared state across a set of clients. We need to decide how to represent our state, as well as the updates. The simplest plausible format is a key-value store, where one key-value pair represents an atomic unit of change in the shared state.
+
+We have a simple pub-sub example in Chapter 1 - Basics, the weather server and client. Let’s change the server to send key-value pairs, and the client to store these in a hash table. This lets us send updates from one server to a set of clients using the classic pub-sub model.
+
+An update is either a new key-value pair, a modified value for an existing key, or a deleted key. We can assume for now that the whole store fits in memory and that applications access it by key, such as by using a hash table or dictionary. For larger stores and some kind of persistence we’d probably store the state in a database, but that’s not relevant here.
+
+This is the server:
+
+```c++
+//  Clone server Model One
+
+#include "kvsimple.c"
+
+int main (void)
+{
+    //  Prepare our context and publisher socket
+    zctx_t *ctx = zctx_new ();
+    void *publisher = zsocket_new (ctx, ZMQ_PUB);
+    zsocket_bind (publisher, "tcp://*:5556");
+    zclock_sleep (200);
+
+    zhash_t *kvmap = zhash_new ();
+    int64_t sequence = 0;
+    srandom ((unsigned) time (NULL));
+
+    while (!zctx_interrupted) {
+        //  Distribute as key-value message
+        kvmsg_t *kvmsg = kvmsg_new (++sequence);
+        kvmsg_fmt_key  (kvmsg, "%d", randof (10000));
+        kvmsg_fmt_body (kvmsg, "%d", randof (1000000));
+        kvmsg_send     (kvmsg, publisher);
+        kvmsg_store   (&kvmsg, kvmap);
+    }
+    printf (" Interrupted\n%d messages out\n", (int) sequence);
+    zhash_destroy (&kvmap);
+    zctx_destroy (&ctx);
+    return 0;
+}
+```
+
+And here is the client:
+
+```c++
+//  Clone client Model One
+
+#include "kvsimple.c"
+
+int main (void)
+{
+    //  Prepare our context and updates socket
+    zctx_t *ctx = zctx_new ();
+    void *updates = zsocket_new (ctx, ZMQ_SUB);
+    zsocket_set_subscribe (updates, "");
+    zsocket_connect (updates, "tcp://localhost:5556");
+
+    zhash_t *kvmap = zhash_new ();
+    int64_t sequence = 0;
+
+    while (true) {
+        kvmsg_t *kvmsg = kvmsg_recv (updates);
+        if (!kvmsg)
+            break;          //  Interrupted
+        kvmsg_store (&kvmsg, kvmap);
+        sequence++;
+    }
+    printf (" Interrupted\n%d messages in\n", (int) sequence);
+    zhash_destroy (&kvmap);
+    zctx_destroy (&ctx);
+    return 0;
+}
+```
+
+![](./pics/zmq/fig58.png)
+
+Here are some things to note about this first model:
+
+- All the hard work is done in a kvmsg class. This class works with key-value message objects, which are multipart ZeroMQ messages structured as three frames: a key (a ZeroMQ string), a sequence number (64-bit value, in network byte order), and a binary body (holds everything else).
+- The server generates messages with a randomized 4-digit key, which lets us simulate a large but not enormous hash table (10K entries).
+- We don’t implement deletions in this version: all messages are inserts or updates.
+- The server does a 200 millisecond pause after binding its socket. This is to prevent slow joiner syndrome, where the subscriber loses messages as it connects to the server’s socket. We’ll remove that in later versions of the Clone code.
+- We’ll use the terms publisher and subscriber in the code to refer to sockets. This will help later when we have multiple sockets doing different things.
+
+Here is the kvmsg class, in the simplest form that works for now:
+
+```c++
+//  kvsimple class - key-value message class for example applications
+
+#include "kvsimple.h"
+#include "zlist.h"
+
+//  Keys are short strings
+#define KVMSG_KEY_MAX   255
+
+//  Message is formatted on wire as 3 frames:
+//  frame 0: key (0MQ string)
+//  frame 1: sequence (8 bytes, network order)
+//  frame 2: body (blob)
+#define FRAME_KEY       0
+#define FRAME_SEQ       1
+#define FRAME_BODY      2
+#define KVMSG_FRAMES    3
+
+//  The kvmsg class holds a single key-value message consisting of a
+//  list of 0 or more frames:
+
+struct _kvmsg {
+    //  Presence indicators for each frame
+    int present [KVMSG_FRAMES];
+    //  Corresponding 0MQ message frames, if any
+    zmq_msg_t frame [KVMSG_FRAMES];
+    //  Key, copied into safe C string
+    char key [KVMSG_KEY_MAX + 1];
+};
+
+//  .split constructor and destructor
+//  Here are the constructor and destructor for the class:
+
+//  Constructor, takes a sequence number for the new kvmsg instance:
+kvmsg_t *
+kvmsg_new (int64_t sequence)
+{
+    kvmsg_t
+        *self;
+
+    self = (kvmsg_t *) zmalloc (sizeof (kvmsg_t));
+    kvmsg_set_sequence (self, sequence);
+    return self;
+}
+
+//  zhash_free_fn callback helper that does the low level destruction:
+void
+kvmsg_free (void *ptr)
+{
+    if (ptr) {
+        kvmsg_t *self = (kvmsg_t *) ptr;
+        //  Destroy message frames if any
+        int frame_nbr;
+        for (frame_nbr = 0; frame_nbr < KVMSG_FRAMES; frame_nbr++)
+            if (self->present [frame_nbr])
+                zmq_msg_close (&self->frame [frame_nbr]);
+
+        //  Free object itself
+        free (self);
+    }
+}
+
+//  Destructor
+void
+kvmsg_destroy (kvmsg_t **self_p)
+{
+    assert (self_p);
+    if (*self_p) {
+        kvmsg_free (*self_p);
+        *self_p = NULL;
+    }
+}
+
+//  .split recv method
+//  This method reads a key-value message from socket, and returns a new
+//  {{kvmsg}} instance:
+
+kvmsg_t *
+kvmsg_recv (void *socket)
+{
+    assert (socket);
+    kvmsg_t *self = kvmsg_new (0);
+
+    //  Read all frames off the wire, reject if bogus
+    int frame_nbr;
+    for (frame_nbr = 0; frame_nbr < KVMSG_FRAMES; frame_nbr++) {
+        if (self->present [frame_nbr])
+            zmq_msg_close (&self->frame [frame_nbr]);
+        zmq_msg_init (&self->frame [frame_nbr]);
+        self->present [frame_nbr] = 1;
+        if (zmq_msg_recv (&self->frame [frame_nbr], socket, 0) == -1) {
+            kvmsg_destroy (&self);
+            break;
+        }
+        //  Verify multipart framing
+        int rcvmore = (frame_nbr < KVMSG_FRAMES - 1)? 1: 0;
+        if (zsocket_rcvmore (socket) != rcvmore) {
+            kvmsg_destroy (&self);
+            break;
+        }
+    }
+    return self;
+}
+
+//  .split send method
+//  This method sends a multiframe key-value message to a socket:
+
+void
+kvmsg_send (kvmsg_t *self, void *socket)
+{
+    assert (self);
+    assert (socket);
+
+    int frame_nbr;
+    for (frame_nbr = 0; frame_nbr < KVMSG_FRAMES; frame_nbr++) {
+        zmq_msg_t copy;
+        zmq_msg_init (&copy);
+        if (self->present [frame_nbr])
+            zmq_msg_copy (&copy, &self->frame [frame_nbr]);
+        zmq_msg_send (&copy, socket, 
+            (frame_nbr < KVMSG_FRAMES - 1)? ZMQ_SNDMORE: 0);
+        zmq_msg_close (&copy);
+    }
+}
+
+//  .split key methods
+//  These methods let the caller get and set the message key, as a
+//  fixed string and as a printf formatted string:
+
+char *
+kvmsg_key (kvmsg_t *self)
+{
+    assert (self);
+    if (self->present [FRAME_KEY]) {
+        if (!*self->key) {
+            size_t size = zmq_msg_size (&self->frame [FRAME_KEY]);
+            if (size > KVMSG_KEY_MAX)
+                size = KVMSG_KEY_MAX;
+            memcpy (self->key,
+                zmq_msg_data (&self->frame [FRAME_KEY]), size);
+            self->key [size] = 0;
+        }
+        return self->key;
+    }
+    else
+        return NULL;
+}
+
+void
+kvmsg_set_key (kvmsg_t *self, char *key)
+{
+    assert (self);
+    zmq_msg_t *msg = &self->frame [FRAME_KEY];
+    if (self->present [FRAME_KEY])
+        zmq_msg_close (msg);
+    zmq_msg_init_size (msg, strlen (key));
+    memcpy (zmq_msg_data (msg), key, strlen (key));
+    self->present [FRAME_KEY] = 1;
+}
+
+void
+kvmsg_fmt_key (kvmsg_t *self, char *format, ...)
+{
+    char value [KVMSG_KEY_MAX + 1];
+    va_list args;
+
+    assert (self);
+    va_start (args, format);
+    vsnprintf (value, KVMSG_KEY_MAX, format, args);
+    va_end (args);
+    kvmsg_set_key (self, value);
+}
+
+//  .split sequence methods
+//  These two methods let the caller get and set the message sequence number:
+
+int64_t
+kvmsg_sequence (kvmsg_t *self)
+{
+    assert (self);
+    if (self->present [FRAME_SEQ]) {
+        assert (zmq_msg_size (&self->frame [FRAME_SEQ]) == 8);
+        byte *source = zmq_msg_data (&self->frame [FRAME_SEQ]);
+        int64_t sequence = ((int64_t) (source [0]) << 56)
+                         + ((int64_t) (source [1]) << 48)
+                         + ((int64_t) (source [2]) << 40)
+                         + ((int64_t) (source [3]) << 32)
+                         + ((int64_t) (source [4]) << 24)
+                         + ((int64_t) (source [5]) << 16)
+                         + ((int64_t) (source [6]) << 8)
+                         +  (int64_t) (source [7]);
+        return sequence;
+    }
+    else
+        return 0;
+}
+
+void
+kvmsg_set_sequence (kvmsg_t *self, int64_t sequence)
+{
+    assert (self);
+    zmq_msg_t *msg = &self->frame [FRAME_SEQ];
+    if (self->present [FRAME_SEQ])
+        zmq_msg_close (msg);
+    zmq_msg_init_size (msg, 8);
+
+    byte *source = zmq_msg_data (msg);
+    source [0] = (byte) ((sequence >> 56) & 255);
+    source [1] = (byte) ((sequence >> 48) & 255);
+    source [2] = (byte) ((sequence >> 40) & 255);
+    source [3] = (byte) ((sequence >> 32) & 255);
+    source [4] = (byte) ((sequence >> 24) & 255);
+    source [5] = (byte) ((sequence >> 16) & 255);
+    source [6] = (byte) ((sequence >> 8)  & 255);
+    source [7] = (byte) ((sequence)       & 255);
+
+    self->present [FRAME_SEQ] = 1;
+}
+
+//  .split message body methods
+//  These methods let the caller get and set the message body as a
+//  fixed string and as a printf formatted string:
+
+byte *
+kvmsg_body (kvmsg_t *self)
+{
+    assert (self);
+    if (self->present [FRAME_BODY])
+        return (byte *) zmq_msg_data (&self->frame [FRAME_BODY]);
+    else
+        return NULL;
+}
+
+void
+kvmsg_set_body (kvmsg_t *self, byte *body, size_t size)
+{
+    assert (self);
+    zmq_msg_t *msg = &self->frame [FRAME_BODY];
+    if (self->present [FRAME_BODY])
+        zmq_msg_close (msg);
+    self->present [FRAME_BODY] = 1;
+    zmq_msg_init_size (msg, size);
+    memcpy (zmq_msg_data (msg), body, size);
+}
+
+void
+kvmsg_fmt_body (kvmsg_t *self, char *format, ...)
+{
+    char value [255 + 1];
+    va_list args;
+
+    assert (self);
+    va_start (args, format);
+    vsnprintf (value, 255, format, args);
+    va_end (args);
+    kvmsg_set_body (self, (byte *) value, strlen (value));
+}
+
+//  .split size method
+//  This method returns the body size of the most recently read message,
+//  if any exists:
+
+size_t
+kvmsg_size (kvmsg_t *self)
+{
+    assert (self);
+    if (self->present [FRAME_BODY])
+        return zmq_msg_size (&self->frame [FRAME_BODY]);
+    else
+        return 0;
+}
+
+//  .split store method
+//  This method stores the key-value message into a hash map, unless
+//  the key and value are both null. It nullifies the {{kvmsg}} reference
+//  so that the object is owned by the hash map, not the caller:
+
+void
+kvmsg_store (kvmsg_t **self_p, zhash_t *hash)
+{
+    assert (self_p);
+    if (*self_p) {
+        kvmsg_t *self = *self_p;
+        assert (self);
+        if (self->present [FRAME_KEY]
+        &&  self->present [FRAME_BODY]) {
+            zhash_update (hash, kvmsg_key (self), self);
+            zhash_freefn (hash, kvmsg_key (self), kvmsg_free);
+        }
+        *self_p = NULL;
+    }
+}
+
+//  .split dump method
+//  This method prints the key-value message to stderr for
+//  debugging and tracing:
+
+void
+kvmsg_dump (kvmsg_t *self)
+{
+    if (self) {
+        if (!self) {
+            fprintf (stderr, "NULL");
+            return;
+        }
+        size_t size = kvmsg_size (self);
+        byte  *body = kvmsg_body (self);
+        fprintf (stderr, "[seq:%" PRId64 "]", kvmsg_sequence (self));
+        fprintf (stderr, "[key:%s]", kvmsg_key (self));
+        fprintf (stderr, "[size:%zd] ", size);
+        int char_nbr;
+        for (char_nbr = 0; char_nbr < size; char_nbr++)
+            fprintf (stderr, "%02X", body [char_nbr]);
+        fprintf (stderr, "\n");
+    }
+    else
+        fprintf (stderr, "NULL message\n");
+}
+
+//  .split test method
+//  It's good practice to have a self-test method that tests the class; this
+//  also shows how it's used in applications:
+
+int
+kvmsg_test (int verbose)
+{
+    kvmsg_t
+        *kvmsg;
+
+    printf (" * kvmsg: ");
+
+    //  Prepare our context and sockets
+    zctx_t *ctx = zctx_new ();
+    void *output = zsocket_new (ctx, ZMQ_DEALER);
+    int rc = zmq_bind (output, "ipc://kvmsg_selftest.ipc");
+    assert (rc == 0);
+    void *input = zsocket_new (ctx, ZMQ_DEALER);
+    rc = zmq_connect (input, "ipc://kvmsg_selftest.ipc");
+    assert (rc == 0);
+
+    zhash_t *kvmap = zhash_new ();
+
+    //  Test send and receive of simple message
+    kvmsg = kvmsg_new (1);
+    kvmsg_set_key  (kvmsg, "key");
+    kvmsg_set_body (kvmsg, (byte *) "body", 4);
+    if (verbose)
+        kvmsg_dump (kvmsg);
+    kvmsg_send (kvmsg, output);
+    kvmsg_store (&kvmsg, kvmap);
+
+    kvmsg = kvmsg_recv (input);
+    if (verbose)
+        kvmsg_dump (kvmsg);
+    assert (streq (kvmsg_key (kvmsg), "key"));
+    kvmsg_store (&kvmsg, kvmap);
+
+    //  Shutdown and destroy all objects
+    zhash_destroy (&kvmap);
+    zctx_destroy (&ctx);
+
+    printf ("OK\n");
+    return 0;
+}
+```
+
+Later, we’ll make a more sophisticated kvmsg class that will work in real applications.
+
+Both the server and client maintain hash tables, but this first model only works properly if we start all clients before the server and the clients never crash. That’s very artificial.
+
+#### Getting an Out-of-Band Snapshot
+
+So now we have our second problem: how to deal with late-joining clients or clients that crash and then restart.
+
+In order to allow a late (or recovering) client to catch up with a server, it has to get a snapshot of the server’s state. Just as we’ve reduced “message” to mean “a sequenced key-value pair”, we can reduce “state” to mean “a hash table”. To get the server state, a client opens a DEALER socket and asks for it explicitly.
+
+To make this work, we have to solve a problem of timing. Getting a state snapshot will take a certain time, possibly fairly long if the snapshot is large. We need to correctly apply updates to the snapshot. But the server won’t know when to start sending us updates. One way would be to start subscribing, get a first update, and then ask for “state for update N”. This would require the server storing one snapshot for each update, which isn’t practical.
+
+![](./pics/zmq/fig59.png)
+
+So we will do the synchronization in the client, as follows:
+
+- The client first subscribes to updates and then makes a state request. This guarantees that the state is going to be newer than the oldest update it has.
+- The client waits for the server to reply with state, and meanwhile queues all updates. It does this simply by not reading them: ZeroMQ keeps them queued on the socket queue.
+- When the client receives its state update, it begins once again to read updates. However, it discards any updates that are older than the state update. So if the state update includes updates up to 200, the client will discard updates up to 201.
+
+The client then applies updates to its own state snapshot.
+
+It’s a simple model that exploits ZeroMQ’s own internal queues. Here’s the server:
+
+```c++
+//  Clone server - Model Two
+
+//  Lets us build this source without creating a library
+#include "kvsimple.c"
+
+static int s_send_single (const char *key, void *data, void *args);
+static void state_manager (void *args, zctx_t *ctx, void *pipe);
+
+int main (void)
+{
+    //  Prepare our context and sockets
+    zctx_t *ctx = zctx_new ();
+    void *publisher = zsocket_new (ctx, ZMQ_PUB);
+    zsocket_bind (publisher, "tcp://*:5557");
+
+    int64_t sequence = 0;
+    srandom ((unsigned) time (NULL));
+
+    //  Start state manager and wait for synchronization signal
+    void *updates = zthread_fork (ctx, state_manager, NULL);
+    free (zstr_recv (updates));
+
+    while (!zctx_interrupted) {
+        //  Distribute as key-value message
+        kvmsg_t *kvmsg = kvmsg_new (++sequence);
+        kvmsg_fmt_key  (kvmsg, "%d", randof (10000));
+        kvmsg_fmt_body (kvmsg, "%d", randof (1000000));
+        kvmsg_send     (kvmsg, publisher);
+        kvmsg_send     (kvmsg, updates);
+        kvmsg_destroy (&kvmsg);
+    }
+    printf (" Interrupted\n%d messages out\n", (int) sequence);
+    zctx_destroy (&ctx);
+    return 0;
+}
+
+//  Routing information for a key-value snapshot
+typedef struct {
+    void *socket;           //  ROUTER socket to send to
+    zframe_t *identity;     //  Identity of peer who requested state
+} kvroute_t;
+
+//  Send one state snapshot key-value pair to a socket
+//  Hash item data is our kvmsg object, ready to send
+static int
+s_send_single (const char *key, void *data, void *args)
+{
+    kvroute_t *kvroute = (kvroute_t *) args;
+    //  Send identity of recipient first
+    zframe_send (&kvroute->identity,
+        kvroute->socket, ZFRAME_MORE + ZFRAME_REUSE);
+    kvmsg_t *kvmsg = (kvmsg_t *) data;
+    kvmsg_send (kvmsg, kvroute->socket);
+    return 0;
+}
+
+//  .split state manager
+//  The state manager task maintains the state and handles requests from
+//  clients for snapshots:
+
+static void
+state_manager (void *args, zctx_t *ctx, void *pipe)
+{
+    zhash_t *kvmap = zhash_new ();
+
+    zstr_send (pipe, "READY");
+    void *snapshot = zsocket_new (ctx, ZMQ_ROUTER);
+    zsocket_bind (snapshot, "tcp://*:5556");
+
+    zmq_pollitem_t items [] = {
+        { pipe, 0, ZMQ_POLLIN, 0 },
+        { snapshot, 0, ZMQ_POLLIN, 0 }
+    };
+    int64_t sequence = 0;       //  Current snapshot version number
+    while (!zctx_interrupted) {
+        int rc = zmq_poll (items, 2, -1);
+        if (rc == -1 && errno == ETERM)
+            break;              //  Context has been shut down
+
+        //  Apply state update from main thread
+        if (items [0].revents & ZMQ_POLLIN) {
+            kvmsg_t *kvmsg = kvmsg_recv (pipe);
+            if (!kvmsg)
+                break;          //  Interrupted
+            sequence = kvmsg_sequence (kvmsg);
+            kvmsg_store (&kvmsg, kvmap);
+        }
+        //  Execute state snapshot request
+        if (items [1].revents & ZMQ_POLLIN) {
+            zframe_t *identity = zframe_recv (snapshot);
+            if (!identity)
+                break;          //  Interrupted
+
+            //  Request is in second frame of message
+            char *request = zstr_recv (snapshot);
+            if (streq (request, "ICANHAZ?"))
+                free (request);
+            else {
+                printf ("E: bad request, aborting\n");
+                break;
+            }
+            //  Send state snapshot to client
+            kvroute_t routing = { snapshot, identity };
+
+            //  For each entry in kvmap, send kvmsg to client
+            zhash_foreach (kvmap, s_send_single, &routing);
+
+            //  Now send END message with sequence number
+            printf ("Sending state shapshot=%d\n", (int) sequence);
+            zframe_send (&identity, snapshot, ZFRAME_MORE);
+            kvmsg_t *kvmsg = kvmsg_new (sequence);
+            kvmsg_set_key  (kvmsg, "KTHXBAI");
+            kvmsg_set_body (kvmsg, (byte *) "", 0);
+            kvmsg_send     (kvmsg, snapshot);
+            kvmsg_destroy (&kvmsg);
+        }
+    }
+    zhash_destroy (&kvmap);
+}
+```
+
+And here is the client:
+
+```c++
+//  Clone client - Model Two
+
+//  Lets us build this source without creating a library
+#include "kvsimple.c"
+
+int main (void)
+{
+    //  Prepare our context and subscriber
+    zctx_t *ctx = zctx_new ();
+    void *snapshot = zsocket_new (ctx, ZMQ_DEALER);
+    zsocket_connect (snapshot, "tcp://localhost:5556");
+    void *subscriber = zsocket_new (ctx, ZMQ_SUB);
+    zsocket_set_subscribe (subscriber, "");
+    zsocket_connect (subscriber, "tcp://localhost:5557");
+
+    zhash_t *kvmap = zhash_new ();
+
+    //  Get state snapshot
+    int64_t sequence = 0;
+    zstr_send (snapshot, "ICANHAZ?");
+    while (true) {
+        kvmsg_t *kvmsg = kvmsg_recv (snapshot);
+        if (!kvmsg)
+            break;          //  Interrupted
+        if (streq (kvmsg_key (kvmsg), "KTHXBAI")) {
+            sequence = kvmsg_sequence (kvmsg);
+            printf ("Received snapshot=%d\n", (int) sequence);
+            kvmsg_destroy (&kvmsg);
+            break;          //  Done
+        }
+        kvmsg_store (&kvmsg, kvmap);
+    }
+    //  Now apply pending updates, discard out-of-sequence messages
+    while (!zctx_interrupted) {
+        kvmsg_t *kvmsg = kvmsg_recv (subscriber);
+        if (!kvmsg)
+            break;          //  Interrupted
+        if (kvmsg_sequence (kvmsg) > sequence) {
+            sequence = kvmsg_sequence (kvmsg);
+            kvmsg_store (&kvmsg, kvmap);
+        }
+        else
+            kvmsg_destroy (&kvmsg);
+    }
+    zhash_destroy (&kvmap);
+    zctx_destroy (&ctx);
+    return 0;
+}
+```
+
+Here are some things to note about these two programs:
+
+- The server uses two tasks. One thread produces the updates (randomly) and sends these to the main PUB socket, while the other thread handles state requests on the ROUTER socket. The two communicate across PAIR sockets over an inproc:@<//>@ connection.
+- The client is really simple. In C, it consists of about fifty lines of code. A lot of the heavy lifting is done in the kvmsg class. Even so, the basic Clone pattern is easier to implement than it seemed at first.
+- We don’t use anything fancy for serializing the state. The hash table holds a set of kvmsg objects, and the server sends these, as a batch of messages, to the client requesting state. If multiple clients request state at once, each will get a different snapshot.
+- We assume that the client has exactly one server to talk to. The server must be running; we do not try to solve the question of what happens if the server crashes.
+
+Right now, these two programs don’t do anything real, but they correctly synchronize state. It’s a neat example of how to mix different patterns: PAIR-PAIR, PUB-SUB, and ROUTER-DEALER.
+
+#### Republishing Updates from Clients
+
+In our second model, changes to the key-value store came from the server itself. This is a centralized model that is useful, for example if we have a central configuration file we want to distribute, with local caching on each node. A more interesting model takes updates from clients, not the server. The server thus becomes a stateless broker. This gives us some benefits:
+
+- We’re less worried about the reliability of the server. If it crashes, we can start a new instance and feed it new values.
+- We can use the key-value store to share knowledge between active peers.
+
+To send updates from clients back to the server, we could use a variety of socket patterns. The simplest plausible solution is a PUSH-PULL combination.
+
+Why don’t we allow clients to publish updates directly to each other? While this would reduce latency, it would remove the guarantee of consistency. You can’t get consistent shared state if you allow the order of updates to change depending on who receives them. Say we have two clients, changing different keys. This will work fine. But if the two clients try to change the same key at roughly the same time, they’ll end up with different notions of its value.
+
+There are a few strategies for obtaining consistency when changes happen in multiple places at once. We’ll use the approach of centralizing all change. No matter the precise timing of the changes that clients make, they are all pushed through the server, which enforces a single sequence according to the order in which it gets updates.
+
+![](./pics/zmq/fig60.png)
+
+By mediating all changes, the server can also add a unique sequence number to all updates. With unique sequencing, clients can detect the nastier failures, including network congestion and queue overflow. If a client discovers that its incoming message stream has a hole, it can take action. It seems sensible that the client contact the server and ask for the missing messages, but in practice that isn’t useful. If there are holes, they’re caused by network stress, and adding more stress to the network will make things worse. All the client can do is warn its users that it is “unable to continue”, stop, and not restart until someone has manually checked the cause of the problem.
+
+We’ll now generate state updates in the client. Here’s the server:
+
+```c++
+//  Clone server - Model Three
+
+//  Lets us build this source without creating a library
+#include "kvsimple.c"
+
+//  Routing information for a key-value snapshot
+typedef struct {
+    void *socket;           //  ROUTER socket to send to
+    zframe_t *identity;     //  Identity of peer who requested state
+} kvroute_t;
+
+//  Send one state snapshot key-value pair to a socket
+//  Hash item data is our kvmsg object, ready to send
+static int
+s_send_single (const char *key, void *data, void *args)
+{
+    kvroute_t *kvroute = (kvroute_t *) args;
+    //  Send identity of recipient first
+    zframe_send (&kvroute->identity,
+        kvroute->socket, ZFRAME_MORE + ZFRAME_REUSE);
+    kvmsg_t *kvmsg = (kvmsg_t *) data;
+    kvmsg_send (kvmsg, kvroute->socket);
+    return 0;
+}
+
+int main (void)
+{
+    //  Prepare our context and sockets
+    zctx_t *ctx = zctx_new ();
+    void *snapshot = zsocket_new (ctx, ZMQ_ROUTER);
+    zsocket_bind (snapshot, "tcp://*:5556");
+    void *publisher = zsocket_new (ctx, ZMQ_PUB);
+    zsocket_bind (publisher, "tcp://*:5557");
+    void *collector = zsocket_new (ctx, ZMQ_PULL);
+    zsocket_bind (collector, "tcp://*:5558");
+
+    //  .split body of main task
+    //  The body of the main task collects updates from clients and
+    //  publishes them back out to clients:
+
+    int64_t sequence = 0;
+    zhash_t *kvmap = zhash_new ();
+
+    zmq_pollitem_t items [] = {
+        { collector, 0, ZMQ_POLLIN, 0 },
+        { snapshot, 0, ZMQ_POLLIN, 0 }
+    };
+    while (!zctx_interrupted) {
+        int rc = zmq_poll (items, 2, 1000 * ZMQ_POLL_MSEC);
+
+        //  Apply state update sent from client
+        if (items [0].revents & ZMQ_POLLIN) {
+            kvmsg_t *kvmsg = kvmsg_recv (collector);
+            if (!kvmsg)
+                break;          //  Interrupted
+            kvmsg_set_sequence (kvmsg, ++sequence);
+            kvmsg_send (kvmsg, publisher);
+            kvmsg_store (&kvmsg, kvmap);
+            printf ("I: publishing update %5d\n", (int) sequence);
+        }
+        //  Execute state snapshot request
+        if (items [1].revents & ZMQ_POLLIN) {
+            zframe_t *identity = zframe_recv (snapshot);
+            if (!identity)
+                break;          //  Interrupted
+
+            //  Request is in second frame of message
+            char *request = zstr_recv (snapshot);
+            if (streq (request, "ICANHAZ?"))
+                free (request);
+            else {
+                printf ("E: bad request, aborting\n");
+                break;
+            }
+            //  Send state snapshot to client
+            kvroute_t routing = { snapshot, identity };
+
+            //  For each entry in kvmap, send kvmsg to client
+            zhash_foreach (kvmap, s_send_single, &routing);
+
+            //  Now send END message with sequence number
+            printf ("I: sending shapshot=%d\n", (int) sequence);
+            zframe_send (&identity, snapshot, ZFRAME_MORE);
+            kvmsg_t *kvmsg = kvmsg_new (sequence);
+            kvmsg_set_key  (kvmsg, "KTHXBAI");
+            kvmsg_set_body (kvmsg, (byte *) "", 0);
+            kvmsg_send     (kvmsg, snapshot);
+            kvmsg_destroy (&kvmsg);
+        }
+    }
+    printf (" Interrupted\n%d messages handled\n", (int) sequence);
+    zhash_destroy (&kvmap);
+    zctx_destroy (&ctx);
+
+    return 0;
+}
+```
+
+And here is the client:
+
+```c++
+//  Clone client - Model Three
+
+//  Lets us build this source without creating a library
+#include "kvsimple.c"
+
+int main (void)
+{
+    //  Prepare our context and subscriber
+    zctx_t *ctx = zctx_new ();
+    void *snapshot = zsocket_new (ctx, ZMQ_DEALER);
+    zsocket_connect (snapshot, "tcp://localhost:5556");
+    void *subscriber = zsocket_new (ctx, ZMQ_SUB);
+    zsocket_set_subscribe (subscriber, "");
+    zsocket_connect (subscriber, "tcp://localhost:5557");
+    void *publisher = zsocket_new (ctx, ZMQ_PUSH);
+    zsocket_connect (publisher, "tcp://localhost:5558");
+
+    zhash_t *kvmap = zhash_new ();
+    srandom ((unsigned) time (NULL));
+
+    //  .split getting a state snapshot
+    //  We first request a state snapshot:
+    int64_t sequence = 0;
+    zstr_send (snapshot, "ICANHAZ?");
+    while (true) {
+        kvmsg_t *kvmsg = kvmsg_recv (snapshot);
+        if (!kvmsg)
+            break;          //  Interrupted
+        if (streq (kvmsg_key (kvmsg), "KTHXBAI")) {
+            sequence = kvmsg_sequence (kvmsg);
+            printf ("I: received snapshot=%d\n", (int) sequence);
+            kvmsg_destroy (&kvmsg);
+            break;          //  Done
+        }
+        kvmsg_store (&kvmsg, kvmap);
+    }
+    //  .split processing state updates
+    //  Now we wait for updates from the server and every so often, we
+    //  send a random key-value update to the server:
+    
+    int64_t alarm = zclock_time () + 1000;
+    while (!zctx_interrupted) {
+        zmq_pollitem_t items [] = { { subscriber, 0, ZMQ_POLLIN, 0 } };
+        int tickless = (int) ((alarm - zclock_time ()));
+        if (tickless < 0)
+            tickless = 0;
+        int rc = zmq_poll (items, 1, tickless * ZMQ_POLL_MSEC);
+        if (rc == -1)
+            break;              //  Context has been shut down
+
+        if (items [0].revents & ZMQ_POLLIN) {
+            kvmsg_t *kvmsg = kvmsg_recv (subscriber);
+            if (!kvmsg)
+                break;          //  Interrupted
+
+            //  Discard out-of-sequence kvmsgs, incl. heartbeats
+            if (kvmsg_sequence (kvmsg) > sequence) {
+                sequence = kvmsg_sequence (kvmsg);
+                kvmsg_store (&kvmsg, kvmap);
+                printf ("I: received update=%d\n", (int) sequence);
+            }
+            else
+                kvmsg_destroy (&kvmsg);
+        }
+        //  If we timed out, generate a random kvmsg
+        if (zclock_time () >= alarm) {
+            kvmsg_t *kvmsg = kvmsg_new (0);
+            kvmsg_fmt_key  (kvmsg, "%d", randof (10000));
+            kvmsg_fmt_body (kvmsg, "%d", randof (1000000));
+            kvmsg_send     (kvmsg, publisher);
+            kvmsg_destroy (&kvmsg);
+            alarm = zclock_time () + 1000;
+        }
+    }
+    printf (" Interrupted\n%d messages in\n", (int) sequence);
+    zhash_destroy (&kvmap);
+    zctx_destroy (&ctx);
+    return 0;
+}
+```
+
+Here are some things to note about this third design:
+
+- The server has collapsed to a single task. It manages a PULL socket for incoming updates, a ROUTER socket for state requests, and a PUB socket for outgoing updates.
+- The client uses a simple tickless timer to send a random update to the server once a second. In a real implementation, we would drive updates from application code.
+
+#### Working with Subtrees
+
+As we grow the number of clients, the size of our shared store will also grow. It stops being reasonable to send everything to every client. This is the classic story with pub-sub: when you have a very small number of clients, you can send every message to all clients. As you grow the architecture, this becomes inefficient. Clients specialize in different areas.
+
+So even when working with a shared store, some clients will want to work only with a part of that store, which we call a subtree. The client has to request the subtree when it makes a state request, and it must specify the same subtree when it subscribes to updates.
+
+There are a couple of common syntaxes for trees. One is the path hierarchy, and another is the topic tree. These look like this:
+
+- Path hierarchy: /some/list/of/paths
+- Topic tree: some.list.of.topics
+
+We’ll use the path hierarchy, and extend our client and server so that a client can work with a single subtree. Once you see how to work with a single subtree you’ll be able to extend this yourself to handle multiple subtrees, if your use case demands it.
+
+Here’s the server implementing subtrees, a small variation on Model Three:
+
+```c++
+//  Clone server - Model Four
+
+//  Lets us build this source without creating a library
+#include "kvsimple.c"
+
+//  Routing information for a key-value snapshot
+typedef struct {
+    void *socket;           //  ROUTER socket to send to
+    zframe_t *identity;     //  Identity of peer who requested state
+    char *subtree;          //  Client subtree specification
+} kvroute_t;
+
+//  Send one state snapshot key-value pair to a socket
+//  Hash item data is our kvmsg object, ready to send
+static int
+s_send_single (const char *key, void *data, void *args)
+{
+    kvroute_t *kvroute = (kvroute_t *) args;
+    kvmsg_t *kvmsg = (kvmsg_t *) data;
+    if (strlen (kvroute->subtree) <= strlen (kvmsg_key (kvmsg))
+    &&  memcmp (kvroute->subtree,
+                kvmsg_key (kvmsg), strlen (kvroute->subtree)) == 0) {
+        //  Send identity of recipient first
+        zframe_send (&kvroute->identity,
+            kvroute->socket, ZFRAME_MORE + ZFRAME_REUSE);
+        kvmsg_send (kvmsg, kvroute->socket);
+    }
+    return 0;
+}
+
+//  The main task is identical to clonesrv3 except for where it
+//  handles subtrees.
+//  .skip
+
+int main (void)
+{
+    //  Prepare our context and sockets
+    zctx_t *ctx = zctx_new ();
+    void *snapshot = zsocket_new (ctx, ZMQ_ROUTER);
+    zsocket_bind (snapshot, "tcp://*:5556");
+    void *publisher = zsocket_new (ctx, ZMQ_PUB);
+    zsocket_bind (publisher, "tcp://*:5557");
+    void *collector = zsocket_new (ctx, ZMQ_PULL);
+    zsocket_bind (collector, "tcp://*:5558");
+
+    int64_t sequence = 0;
+    zhash_t *kvmap = zhash_new ();
+
+    zmq_pollitem_t items [] = {
+        { collector, 0, ZMQ_POLLIN, 0 },
+        { snapshot, 0, ZMQ_POLLIN, 0 }
+    };
+    while (!zctx_interrupted) {
+        int rc = zmq_poll (items, 2, 1000 * ZMQ_POLL_MSEC);
+
+        //  Apply state update sent from client
+        if (items [0].revents & ZMQ_POLLIN) {
+            kvmsg_t *kvmsg = kvmsg_recv (collector);
+            if (!kvmsg)
+                break;          //  Interrupted
+            kvmsg_set_sequence (kvmsg, ++sequence);
+            kvmsg_send (kvmsg, publisher);
+            kvmsg_store (&kvmsg, kvmap);
+            printf ("I: publishing update %5d\n", (int) sequence);
+        }
+        //  Execute state snapshot request
+        if (items [1].revents & ZMQ_POLLIN) {
+            zframe_t *identity = zframe_recv (snapshot);
+            if (!identity)
+                break;          //  Interrupted
+
+            //  .until
+            //  Request is in second frame of message
+            char *request = zstr_recv (snapshot);
+            char *subtree = NULL;
+            if (streq (request, "ICANHAZ?")) {
+                free (request);
+                subtree = zstr_recv (snapshot);
+            }
+            //  .skip
+            else {
+                printf ("E: bad request, aborting\n");
+                break;
+            }
+            //  .until
+            //  Send state snapshot to client
+            kvroute_t routing = { snapshot, identity, subtree };
+            //  .skip
+
+            //  For each entry in kvmap, send kvmsg to client
+            zhash_foreach (kvmap, s_send_single, &routing);
+
+            //  .until
+            //  Now send END message with sequence number
+            printf ("I: sending shapshot=%d\n", (int) sequence);
+            zframe_send (&identity, snapshot, ZFRAME_MORE);
+            kvmsg_t *kvmsg = kvmsg_new (sequence);
+            kvmsg_set_key  (kvmsg, "KTHXBAI");
+            kvmsg_set_body (kvmsg, (byte *) subtree, 0);
+            kvmsg_send     (kvmsg, snapshot);
+            kvmsg_destroy (&kvmsg);
+            free (subtree);
+        }
+    }
+    //  .skip
+    printf (" Interrupted\n%d messages handled\n", (int) sequence);
+    zhash_destroy (&kvmap);
+    zctx_destroy (&ctx);
+
+    return 0;
+}
+```
+
+And here is the corresponding client:
+
+```c++
+//  Clone client - Model Four
+
+//  Lets us build this source without creating a library
+#include "kvsimple.c"
+
+//  This client is identical to clonecli3 except for where we
+//  handles subtrees.
+#define SUBTREE "/client/"
+//  .skip
+
+int main (void)
+{
+    //  Prepare our context and subscriber
+    zctx_t *ctx = zctx_new ();
+    void *snapshot = zsocket_new (ctx, ZMQ_DEALER);
+    zsocket_connect (snapshot, "tcp://localhost:5556");
+    void *subscriber = zsocket_new (ctx, ZMQ_SUB);
+    zsocket_set_subscribe (subscriber, "");
+    //  .until
+    zsocket_connect (subscriber, "tcp://localhost:5557");
+    zsocket_set_subscribe (subscriber, SUBTREE);
+    //  .skip
+    void *publisher = zsocket_new (ctx, ZMQ_PUSH);
+    zsocket_connect (publisher, "tcp://localhost:5558");
+
+    zhash_t *kvmap = zhash_new ();
+    srandom ((unsigned) time (NULL));
+
+    //  .until
+    //  We first request a state snapshot:
+    int64_t sequence = 0;
+    zstr_sendm (snapshot, "ICANHAZ?");
+    zstr_send  (snapshot, SUBTREE);
+    //  .skip
+    while (true) {
+        kvmsg_t *kvmsg = kvmsg_recv (snapshot);
+        if (!kvmsg)
+            break;          //  Interrupted
+        if (streq (kvmsg_key (kvmsg), "KTHXBAI")) {
+            sequence = kvmsg_sequence (kvmsg);
+            printf ("I: received snapshot=%d\n", (int) sequence);
+            kvmsg_destroy (&kvmsg);
+            break;          //  Done
+        }
+        kvmsg_store (&kvmsg, kvmap);
+    }
+    int64_t alarm = zclock_time () + 1000;
+    while (!zctx_interrupted) {
+        zmq_pollitem_t items [] = { { subscriber, 0, ZMQ_POLLIN, 0 } };
+        int tickless = (int) ((alarm - zclock_time ()));
+        if (tickless < 0)
+            tickless = 0;
+        int rc = zmq_poll (items, 1, tickless * ZMQ_POLL_MSEC);
+        if (rc == -1)
+            break;              //  Context has been shut down
+
+        if (items [0].revents & ZMQ_POLLIN) {
+            kvmsg_t *kvmsg = kvmsg_recv (subscriber);
+            if (!kvmsg)
+                break;          //  Interrupted
+
+            //  Discard out-of-sequence kvmsgs, incl. heartbeats
+            if (kvmsg_sequence (kvmsg) > sequence) {
+                sequence = kvmsg_sequence (kvmsg);
+                kvmsg_store (&kvmsg, kvmap);
+                printf ("I: received update=%d\n", (int) sequence);
+            }
+            else
+                kvmsg_destroy (&kvmsg);
+        }
+        //  .until
+        //  If we timed out, generate a random kvmsg
+        if (zclock_time () >= alarm) {
+            kvmsg_t *kvmsg = kvmsg_new (0);
+            kvmsg_fmt_key  (kvmsg, "%s%d", SUBTREE, randof (10000));
+            kvmsg_fmt_body (kvmsg, "%d", randof (1000000));
+            kvmsg_send     (kvmsg, publisher);
+            kvmsg_destroy (&kvmsg);
+            alarm = zclock_time () + 1000;
+        }
+        //  .skip
+    }
+    printf (" Interrupted\n%d messages in\n", (int) sequence);
+    zhash_destroy (&kvmap);
+    zctx_destroy (&ctx);
+    return 0;
+}
+```
+
+#### Ephemeral Values
+
+An ephemeral value is one that expires automatically unless regularly refreshed. If you think of Clone being used for a registration service, then ephemeral values would let you do dynamic values. A node joins the network, publishes its address, and refreshes this regularly. If the node dies, its address eventually gets removed.
+
+The usual abstraction for ephemeral values is to attach them to a session, and delete them when the session ends. In Clone, sessions would be defined by clients, and would end if the client died. A simpler alternative is to attach a time to live (TTL) to ephemeral values, which the server uses to expire values that haven’t been refreshed in time.
+
+A good design principle that I use whenever possible is to not invent concepts that are not absolutely essential. If we have very large numbers of ephemeral values, sessions will offer better performance. If we use a handful of ephemeral values, it’s fine to set a TTL on each one. If we use masses of ephemeral values, it’s more efficient to attach them to sessions and expire them in bulk. This isn’t a problem we face at this stage, and may never face, so sessions go out the window.
+
+Now we will implement ephemeral values. First, we need a way to encode the TTL in the key-value message. We could add a frame. The problem with using ZeroMQ frames for properties is that each time we want to add a new property, we have to change the message structure. It breaks compatibility. So let’s add a properties frame to the message, and write the code to let us get and put property values.
+
+Next, we need a way to say, “delete this value”. Up until now, servers and clients have always blindly inserted or updated new values into their hash table. We’ll say that if the value is empty, that means “delete this key”.
+
+Here’s a more complete version of the kvmsg class, which implements the properties frame (and adds a UUID frame, which we’ll need later on). It also handles empty values by deleting the key from the hash, if necessary:
+
+```c++
+//  kvmsg class - key-value message class for example applications
+
+#include "kvmsg.h"
+#include <uuid/uuid.h>
+#include "zlist.h"
+
+//  Keys are short strings
+#define KVMSG_KEY_MAX   255
+
+//  Message is formatted on wire as 5 frames:
+//  frame 0: key (0MQ string)
+//  frame 1: sequence (8 bytes, network order)
+//  frame 2: uuid (blob, 16 bytes)
+//  frame 3: properties (0MQ string)
+//  frame 4: body (blob)
+#define FRAME_KEY       0
+#define FRAME_SEQ       1
+#define FRAME_UUID      2
+#define FRAME_PROPS     3
+#define FRAME_BODY      4
+#define KVMSG_FRAMES    5
+
+//  Structure of our class
+struct _kvmsg {
+    //  Presence indicators for each frame
+    int present [KVMSG_FRAMES];
+    //  Corresponding 0MQ message frames, if any
+    zmq_msg_t frame [KVMSG_FRAMES];
+    //  Key, copied into safe C string
+    char key [KVMSG_KEY_MAX + 1];
+    //  List of properties, as name=value strings
+    zlist_t *props;
+    size_t props_size;
+};
+
+//  .split property encoding
+//  These two helpers serialize a list of properties to and from a
+//  message frame:
+
+static void
+s_encode_props (kvmsg_t *self)
+{
+    zmq_msg_t *msg = &self->frame [FRAME_PROPS];
+    if (self->present [FRAME_PROPS])
+        zmq_msg_close (msg);
+
+    zmq_msg_init_size (msg, self->props_size);
+    char *prop = zlist_first (self->props);
+    char *dest = (char *) zmq_msg_data (msg);
+    while (prop) {
+        strcpy (dest, prop);
+        dest += strlen (prop);
+        *dest++ = '\n';
+        prop = zlist_next (self->props);
+    }
+    self->present [FRAME_PROPS] = 1;
+}
+
+static void
+s_decode_props (kvmsg_t *self)
+{
+    zmq_msg_t *msg = &self->frame [FRAME_PROPS];
+    self->props_size = 0;
+    while (zlist_size (self->props))
+        free (zlist_pop (self->props));
+
+    size_t remainder = zmq_msg_size (msg);
+    char *prop = (char *) zmq_msg_data (msg);
+    char *eoln = memchr (prop, '\n', remainder);
+    while (eoln) {
+        *eoln = 0;
+        zlist_append (self->props, strdup (prop));
+        self->props_size += strlen (prop) + 1;
+        remainder -= strlen (prop) + 1;
+        prop = eoln + 1;
+        eoln = memchr (prop, '\n', remainder);
+    }
+}
+
+//  .split constructor and destructor
+//  Here are the constructor and destructor for the class:
+
+//  Constructor, takes a sequence number for the new kvmsg instance:
+kvmsg_t *
+kvmsg_new (int64_t sequence)
+{
+    kvmsg_t
+        *self;
+
+    self = (kvmsg_t *) zmalloc (sizeof (kvmsg_t));
+    self->props = zlist_new ();
+    kvmsg_set_sequence (self, sequence);
+    return self;
+}
+
+//  zhash_free_fn callback helper that does the low level destruction:
+void
+kvmsg_free (void *ptr)
+{
+    if (ptr) {
+        kvmsg_t *self = (kvmsg_t *) ptr;
+        //  Destroy message frames if any
+        int frame_nbr;
+        for (frame_nbr = 0; frame_nbr < KVMSG_FRAMES; frame_nbr++)
+            if (self->present [frame_nbr])
+                zmq_msg_close (&self->frame [frame_nbr]);
+
+        //  Destroy property list
+        while (zlist_size (self->props))
+            free (zlist_pop (self->props));
+        zlist_destroy (&self->props);
+
+        //  Free object itself
+        free (self);
+    }
+}
+
+//  Destructor
+void
+kvmsg_destroy (kvmsg_t **self_p)
+{
+    assert (self_p);
+    if (*self_p) {
+        kvmsg_free (*self_p);
+        *self_p = NULL;
+    }
+}
+
+//  .split recv method
+//  This method reads a key-value message from the socket and returns a 
+//  new {{kvmsg}} instance:
+
+kvmsg_t *
+kvmsg_recv (void *socket)
+{
+    //  This method is almost unchanged from kvsimple
+    //  .skip
+    assert (socket);
+    kvmsg_t *self = kvmsg_new (0);
+
+    //  Read all frames off the wire, reject if bogus
+    int frame_nbr;
+    for (frame_nbr = 0; frame_nbr < KVMSG_FRAMES; frame_nbr++) {
+        if (self->present [frame_nbr])
+            zmq_msg_close (&self->frame [frame_nbr]);
+        zmq_msg_init (&self->frame [frame_nbr]);
+        self->present [frame_nbr] = 1;
+        if (zmq_msg_recv (&self->frame [frame_nbr], socket, 0) == -1) {
+            kvmsg_destroy (&self);
+            break;
+        }
+        //  Verify multipart framing
+        int rcvmore = (frame_nbr < KVMSG_FRAMES - 1)? 1: 0;
+        if (zsocket_rcvmore (socket) != rcvmore) {
+            kvmsg_destroy (&self);
+            break;
+        }
+    }
+    //  .until
+    if (self)
+        s_decode_props (self);
+    return self;
+}
+
+//  Send key-value message to socket; any empty frames are sent as such.
+void
+kvmsg_send (kvmsg_t *self, void *socket)
+{
+    assert (self);
+    assert (socket);
+
+    s_encode_props (self);
+    //  The rest of the method is unchanged from kvsimple
+    //  .skip
+    int frame_nbr;
+    for (frame_nbr = 0; frame_nbr < KVMSG_FRAMES; frame_nbr++) {
+        zmq_msg_t copy;
+        zmq_msg_init (&copy);
+        if (self->present [frame_nbr])
+            zmq_msg_copy (&copy, &self->frame [frame_nbr]);
+        zmq_msg_send (&copy, socket,
+            (frame_nbr < KVMSG_FRAMES - 1)? ZMQ_SNDMORE: 0);
+        zmq_msg_close (&copy);
+    }
+}
+//  .until
+
+//  .split dup method
+//  This method duplicates a {{kvmsg}} instance, returns the new instance:
+
+kvmsg_t *
+kvmsg_dup (kvmsg_t *self)
+{
+    kvmsg_t *kvmsg = kvmsg_new (0);
+    int frame_nbr;
+    for (frame_nbr = 0; frame_nbr < KVMSG_FRAMES; frame_nbr++) {
+        if (self->present [frame_nbr]) {
+            zmq_msg_t *src = &self->frame [frame_nbr];
+            zmq_msg_t *dst = &kvmsg->frame [frame_nbr];
+            zmq_msg_init_size (dst, zmq_msg_size (src));
+            memcpy (zmq_msg_data (dst),
+                    zmq_msg_data (src), zmq_msg_size (src));
+            kvmsg->present [frame_nbr] = 1;
+        }
+    }
+    kvmsg->props_size = zlist_size (self->props);
+    char *prop = (char *) zlist_first (self->props);
+    while (prop) {
+        zlist_append (kvmsg->props, strdup (prop));
+        prop = (char *) zlist_next (self->props);
+    }
+    return kvmsg;
+}
+
+//  The key, sequence, body, and size methods are the same as in kvsimple.
+//  .skip
+
+//  Return key from last read message, if any, else NULL
+char *
+kvmsg_key (kvmsg_t *self)
+{
+    assert (self);
+    if (self->present [FRAME_KEY]) {
+        if (!*self->key) {
+            size_t size = zmq_msg_size (&self->frame [FRAME_KEY]);
+            if (size > KVMSG_KEY_MAX)
+                size = KVMSG_KEY_MAX;
+            memcpy (self->key,
+                zmq_msg_data (&self->frame [FRAME_KEY]), size);
+            self->key [size] = 0;
+        }
+        return self->key;
+    }
+    else
+        return NULL;
+}
+
+//  Set message key as provided
+void
+kvmsg_set_key (kvmsg_t *self, char *key)
+{
+    assert (self);
+    zmq_msg_t *msg = &self->frame [FRAME_KEY];
+    if (self->present [FRAME_KEY])
+        zmq_msg_close (msg);
+    zmq_msg_init_size (msg, strlen (key));
+    memcpy (zmq_msg_data (msg), key, strlen (key));
+    self->present [FRAME_KEY] = 1;
+}
+
+//  Set message key using printf format
+void
+kvmsg_fmt_key (kvmsg_t *self, char *format, ...)
+{
+    char value [KVMSG_KEY_MAX + 1];
+    va_list args;
+
+    assert (self);
+    va_start (args, format);
+    vsnprintf (value, KVMSG_KEY_MAX, format, args);
+    va_end (args);
+    kvmsg_set_key (self, value);
+}
+
+//  Return sequence nbr from last read message, if any
+int64_t
+kvmsg_sequence (kvmsg_t *self)
+{
+    assert (self);
+    if (self->present [FRAME_SEQ]) {
+        assert (zmq_msg_size (&self->frame [FRAME_SEQ]) == 8);
+        byte *source = zmq_msg_data (&self->frame [FRAME_SEQ]);
+        int64_t sequence = ((int64_t) (source [0]) << 56)
+                         + ((int64_t) (source [1]) << 48)
+                         + ((int64_t) (source [2]) << 40)
+                         + ((int64_t) (source [3]) << 32)
+                         + ((int64_t) (source [4]) << 24)
+                         + ((int64_t) (source [5]) << 16)
+                         + ((int64_t) (source [6]) << 8)
+                         +  (int64_t) (source [7]);
+        return sequence;
+    }
+    else
+        return 0;
+}
+
+//  Set message sequence number
+void
+kvmsg_set_sequence (kvmsg_t *self, int64_t sequence)
+{
+    assert (self);
+    zmq_msg_t *msg = &self->frame [FRAME_SEQ];
+    if (self->present [FRAME_SEQ])
+        zmq_msg_close (msg);
+    zmq_msg_init_size (msg, 8);
+
+    byte *source = zmq_msg_data (msg);
+    source [0] = (byte) ((sequence >> 56) & 255);
+    source [1] = (byte) ((sequence >> 48) & 255);
+    source [2] = (byte) ((sequence >> 40) & 255);
+    source [3] = (byte) ((sequence >> 32) & 255);
+    source [4] = (byte) ((sequence >> 24) & 255);
+    source [5] = (byte) ((sequence >> 16) & 255);
+    source [6] = (byte) ((sequence >> 8)  & 255);
+    source [7] = (byte) ((sequence)       & 255);
+
+    self->present [FRAME_SEQ] = 1;
+}
+
+//  Return body from last read message, if any, else NULL
+byte *
+kvmsg_body (kvmsg_t *self)
+{
+    assert (self);
+    if (self->present [FRAME_BODY])
+        return (byte *) zmq_msg_data (&self->frame [FRAME_BODY]);
+    else
+        return NULL;
+}
+
+//  Set message body
+void
+kvmsg_set_body (kvmsg_t *self, byte *body, size_t size)
+{
+    assert (self);
+    zmq_msg_t *msg = &self->frame [FRAME_BODY];
+    if (self->present [FRAME_BODY])
+        zmq_msg_close (msg);
+    self->present [FRAME_BODY] = 1;
+    zmq_msg_init_size (msg, size);
+    memcpy (zmq_msg_data (msg), body, size);
+}
+
+//  Set message body using printf format
+void
+kvmsg_fmt_body (kvmsg_t *self, char *format, ...)
+{
+    char value [255 + 1];
+    va_list args;
+
+    assert (self);
+    va_start (args, format);
+    vsnprintf (value, 255, format, args);
+    va_end (args);
+    kvmsg_set_body (self, (byte *) value, strlen (value));
+}
+
+//  Return body size from last read message, if any, else zero
+size_t
+kvmsg_size (kvmsg_t *self)
+{
+    assert (self);
+    if (self->present [FRAME_BODY])
+        return zmq_msg_size (&self->frame [FRAME_BODY]);
+    else
+        return 0;
+}
+//  .until
+
+//  .split UUID methods
+//  These methods get and set the UUID for the key-value message:
+
+byte *
+kvmsg_uuid (kvmsg_t *self)
+{
+    assert (self);
+    if (self->present [FRAME_UUID]
+    &&  zmq_msg_size (&self->frame [FRAME_UUID]) == sizeof (uuid_t))
+        return (byte *) zmq_msg_data (&self->frame [FRAME_UUID]);
+    else
+        return NULL;
+}
+
+//  Sets the UUID to a randomly generated value
+void
+kvmsg_set_uuid (kvmsg_t *self)
+{
+    assert (self);
+    zmq_msg_t *msg = &self->frame [FRAME_UUID];
+    uuid_t uuid;
+    uuid_generate (uuid);
+    if (self->present [FRAME_UUID])
+        zmq_msg_close (msg);
+    zmq_msg_init_size (msg, sizeof (uuid));
+    memcpy (zmq_msg_data (msg), uuid, sizeof (uuid));
+    self->present [FRAME_UUID] = 1;
+}
+
+//  .split property methods
+//  These methods get and set a specified message property:
+
+//  Get message property, return "" if no such property is defined.
+char *
+kvmsg_get_prop (kvmsg_t *self, char *name)
+{
+    assert (strchr (name, '=') == NULL);
+    char *prop = zlist_first (self->props);
+    size_t namelen = strlen (name);
+    while (prop) {
+        if (strlen (prop) > namelen
+        &&  memcmp (prop, name, namelen) == 0
+        &&  prop [namelen] == '=')
+            return prop + namelen + 1;
+        prop = zlist_next (self->props);
+    }
+    return "";
+}
+
+//  Set message property. Property name cannot contain '='. Max length of
+//  value is 255 chars.
+void
+kvmsg_set_prop (kvmsg_t *self, char *name, char *format, ...)
+{
+    assert (strchr (name, '=') == NULL);
+
+    char value [255 + 1];
+    va_list args;
+    assert (self);
+    va_start (args, format);
+    vsnprintf (value, 255, format, args);
+    va_end (args);
+
+    //  Allocate name=value string
+    char *prop = malloc (strlen (name) + strlen (value) + 2);
+
+    //  Remove existing property if any
+    sprintf (prop, "%s=", name);
+    char *existing = zlist_first (self->props);
+    while (existing) {
+        if (memcmp (prop, existing, strlen (prop)) == 0) {
+            self->props_size -= strlen (existing) + 1;
+            zlist_remove (self->props, existing);
+            free (existing);
+            break;
+        }
+        existing = zlist_next (self->props);
+    }
+    //  Add new name=value property string
+    strcat (prop, value);
+    zlist_append (self->props, prop);
+    self->props_size += strlen (prop) + 1;
+}
+
+//  .split store method
+//  This method stores the key-value message into a hash map, unless
+//  the key and value are both null. It nullifies the {{kvmsg}} reference
+//  so that the object is owned by the hash map, not the caller:
+
+void
+kvmsg_store (kvmsg_t **self_p, zhash_t *hash)
+{
+    assert (self_p);
+    if (*self_p) {
+        kvmsg_t *self = *self_p;
+        assert (self);
+        if (kvmsg_size (self)) {
+            if (self->present [FRAME_KEY]
+            &&  self->present [FRAME_BODY]) {
+                zhash_update (hash, kvmsg_key (self), self);
+                zhash_freefn (hash, kvmsg_key (self), kvmsg_free);
+            }
+        }
+        else
+            zhash_delete (hash, kvmsg_key (self));
+
+        *self_p = NULL;
+    }
+}
+
+//  .split dump method
+//  This method extends the {{kvsimple}} implementation with support for
+//  message properties:
+
+void
+kvmsg_dump (kvmsg_t *self)
+{
+    //  .skip
+    if (self) {
+        if (!self) {
+            fprintf (stderr, "NULL");
+            return;
+        }
+        size_t size = kvmsg_size (self);
+        byte  *body = kvmsg_body (self);
+        fprintf (stderr, "[seq:%" PRId64 "]", kvmsg_sequence (self));
+        fprintf (stderr, "[key:%s]", kvmsg_key (self));
+        //  .until
+        fprintf (stderr, "[size:%zd] ", size);
+        if (zlist_size (self->props)) {
+            fprintf (stderr, "[");
+            char *prop = zlist_first (self->props);
+            while (prop) {
+                fprintf (stderr, "%s;", prop);
+                prop = zlist_next (self->props);
+            }
+            fprintf (stderr, "]");
+        }
+        //  .skip
+        int char_nbr;
+        for (char_nbr = 0; char_nbr < size; char_nbr++)
+            fprintf (stderr, "%02X", body [char_nbr]);
+        fprintf (stderr, "\n");
+    }
+    else
+        fprintf (stderr, "NULL message\n");
+}
+//  .until
+
+//  .split test method
+//  This method is the same as in {{kvsimple}} with added support
+//  for the uuid and property features of {{kvmsg}}:
+
+int
+kvmsg_test (int verbose)
+{
+    //  .skip
+    kvmsg_t
+        *kvmsg;
+
+    printf (" * kvmsg: ");
+
+    //  Prepare our context and sockets
+    zctx_t *ctx = zctx_new ();
+    void *output = zsocket_new (ctx, ZMQ_DEALER);
+    int rc = zmq_bind (output, "ipc://kvmsg_selftest.ipc");
+    assert (rc == 0);
+    void *input = zsocket_new (ctx, ZMQ_DEALER);
+    rc = zmq_connect (input, "ipc://kvmsg_selftest.ipc");
+    assert (rc == 0);
+
+    zhash_t *kvmap = zhash_new ();
+
+    //  .until
+    //  Test send and receive of simple message
+    kvmsg = kvmsg_new (1);
+    kvmsg_set_key  (kvmsg, "key");
+    kvmsg_set_uuid (kvmsg);
+    kvmsg_set_body (kvmsg, (byte *) "body", 4);
+    if (verbose)
+        kvmsg_dump (kvmsg);
+    kvmsg_send (kvmsg, output);
+    kvmsg_store (&kvmsg, kvmap);
+
+    kvmsg = kvmsg_recv (input);
+    if (verbose)
+        kvmsg_dump (kvmsg);
+    assert (streq (kvmsg_key (kvmsg), "key"));
+    kvmsg_store (&kvmsg, kvmap);
+
+    //  Test send and receive of message with properties
+    kvmsg = kvmsg_new (2);
+    kvmsg_set_prop (kvmsg, "prop1", "value1");
+    kvmsg_set_prop (kvmsg, "prop2", "value1");
+    kvmsg_set_prop (kvmsg, "prop2", "value2");
+    kvmsg_set_key  (kvmsg, "key");
+    kvmsg_set_uuid (kvmsg);
+    kvmsg_set_body (kvmsg, (byte *) "body", 4);
+    assert (streq (kvmsg_get_prop (kvmsg, "prop2"), "value2"));
+    if (verbose)
+        kvmsg_dump (kvmsg);
+    kvmsg_send (kvmsg, output);
+    kvmsg_destroy (&kvmsg);
+
+    kvmsg = kvmsg_recv (input);
+    if (verbose)
+        kvmsg_dump (kvmsg);
+    assert (streq (kvmsg_key (kvmsg), "key"));
+    assert (streq (kvmsg_get_prop (kvmsg, "prop2"), "value2"));
+    kvmsg_destroy (&kvmsg);
+    //  .skip
+    //  Shutdown and destroy all objects
+    zhash_destroy (&kvmap);
+    zctx_destroy (&ctx);
+
+    printf ("OK\n");
+    return 0;
+}
+//  .until
+```
+
+The Model Five client is almost identical to Model Four. It uses the full kvmsg class now, and sets a randomized ttl property (measured in seconds) on each message:
+
+```c++
+kvmsg_set_prop (kvmsg, "ttl", "%d", randof (30));
+```
+
+#### Using a Reactor
+
+Until now, we have used a poll loop in the server. In this next model of the server, we switch to using a reactor. In C, we use CZMQ’s zloop class. Using a reactor makes the code more verbose, but easier to understand and build out because each piece of the server is handled by a separate reactor handler.
+
+We use a single thread and pass a server object around to the reactor handlers. We could have organized the server as multiple threads, each handling one socket or timer, but that works better when threads don’t have to share data. In this case all work is centered around the server’s hashmap, so one thread is simpler.
+
+There are three reactor handlers:
+
+One to handle snapshot requests coming on the ROUTER socket;
+One to handle incoming updates from clients, coming on the PULL socket;
+One to expire ephemeral values that have passed their TTL.
+
+```c++
+//  Clone server - Model Five
+
+//  Lets us build this source without creating a library
+#include "kvmsg.c"
+
+//  zloop reactor handlers
+static int s_snapshots (zloop_t *loop, zmq_pollitem_t *poller, void *args);
+static int s_collector (zloop_t *loop, zmq_pollitem_t *poller, void *args);
+static int s_flush_ttl (zloop_t *loop, int timer_id, void *args);
+
+//  Our server is defined by these properties
+typedef struct {
+    zctx_t *ctx;                //  Context wrapper
+    zhash_t *kvmap;             //  Key-value store
+    zloop_t *loop;              //  zloop reactor
+    int port;                   //  Main port we're working on
+    int64_t sequence;           //  How many updates we're at
+    void *snapshot;             //  Handle snapshot requests
+    void *publisher;            //  Publish updates to clients
+    void *collector;            //  Collect updates from clients
+} clonesrv_t;
+
+int main (void)
+{
+    clonesrv_t *self = (clonesrv_t *) zmalloc (sizeof (clonesrv_t));
+    self->port = 5556;
+    self->ctx = zctx_new ();
+    self->kvmap = zhash_new ();
+    self->loop = zloop_new ();
+    zloop_set_verbose (self->loop, false);
+
+    //  Set up our clone server sockets
+    self->snapshot  = zsocket_new (self->ctx, ZMQ_ROUTER);
+    zsocket_bind (self->snapshot,  "tcp://*:%d", self->port);
+    self->publisher = zsocket_new (self->ctx, ZMQ_PUB);
+    zsocket_bind (self->publisher, "tcp://*:%d", self->port + 1);
+    self->collector = zsocket_new (self->ctx, ZMQ_PULL);
+    zsocket_bind (self->collector, "tcp://*:%d", self->port + 2);
+
+    //  Register our handlers with reactor
+    zmq_pollitem_t poller = { 0, 0, ZMQ_POLLIN };
+    poller.socket = self->snapshot;
+    zloop_poller (self->loop, &poller, s_snapshots, self);
+    poller.socket = self->collector;
+    zloop_poller (self->loop, &poller, s_collector, self);
+    zloop_timer (self->loop, 1000, 0, s_flush_ttl, self);
+
+    //  Run reactor until process interrupted
+    zloop_start (self->loop);
+
+    zloop_destroy (&self->loop);
+    zhash_destroy (&self->kvmap);
+    zctx_destroy (&self->ctx);
+    free (self);
+    return 0;
+}
+
+//  .split send snapshots
+//  We handle ICANHAZ? requests by sending snapshot data to the
+//  client that requested it:
+
+//  Routing information for a key-value snapshot
+typedef struct {
+    void *socket;           //  ROUTER socket to send to
+    zframe_t *identity;     //  Identity of peer who requested state
+    char *subtree;          //  Client subtree specification
+} kvroute_t;
+
+//  We call this function for each key-value pair in our hash table
+static int
+s_send_single (const char *key, void *data, void *args)
+{
+    kvroute_t *kvroute = (kvroute_t *) args;
+    kvmsg_t *kvmsg = (kvmsg_t *) data;
+    if (strlen (kvroute->subtree) <= strlen (kvmsg_key (kvmsg))
+    &&  memcmp (kvroute->subtree,
+                kvmsg_key (kvmsg), strlen (kvroute->subtree)) == 0) {
+        zframe_send (&kvroute->identity,    //  Choose recipient
+            kvroute->socket, ZFRAME_MORE + ZFRAME_REUSE);
+        kvmsg_send (kvmsg, kvroute->socket);
+    }
+    return 0;
+}
+
+//  .split snapshot handler
+//  This is the reactor handler for the snapshot socket; it accepts
+//  just the ICANHAZ? request and replies with a state snapshot ending
+//  with a KTHXBAI message:
+
+static int
+s_snapshots (zloop_t *loop, zmq_pollitem_t *poller, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+
+    zframe_t *identity = zframe_recv (poller->socket);
+    if (identity) {
+        //  Request is in second frame of message
+        char *request = zstr_recv (poller->socket);
+        char *subtree = NULL;
+        if (streq (request, "ICANHAZ?")) {
+            free (request);
+            subtree = zstr_recv (poller->socket);
+        }
+        else
+            printf ("E: bad request, aborting\n");
+
+        if (subtree) {
+            //  Send state socket to client
+            kvroute_t routing = { poller->socket, identity, subtree };
+            zhash_foreach (self->kvmap, s_send_single, &routing);
+
+            //  Now send END message with sequence number
+            zclock_log ("I: sending shapshot=%d", (int) self->sequence);
+            zframe_send (&identity, poller->socket, ZFRAME_MORE);
+            kvmsg_t *kvmsg = kvmsg_new (self->sequence);
+            kvmsg_set_key  (kvmsg, "KTHXBAI");
+            kvmsg_set_body (kvmsg, (byte *) subtree, 0);
+            kvmsg_send     (kvmsg, poller->socket);
+            kvmsg_destroy (&kvmsg);
+            free (subtree);
+        }
+        zframe_destroy(&identity);
+    }
+    return 0;
+}
+
+//  .split collect updates
+//  We store each update with a new sequence number, and if necessary, a
+//  time-to-live. We publish updates immediately on our publisher socket:
+
+static int
+s_collector (zloop_t *loop, zmq_pollitem_t *poller, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+
+    kvmsg_t *kvmsg = kvmsg_recv (poller->socket);
+    if (kvmsg) {
+        kvmsg_set_sequence (kvmsg, ++self->sequence);
+        kvmsg_send (kvmsg, self->publisher);
+        int ttl = atoi (kvmsg_get_prop (kvmsg, "ttl"));
+        if (ttl)
+            kvmsg_set_prop (kvmsg, "ttl",
+                "%" PRId64, zclock_time () + ttl * 1000);
+        kvmsg_store (&kvmsg, self->kvmap);
+        zclock_log ("I: publishing update=%d", (int) self->sequence);
+    }
+    return 0;
+}
+
+//  .split flush ephemeral values
+//  At regular intervals, we flush ephemeral values that have expired. This
+//  could be slow on very large data sets:
+
+//  If key-value pair has expired, delete it and publish the
+//  fact to listening clients.
+static int
+s_flush_single (const char *key, void *data, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+
+    kvmsg_t *kvmsg = (kvmsg_t *) data;
+    int64_t ttl;
+    sscanf (kvmsg_get_prop (kvmsg, "ttl"), "%" PRId64, &ttl);
+    if (ttl && zclock_time () >= ttl) {
+        kvmsg_set_sequence (kvmsg, ++self->sequence);
+        kvmsg_set_body (kvmsg, (byte *) "", 0);
+        kvmsg_send (kvmsg, self->publisher);
+        kvmsg_store (&kvmsg, self->kvmap);
+        zclock_log ("I: publishing delete=%d", (int) self->sequence);
+    }
+    return 0;
+}
+
+static int
+s_flush_ttl (zloop_t *loop, int timer_id, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+    if (self->kvmap)
+        zhash_foreach (self->kvmap, s_flush_single, args);
+    return 0;
+}
+```
+
+#### Adding the Binary Star Pattern for Reliability
+
+The Clone models we’ve explored up to now have been relatively simple. Now we’re going to get into unpleasantly complex territory, which has me getting up for another espresso. You should appreciate that making “reliable” messaging is complex enough that you always need to ask, “Do we actually need this?” before jumping into it. If you can get away with unreliable or with “good enough” reliability, you can make a huge win in terms of cost and complexity. Sure, you may lose some data now and then. It is often a good trade-off. Having said, that, and… sips… because the espresso is really good, let’s jump in.
+
+As you play with the last model, you’ll stop and restart the server. It might look like it recovers, but of course it’s applying updates to an empty state instead of the proper current state. Any new client joining the network will only get the latest updates instead of the full historical record.
+
+What we want is a way for the server to recover from being killed, or crashing. We also need to provide backup in case the server is out of commission for any length of time. When someone asks for “reliability”, ask them to list the failures they want to handle. In our case, these are:
+
+- The server process crashes and is automatically or manually restarted. The process loses its state and has to get it back from somewhere.
+- The server machine dies and is offline for a significant time. Clients have to switch to an alternate server somewhere.
+- The server process or machine gets disconnected from the network, e.g., a switch dies or a datacenter gets knocked out. It may come back at some point, but in the meantime clients need an alternate server.
+
+Our first step is to add a second server. We can use the Binary Star pattern from Chapter 4 - Reliable Request-Reply Patterns to organize these into primary and backup. Binary Star is a reactor, so it’s useful that we already refactored the last server model into a reactor style.
+
+We need to ensure that updates are not lost if the primary server crashes. The simplest technique is to send them to both servers. The backup server can then act as a client, and keep its state synchronized by receiving updates as all clients do. It’ll also get new updates from clients. It can’t yet store these in its hash table, but it can hold onto them for a while.
+
+So, Model Six introduces the following changes over Model Five:
+
+- We use a pub-sub flow instead of a push-pull flow for client updates sent to the servers. This takes care of fanning out the updates to both servers. Otherwise we’d have to use two DEALER sockets.
+- We add heartbeats to server updates (to clients), so that a client can detect when the primary server has died. It can then switch over to the backup server.
+- We connect the two servers using the Binary Star bstar reactor class. Binary Star relies on the clients to vote by making an explicit request to the server they consider active. We’ll use snapshot requests as the voting mechanism.
+- We make all update messages uniquely identifiable by adding a UUID field. The client generates this, and the server propagates it back on republished updates.
+- The passive server keeps a “pending list” of updates that it has received from clients, but not yet from the active server; or updates it’s received from the active server, but not yet from the clients. The list is ordered from oldest to newest, so that it is easy to remove updates off the head.
+
+![](./pics/zmq/fig61.png)
+
+It’s useful to design the client logic as a finite state machine. The client cycles through three states:
+
+- The client opens and connects its sockets, and then requests a snapshot from the first server. To avoid request storms, it will ask any given server only twice. One request might get lost, which would be bad luck. Two getting lost would be carelessness.
+- The client waits for a reply (snapshot data) from the current server, and if it gets it, it stores it. If there is no reply within some timeout, it fails over to the next server.
+- When the client has gotten its snapshot, it waits for and processes updates. Again, if it doesn’t hear anything from the server within some timeout, it fails over to the next server.
+
+The client loops forever. It’s quite likely during startup or failover that some clients may be trying to talk to the primary server while others are trying to talk to the backup server. The Binary Star state machine handles this, hopefully accurately. It’s hard to prove software correct; instead we hammer it until we can’t prove it wrong.
+
+Failover happens as follows:
+
+- The client detects that primary server is no longer sending heartbeats, and concludes that it has died. The client connects to the backup server and requests a new state snapshot.
+- The backup server starts to receive snapshot requests from clients, and detects that primary server has gone, so it takes over as primary.
+- The backup server applies its pending list to its own hash table, and then starts to process state snapshot requests.
+
+When the primary server comes back online, it will:
+
+- Start up as passive server, and connect to the backup server as a Clone client.
+- Start to receive updates from clients, via its SUB socket.
+
+We make a few assumptions:
+
+- At least one server will keep running. If both servers crash, we lose all server state and there’s no way to recover it.
+- Multiple clients do not update the same hash keys at the same time. Client updates will arrive at the two servers in a different order. Therefore, the backup server may apply updates from its pending list in a different order than the primary server would or did. Updates from one client will always arrive in the same order on both servers, so that is safe.
+
+Thus the architecture for our high-availability server pair using the Binary Star pattern has two servers and a set of clients that talk to both servers.
+
+![](./pics/zmq/fig62.png)
+
+Here is the sixth and last model of the Clone server:
+
+```c++
+//  Clone server Model Six
+
+//  Lets us build this source without creating a library
+#include "bstar.c"
+#include "kvmsg.c"
+
+//  .split definitions
+//  We define a set of reactor handlers and our server object structure:
+
+//  Bstar reactor handlers
+static int
+    s_snapshots   (zloop_t *loop, zmq_pollitem_t *poller, void *args);
+static int
+    s_collector   (zloop_t *loop, zmq_pollitem_t *poller, void *args);
+static int
+    s_flush_ttl   (zloop_t *loop, int timer_id, void *args);
+static int
+    s_send_hugz   (zloop_t *loop, int timer_id, void *args);
+static int
+    s_new_active  (zloop_t *loop, zmq_pollitem_t *poller, void *args);
+static int
+    s_new_passive (zloop_t *loop, zmq_pollitem_t *poller, void *args);
+static int
+    s_subscriber  (zloop_t *loop, zmq_pollitem_t *poller, void *args);
+
+//  Our server is defined by these properties
+typedef struct {
+    zctx_t *ctx;                //  Context wrapper
+    zhash_t *kvmap;             //  Key-value store
+    bstar_t *bstar;             //  Bstar reactor core
+    int64_t sequence;           //  How many updates we're at
+    int port;                   //  Main port we're working on
+    int peer;                   //  Main port of our peer
+    void *publisher;            //  Publish updates and hugz
+    void *collector;            //  Collect updates from clients
+    void *subscriber;           //  Get updates from peer
+    zlist_t *pending;           //  Pending updates from clients
+    bool primary;               //  true if we're primary
+    bool active;                //  true if we're active
+    bool passive;               //  true if we're passive
+} clonesrv_t;
+
+//  .split main task setup
+//  The main task parses the command line to decide whether to start
+//  as a primary or backup server. We're using the Binary Star pattern
+//  for reliability. This interconnects the two servers so they can
+//  agree on which one is primary and which one is backup. To allow the
+//  two servers to run on the same box, we use different ports for 
+//  primary and backup. Ports 5003/5004 are used to interconnect the 
+//  servers. Ports 5556/5566 are used to receive voting events (snapshot 
+//  requests in the clone pattern). Ports 5557/5567 are used by the 
+//  publisher, and ports 5558/5568 are used by the collector:
+
+int main (int argc, char *argv [])
+{
+    clonesrv_t *self = (clonesrv_t *) zmalloc (sizeof (clonesrv_t));
+    if (argc == 2 && streq (argv [1], "-p")) {
+        zclock_log ("I: primary active, waiting for backup (passive)");
+        self->bstar = bstar_new (BSTAR_PRIMARY, "tcp://*:5003",
+                                 "tcp://localhost:5004");
+        bstar_voter (self->bstar, "tcp://*:5556",
+                     ZMQ_ROUTER, s_snapshots, self);
+        self->port = 5556;
+        self->peer = 5566;
+        self->primary = true;
+    }
+    else
+    if (argc == 2 && streq (argv [1], "-b")) {
+        zclock_log ("I: backup passive, waiting for primary (active)");
+        self->bstar = bstar_new (BSTAR_BACKUP, "tcp://*:5004",
+                                 "tcp://localhost:5003");
+        bstar_voter (self->bstar, "tcp://*:5566",
+                     ZMQ_ROUTER, s_snapshots, self);
+        self->port = 5566;
+        self->peer = 5556;
+        self->primary = false;
+    }
+    else {
+        printf ("Usage: clonesrv6 { -p | -b }\n");
+        free (self);
+        exit (0);
+    }
+    //  Primary server will become first active
+    if (self->primary)
+        self->kvmap = zhash_new ();
+
+    self->ctx = zctx_new ();
+    self->pending = zlist_new ();
+    bstar_set_verbose (self->bstar, true);
+
+    //  Set up our clone server sockets
+    self->publisher = zsocket_new (self->ctx, ZMQ_PUB);
+    self->collector = zsocket_new (self->ctx, ZMQ_SUB);
+    zsocket_set_subscribe (self->collector, "");
+    zsocket_bind (self->publisher, "tcp://*:%d", self->port + 1);
+    zsocket_bind (self->collector, "tcp://*:%d", self->port + 2);
+
+    //  Set up our own clone client interface to peer
+    self->subscriber = zsocket_new (self->ctx, ZMQ_SUB);
+    zsocket_set_subscribe (self->subscriber, "");
+    zsocket_connect (self->subscriber,
+                     "tcp://localhost:%d", self->peer + 1);
+
+    //  .split main task body
+    //  After we've setup our sockets, we register our binary star
+    //  event handlers, and then start the bstar reactor. This finishes
+    //  when the user presses Ctrl-C or when the process receives a SIGINT
+    //  interrupt:
+
+    //  Register state change handlers
+    bstar_new_active (self->bstar, s_new_active, self);
+    bstar_new_passive (self->bstar, s_new_passive, self);
+
+    //  Register our other handlers with the bstar reactor
+    zmq_pollitem_t poller = { self->collector, 0, ZMQ_POLLIN };
+    zloop_poller (bstar_zloop (self->bstar), &poller, s_collector, self);
+    zloop_timer  (bstar_zloop (self->bstar), 1000, 0, s_flush_ttl, self);
+    zloop_timer  (bstar_zloop (self->bstar), 1000, 0, s_send_hugz, self);
+
+    //  Start the bstar reactor
+    bstar_start (self->bstar);
+
+    //  Interrupted, so shut down
+    while (zlist_size (self->pending)) {
+        kvmsg_t *kvmsg = (kvmsg_t *) zlist_pop (self->pending);
+        kvmsg_destroy (&kvmsg);
+    }
+    zlist_destroy (&self->pending);
+    bstar_destroy (&self->bstar);
+    zhash_destroy (&self->kvmap);
+    zctx_destroy (&self->ctx);
+    free (self);
+
+    return 0;
+}
+
+//  We handle ICANHAZ? requests exactly as in the clonesrv5 example.
+//  .skip
+
+//  Routing information for a key-value snapshot
+typedef struct {
+    void *socket;           //  ROUTER socket to send to
+    zframe_t *identity;     //  Identity of peer who requested state
+    char *subtree;          //  Client subtree specification
+} kvroute_t;
+
+//  Send one state snapshot key-value pair to a socket
+//  Hash item data is our kvmsg object, ready to send
+static int
+s_send_single (const char *key, void *data, void *args)
+{
+    kvroute_t *kvroute = (kvroute_t *) args;
+    kvmsg_t *kvmsg = (kvmsg_t *) data;
+    if (strlen (kvroute->subtree) <= strlen (kvmsg_key (kvmsg))
+    &&  memcmp (kvroute->subtree,
+                kvmsg_key (kvmsg), strlen (kvroute->subtree)) == 0) {
+        zframe_send (&kvroute->identity,    //  Choose recipient
+            kvroute->socket, ZFRAME_MORE + ZFRAME_REUSE);
+        kvmsg_send (kvmsg, kvroute->socket);
+    }
+    return 0;
+}
+
+static int
+s_snapshots (zloop_t *loop, zmq_pollitem_t *poller, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+
+    zframe_t *identity = zframe_recv (poller->socket);
+    if (identity) {
+        //  Request is in second frame of message
+        char *request = zstr_recv (poller->socket);
+        char *subtree = NULL;
+        if (streq (request, "ICANHAZ?")) {
+            free (request);
+            subtree = zstr_recv (poller->socket);
+        }
+        else
+            printf ("E: bad request, aborting\n");
+
+        if (subtree) {
+            //  Send state socket to client
+            kvroute_t routing = { poller->socket, identity, subtree };
+            zhash_foreach (self->kvmap, s_send_single, &routing);
+
+            //  Now send END message with sequence number
+            zclock_log ("I: sending shapshot=%d", (int) self->sequence);
+            zframe_send (&identity, poller->socket, ZFRAME_MORE);
+            kvmsg_t *kvmsg = kvmsg_new (self->sequence);
+            kvmsg_set_key  (kvmsg, "KTHXBAI");
+            kvmsg_set_body (kvmsg, (byte *) subtree, 0);
+            kvmsg_send     (kvmsg, poller->socket);
+            kvmsg_destroy (&kvmsg);
+            free (subtree);
+        }
+        zframe_destroy(&identity);
+    }
+    return 0;
+}
+//  .until
+
+//  .split collect updates
+//  The collector is more complex than in the clonesrv5 example because the 
+//  way it processes updates depends on whether we're active or passive. 
+//  The active applies them immediately to its kvmap, whereas the passive 
+//  queues them as pending:
+
+//  If message was already on pending list, remove it and return true,
+//  else return false.
+static int
+s_was_pending (clonesrv_t *self, kvmsg_t *kvmsg)
+{
+    kvmsg_t *held = (kvmsg_t *) zlist_first (self->pending);
+    while (held) {
+        if (memcmp (kvmsg_uuid (kvmsg),
+                    kvmsg_uuid (held), sizeof (uuid_t)) == 0) {
+            zlist_remove (self->pending, held);
+            return true;
+        }
+        held = (kvmsg_t *) zlist_next (self->pending);
+    }
+    return false;
+}
+
+static int
+s_collector (zloop_t *loop, zmq_pollitem_t *poller, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+
+    kvmsg_t *kvmsg = kvmsg_recv (poller->socket);
+    if (kvmsg) {
+        if (self->active) {
+            kvmsg_set_sequence (kvmsg, ++self->sequence);
+            kvmsg_send (kvmsg, self->publisher);
+            int ttl = atoi (kvmsg_get_prop (kvmsg, "ttl"));
+            if (ttl)
+                kvmsg_set_prop (kvmsg, "ttl",
+                    "%" PRId64, zclock_time () + ttl * 1000);
+            kvmsg_store (&kvmsg, self->kvmap);
+            zclock_log ("I: publishing update=%d", (int) self->sequence);
+        }
+        else {
+            //  If we already got message from active, drop it, else
+            //  hold on pending list
+            if (s_was_pending (self, kvmsg))
+                kvmsg_destroy (&kvmsg);
+            else
+                zlist_append (self->pending, kvmsg);
+        }
+    }
+    return 0;
+}
+
+//  We purge ephemeral values using exactly the same code as in
+//  the previous clonesrv5 example.
+//  .skip
+//  If key-value pair has expired, delete it and publish the
+//  fact to listening clients.
+static int
+s_flush_single (const char *key, void *data, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+
+    kvmsg_t *kvmsg = (kvmsg_t *) data;
+    int64_t ttl;
+    sscanf (kvmsg_get_prop (kvmsg, "ttl"), "%" PRId64, &ttl);
+    if (ttl && zclock_time () >= ttl) {
+        kvmsg_set_sequence (kvmsg, ++self->sequence);
+        kvmsg_set_body (kvmsg, (byte *) "", 0);
+        kvmsg_send (kvmsg, self->publisher);
+        kvmsg_store (&kvmsg, self->kvmap);
+        zclock_log ("I: publishing delete=%d", (int) self->sequence);
+    }
+    return 0;
+}
+
+static int
+s_flush_ttl (zloop_t *loop, int timer_id, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+    if (self->kvmap)
+        zhash_foreach (self->kvmap, s_flush_single, args);
+    return 0;
+}
+//  .until
+
+//  .split heartbeating
+//  We send a HUGZ message once a second to all subscribers so that they
+//  can detect if our server dies. They'll then switch over to the backup
+//  server, which will become active:
+
+static int
+s_send_hugz (zloop_t *loop, int timer_id, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+
+    kvmsg_t *kvmsg = kvmsg_new (self->sequence);
+    kvmsg_set_key  (kvmsg, "HUGZ");
+    kvmsg_set_body (kvmsg, (byte *) "", 0);
+    kvmsg_send     (kvmsg, self->publisher);
+    kvmsg_destroy (&kvmsg);
+
+    return 0;
+}
+
+//  .split handling state changes
+//  When we switch from passive to active, we apply our pending list so that
+//  our kvmap is up-to-date. When we switch to passive, we wipe our kvmap
+//  and grab a new snapshot from the active server:
+
+static int
+s_new_active (zloop_t *loop, zmq_pollitem_t *unused, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+
+    self->active = true;
+    self->passive = false;
+
+    //  Stop subscribing to updates
+    zmq_pollitem_t poller = { self->subscriber, 0, ZMQ_POLLIN };
+    zloop_poller_end (bstar_zloop (self->bstar), &poller);
+
+    //  Apply pending list to own hash table
+    while (zlist_size (self->pending)) {
+        kvmsg_t *kvmsg = (kvmsg_t *) zlist_pop (self->pending);
+        kvmsg_set_sequence (kvmsg, ++self->sequence);
+        kvmsg_send (kvmsg, self->publisher);
+        kvmsg_store (&kvmsg, self->kvmap);
+        zclock_log ("I: publishing pending=%d", (int) self->sequence);
+    }
+    return 0;
+}
+
+static int
+s_new_passive (zloop_t *loop, zmq_pollitem_t *unused, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+
+    zhash_destroy (&self->kvmap);
+    self->active = false;
+    self->passive = true;
+
+    //  Start subscribing to updates
+    zmq_pollitem_t poller = { self->subscriber, 0, ZMQ_POLLIN };
+    zloop_poller (bstar_zloop (self->bstar), &poller, s_subscriber, self);
+
+    return 0;
+}
+
+//  .split subscriber handler
+//  When we get an update, we create a new kvmap if necessary, and then
+//  add our update to our kvmap. We're always passive in this case:
+
+static int
+s_subscriber (zloop_t *loop, zmq_pollitem_t *poller, void *args)
+{
+    clonesrv_t *self = (clonesrv_t *) args;
+    //  Get state snapshot if necessary
+    if (self->kvmap == NULL) {
+        self->kvmap = zhash_new ();
+        void *snapshot = zsocket_new (self->ctx, ZMQ_DEALER);
+        zsocket_connect (snapshot, "tcp://localhost:%d", self->peer);
+        zclock_log ("I: asking for snapshot from: tcp://localhost:%d",
+                    self->peer);
+        zstr_sendm (snapshot, "ICANHAZ?");
+        zstr_send (snapshot, ""); // blank subtree to get all
+        while (true) {
+            kvmsg_t *kvmsg = kvmsg_recv (snapshot);
+            if (!kvmsg)
+                break;          //  Interrupted
+            if (streq (kvmsg_key (kvmsg), "KTHXBAI")) {
+                self->sequence = kvmsg_sequence (kvmsg);
+                kvmsg_destroy (&kvmsg);
+                break;          //  Done
+            }
+            kvmsg_store (&kvmsg, self->kvmap);
+        }
+        zclock_log ("I: received snapshot=%d", (int) self->sequence);
+        zsocket_destroy (self->ctx, snapshot);
+    }
+    //  Find and remove update off pending list
+    kvmsg_t *kvmsg = kvmsg_recv (poller->socket);
+    if (!kvmsg)
+        return 0;
+
+    if (strneq (kvmsg_key (kvmsg), "HUGZ")) {
+        if (!s_was_pending (self, kvmsg)) {
+            //  If active update came before client update, flip it
+            //  around, store active update (with sequence) on pending
+            //  list and use to clear client update when it comes later
+            zlist_append (self->pending, kvmsg_dup (kvmsg));
+        }
+        //  If update is more recent than our kvmap, apply it
+        if (kvmsg_sequence (kvmsg) > self->sequence) {
+            self->sequence = kvmsg_sequence (kvmsg);
+            kvmsg_store (&kvmsg, self->kvmap);
+            zclock_log ("I: received update=%d", (int) self->sequence);
+        }
+        else
+            kvmsg_destroy (&kvmsg);
+    }
+    else
+        kvmsg_destroy (&kvmsg);
+
+    return 0;
+}
+```
+
+This model is only a few hundred lines of code, but it took quite a while to get working. To be accurate, building Model Six took about a full week of “Sweet god, this is just too complex for an example” hacking. We’ve assembled pretty much everything and the kitchen sink into this small application. We have failover, ephemeral values, subtrees, and so on. What surprised me was that the up-front design was pretty accurate. Still the details of writing and debugging so many socket flows is quite challenging.
+
+The reactor-based design removes a lot of the grunt work from the code, and what remains is simpler and easier to understand. We reuse the bstar reactor from Chapter 4 - Reliable Request-Reply Patterns. The whole server runs as one thread, so there’s no inter-thread weirdness going on–just a structure pointer (self) passed around to all handlers, which can do their thing happily. One nice side effect of using reactors is that the code, being less tightly integrated into a poll loop, is much easier to reuse. Large chunks of Model Six are taken from Model Five.
+
+I built it piece by piece, and got each piece working properly before going onto the next one. Because there are four or five main socket flows, that meant quite a lot of debugging and testing. I debugged just by dumping messages to the console. Don’t use classic debuggers to step through ZeroMQ applications; you need to see the message flows to make any sense of what is going on.
+
+For testing, I always try to use Valgrind, which catches memory leaks and invalid memory accesses. In C, this is a major concern, as you can’t delegate to a garbage collector. Using proper and consistent abstractions like kvmsg and CZMQ helps enormously.
+
+#### The Clustered Hashmap Protocol
+
+While the server is pretty much a mashup of the previous model plus the Binary Star pattern, the client is quite a lot more complex. But before we get to that, let’s look at the final protocol. I’ve written this up as a specification on the ZeroMQ RFC website as the Clustered Hashmap Protocol.
+
+Roughly, there are two ways to design a complex protocol such as this one. One way is to separate each flow into its own set of sockets. This is the approach we used here. The advantage is that each flow is simple and clean. The disadvantage is that managing multiple socket flows at once can be quite complex. Using a reactor makes it simpler, but still, it makes a lot of moving pieces that have to fit together correctly.
+
+The second way to make such a protocol is to use a single socket pair for everything. In this case, I’d have used ROUTER for the server and DEALER for the clients, and then done everything over that connection. It makes for a more complex protocol but at least the complexity is all in one place. In Chapter 7 - Advanced Architecture using ZeroMQ we’ll look at an example of a protocol done over a ROUTER-DEALER combination.
+
+Let’s take a look at the CHP specification. Note that “SHOULD”, “MUST” and “MAY” are key words we use in protocol specifications to indicate requirement levels.
+
+##### Goals
+
+CHP is meant to provide a basis for reliable pub-sub across a cluster of clients connected over a ZeroMQ network. It defines a “hashmap” abstraction consisting of key-value pairs. Any client can modify any key-value pair at any time, and changes are propagated to all clients. A client can join the network at any time.
+
+##### Architecture
+
+CHP connects a set of client applications and a set of servers. Clients connect to the server. Clients do not see each other. Clients can come and go arbitrarily.
+
+##### Ports and Connections
+
+The server MUST open three ports as follows:
+
+- A SNAPSHOT port (ZeroMQ ROUTER socket) at port number P.
+- A PUBLISHER port (ZeroMQ PUB socket) at port number P + 1.
+- A COLLECTOR port (ZeroMQ SUB socket) at port number P + 2.
+
+The client SHOULD open at least two connections:
+
+- A SNAPSHOT connection (ZeroMQ DEALER socket) to port number P.
+- A SUBSCRIBER connection (ZeroMQ SUB socket) to port number P + 1.
+  
+The client MAY open a third connection, if it wants to update the hashmap:
+
+- A PUBLISHER connection (ZeroMQ PUB socket) to port number P + 2.
+  
+This extra frame is not shown in the commands explained below.
+
+##### State Synchronization
+
+The client MUST start by sending a ICANHAZ command to its snapshot connection. This command consists of two frames as follows:
+
+```
+ICANHAZ command
+-----------------------------------
+Frame 0: "ICANHAZ?"
+Frame 1: subtree specification
+```
+
+Both frames are ZeroMQ strings. The subtree specification MAY be empty. If not empty, it consists of a slash followed by one or more path segments, ending in a slash.
+
+The server MUST respond to a ICANHAZ command by sending zero or more KVSYNC commands to its snapshot port, followed with a KTHXBAI command. The server MUST prefix each command with the identity of the client, as provided by ZeroMQ with the ICANHAZ command. The KVSYNC command specifies a single key-value pair as follows:
+
+```
+KVSYNC command
+-----------------------------------
+Frame 0: key, as ZeroMQ string
+Frame 1: sequence number, 8 bytes in network order
+Frame 2: <empty>
+Frame 3: <empty>
+Frame 4: value, as blob
+```
+
+The sequence number has no significance and may be zero.
+
+The KTHXBAI command takes this form:
+
+```
+KTHXBAI command
+-----------------------------------
+Frame 0: "KTHXBAI"
+Frame 1: sequence number, 8 bytes in network order
+Frame 2: <empty>
+Frame 3: <empty>
+Frame 4: subtree specification
+```
+
+The sequence number MUST be the highest sequence number of the KVSYNC commands previously sent.
+
+When the client has received a KTHXBAI command, it SHOULD start to receive messages from its subscriber connection and apply them.
+
+##### Server-to-Client Updates
+
+When the server has an update for its hashmap it MUST broadcast this on its publisher socket as a KVPUB command. The KVPUB command has this form:
+
+```
+KVPUB command
+-----------------------------------
+Frame 0: key, as ZeroMQ string
+Frame 1: sequence number, 8 bytes in network order
+Frame 2: UUID, 16 bytes
+Frame 3: properties, as ZeroMQ string
+Frame 4: value, as blob
+```
+
+The sequence number MUST be strictly incremental. The client MUST discard any KVPUB commands whose sequence numbers are not strictly greater than the last KTHXBAI or KVPUB command received.
+
+The UUID is optional and frame 2 MAY be empty (size zero). The properties field is formatted as zero or more instances of “name=value” followed by a newline character. If the key-value pair has no properties, the properties field is empty.
+
+If the value is empty, the client SHOULD delete its key-value entry with the specified key.
+
+In the absence of other updates the server SHOULD send a HUGZ command at regular intervals, e.g., once per second. The HUGZ command has this format:
+
+```
+HUGZ command
+-----------------------------------
+Frame 0: "HUGZ"
+Frame 1: 00000000
+Frame 2: <empty>
+Frame 3: <empty>
+Frame 4: <empty>
+```
+
+The client MAY treat the absence of HUGZ as an indicator that the server has crashed (see Reliability below).
+
+##### Client-to-Server Updates
+
+When the client has an update for its hashmap, it MAY send this to the server via its publisher connection as a KVSET command. The KVSET command has this form:
+
+```
+KVSET command
+-----------------------------------
+Frame 0: key, as ZeroMQ string
+Frame 1: sequence number, 8 bytes in network order
+Frame 2: UUID, 16 bytes
+Frame 3: properties, as ZeroMQ string
+Frame 4: value, as blob
+```
+
+The sequence number has no significance and may be zero. The UUID SHOULD be a universally unique identifier, if a reliable server architecture is used.
+
+If the value is empty, the server MUST delete its key-value entry with the specified key.
+
+The server SHOULD accept the following properties:
+
+- ttl: specifies a time-to-live in seconds. If the KVSET command has a ttl property, the server SHOULD delete the key-value pair and broadcast a KVPUB with an empty value in order to delete this from all clients when the TTL has expired.
+Reliability
+
+CHP may be used in a dual-server configuration where a backup server takes over if the primary server fails. CHP does not specify the mechanisms used for this failover but the Binary Star pattern may be helpful.
+
+To assist server reliability, the client MAY:
+
+Set a UUID in every KVSET command.
+Detect the lack of HUGZ over a time period and use this as an indicator that the current server has failed.
+Connect to a backup server and re-request a state synchronization.
+Scalability and Performance
+
+CHP is designed to be scalable to large numbers (thousands) of clients, limited only by system resources on the broker. Because all updates pass through a single server, the overall throughput will be limited to some millions of updates per second at peak, and probably less.
+
+##### Security
+
+CHP does not implement any authentication, access control, or encryption mechanisms and should not be used in any deployment where these are required.
+
+#### Building a Multithreaded Stack and API
+
+The client stack we’ve used so far isn’t smart enough to handle this protocol properly. As soon as we start doing heartbeats, we need a client stack that can run in a background thread. In the Freelance pattern at the end of Chapter 4 - Reliable Request-Reply Patterns we used a multithreaded API but didn’t explain it in detail. It turns out that multithreaded APIs are quite useful when you start to make more complex ZeroMQ protocols like CHP.
+
+![](./pics/zmq/fig63.png)
+
+If you make a nontrivial protocol and you expect applications to implement it properly, most developers will get it wrong most of the time. You’re going to be left with a lot of unhappy people complaining that your protocol is too complex, too fragile, and too hard to use. Whereas if you give them a simple API to call, you have some chance of them buying in.
+
+Our multithreaded API consists of a frontend object and a background agent, connected by two PAIR sockets. Connecting two PAIR sockets like this is so useful that your high-level binding should probably do what CZMQ does, which is package a “create new thread with a pipe that I can use to send messages to it” method.
+
+The multithreaded APIs that we see in this book all take the same form:
+
+- The constructor for the object (clone_new) creates a context and starts a background thread connected with a pipe. It holds onto one end of the pipe so it can send commands to the background thread.
+- The background thread starts an agent that is essentially a zmq_poll loop reading from the pipe socket and any other sockets (here, the DEALER and SUB sockets).
+- The main application thread and the background thread now communicate only via ZeroMQ messages. By convention, the frontend sends string commands so that each method on the class turns into a message sent to the backend agent, like this:
+
+```c++
+void
+clone_connect (clone_t *self, char *address, char *service)
+{
+    assert (self);
+    zmsg_t *msg = zmsg_new ();
+    zmsg_addstr (msg, "CONNECT");
+    zmsg_addstr (msg, address);
+    zmsg_addstr (msg, service);
+    zmsg_send (&msg, self->pipe);
+}
+```
+
+- If the method needs a return code, it can wait for a reply message from the agent.
+- If the agent needs to send asynchronous events back to the frontend, we add a recv method to the class, which waits for messages on the frontend pipe.
+- We may want to expose the frontend pipe socket handle to allow the class to be integrated into further poll loops. Otherwise any recv method would block the application.
+
+The clone class has the same structure as the flcliapi class from Chapter 4 - Reliable Request-Reply Patterns and adds the logic from the last model of the Clone client. Without ZeroMQ, this kind of multithreaded API design would be weeks of really hard work. With ZeroMQ, it was a day or two of work.
+
+The actual API methods for the clone class are quite simple:
+
+```c++
+//  Create a new clone class instance
+clone_t *
+    clone_new (void);
+
+//  Destroy a clone class instance
+void
+    clone_destroy (clone_t **self_p);
+
+//  Define the subtree, if any, for this clone class
+void
+    clone_subtree (clone_t *self, char *subtree);
+
+//  Connect the clone class to one server
+void
+    clone_connect (clone_t *self, char *address, char *service);
+
+//  Set a value in the shared hashmap
+void
+    clone_set (clone_t *self, char *key, char *value, int ttl);
+
+//  Get a value from the shared hashmap
+char *
+    clone_get (clone_t *self, char *key);
+```
+
+So here is Model Six of the clone client, which has now become just a thin shell using the clone class:
+
+```c++
+//  Clone client Model Six
+
+//  Lets us build this source without creating a library
+#include "clone.c"
+#define SUBTREE "/client/"
+
+int main (void)
+{
+    //  Create distributed hash instance
+    clone_t *clone = clone_new ();
+
+    //  Specify configuration
+    clone_subtree (clone, SUBTREE);
+    clone_connect (clone, "tcp://localhost", "5556");
+    clone_connect (clone, "tcp://localhost", "5566");
+
+    //  Set random tuples into the distributed hash
+    while (!zctx_interrupted) {
+        //  Set random value, check it was stored
+        char key [255];
+        char value [10];
+        sprintf (key, "%s%d", SUBTREE, randof (10000));
+        sprintf (value, "%d", randof (1000000));
+        clone_set (clone, key, value, randof (30));
+        sleep (1);
+    }
+    clone_destroy (&clone);
+    return 0;
+}
+```
+
+Note the connect method, which specifies one server endpoint. Under the hood, we’re in fact talking to three ports. However, as the CHP protocol says, the three ports are on consecutive port numbers:
+
+- The server state router (ROUTER) is at port P.
+- The server updates publisher (PUB) is at port P + 1.
+- The server updates subscriber (SUB) is at port P + 2.
+
+So we can fold the three connections into one logical operation (which we implement as three separate ZeroMQ connect calls).
+
+Let’s end with the source code for the clone stack. This is a complex piece of code, but easier to understand when you break it into the frontend object class and the backend agent. The frontend sends string commands (“SUBTREE”, “CONNECT”, “SET”, “GET”) to the agent, which handles these commands as well as talking to the server(s). Here is the agent’s logic:
+
+1. Start up by getting a snapshot from the first server
+2. When we get a snapshot switch to reading from the subscriber socket.
+3. If we don’t get a snapshot then fail over to the second server.
+4. Poll on the pipe and the subscriber socket.
+5. If we got input on the pipe, handle the control message from the frontend object.
+6. If we got input on the subscriber, store or apply the update.
+7. If we didn’t get anything from the server within a certain time, fail over.
+8. Repeat until the process is interrupted by Ctrl-C.
+
+And here is the actual clone class implementation:
+
+```c++
+//  clone class - Clone client API stack (multithreaded)
+
+#include "clone.h"
+//  If no server replies within this time, abandon request
+#define GLOBAL_TIMEOUT  4000    //  msecs
+
+//  =====================================================================
+//  Synchronous part, works in our application thread
+
+//  Structure of our class
+
+struct _clone_t {
+    zctx_t *ctx;                //  Our context wrapper
+    void *pipe;                 //  Pipe through to clone agent
+};
+
+//  This is the thread that handles our real clone class
+static void clone_agent (void *args, zctx_t *ctx, void *pipe);
+
+//  .split constructor and destructor
+//  Here are the constructor and destructor for the clone class. Note that
+//  we create a context specifically for the pipe that connects our
+//  frontend to the backend agent:
+
+clone_t *
+clone_new (void)
+{
+    clone_t
+        *self;
+
+    self = (clone_t *) zmalloc (sizeof (clone_t));
+    self->ctx = zctx_new ();
+    self->pipe = zthread_fork (self->ctx, clone_agent, NULL);
+    return self;
+}
+
+void
+clone_destroy (clone_t **self_p)
+{
+    assert (self_p);
+    if (*self_p) {
+        clone_t *self = *self_p;
+        zctx_destroy (&self->ctx);
+        free (self);
+        *self_p = NULL;
+    }
+}
+
+//  .split subtree method
+//  Specify subtree for snapshot and updates, which we must do before
+//  connecting to a server as the subtree specification is sent as the
+//  first command to the server. Sends a [SUBTREE][subtree] command to
+//  the agent:
+
+void clone_subtree (clone_t *self, char *subtree)
+{
+    assert (self);
+    zmsg_t *msg = zmsg_new ();
+    zmsg_addstr (msg, "SUBTREE");
+    zmsg_addstr (msg, subtree);
+    zmsg_send (&msg, self->pipe);
+}
+
+//  .split connect method
+//  Connect to a new server endpoint. We can connect to at most two
+//  servers. Sends [CONNECT][endpoint][service] to the agent:
+
+void
+clone_connect (clone_t *self, char *address, char *service)
+{
+    assert (self);
+    zmsg_t *msg = zmsg_new ();
+    zmsg_addstr (msg, "CONNECT");
+    zmsg_addstr (msg, address);
+    zmsg_addstr (msg, service);
+    zmsg_send (&msg, self->pipe);
+}
+
+//  .split set method
+//  Set a new value in the shared hashmap. Sends a [SET][key][value][ttl]
+//  command through to the agent which does the actual work:
+
+void
+clone_set (clone_t *self, char *key, char *value, int ttl)
+{
+    char ttlstr [10];
+    sprintf (ttlstr, "%d", ttl);
+
+    assert (self);
+    zmsg_t *msg = zmsg_new ();
+    zmsg_addstr (msg, "SET");
+    zmsg_addstr (msg, key);
+    zmsg_addstr (msg, value);
+    zmsg_addstr (msg, ttlstr);
+    zmsg_send (&msg, self->pipe);
+}
+
+//  .split get method
+//  Look up value in distributed hash table. Sends [GET][key] to the agent and
+//  waits for a value response. If there is no value available, will eventually
+//  return NULL:
+
+char *
+clone_get (clone_t *self, char *key)
+{
+    assert (self);
+    assert (key);
+    zmsg_t *msg = zmsg_new ();
+    zmsg_addstr (msg, "GET");
+    zmsg_addstr (msg, key);
+    zmsg_send (&msg, self->pipe);
+
+    zmsg_t *reply = zmsg_recv (self->pipe);
+    if (reply) {
+        char *value = zmsg_popstr (reply);
+        zmsg_destroy (&reply);
+        return value;
+    }
+    return NULL;
+}
+
+//  .split working with servers
+//  The backend agent manages a set of servers, which we implement using
+//  our simple class model:
+
+typedef struct {
+    char *address;              //  Server address
+    int port;                   //  Server port
+    void *snapshot;             //  Snapshot socket
+    void *subscriber;           //  Incoming updates
+    uint64_t expiry;            //  When server expires
+    uint requests;              //  How many snapshot requests made?
+} server_t;
+
+static server_t *
+server_new (zctx_t *ctx, char *address, int port, char *subtree)
+{
+    server_t *self = (server_t *) zmalloc (sizeof (server_t));
+
+    zclock_log ("I: adding server %s:%d...", address, port);
+    self->address = strdup (address);
+    self->port = port;
+
+    self->snapshot = zsocket_new (ctx, ZMQ_DEALER);
+    zsocket_connect (self->snapshot, "%s:%d", address, port);
+    self->subscriber = zsocket_new (ctx, ZMQ_SUB);
+    zsocket_connect (self->subscriber, "%s:%d", address, port + 1);
+    zsocket_set_subscribe (self->subscriber, subtree);
+    zsocket_set_subscribe (self->subscriber, "HUGZ");
+    return self;
+}
+
+static void
+server_destroy (server_t **self_p)
+{
+    assert (self_p);
+    if (*self_p) {
+        server_t *self = *self_p;
+        free (self->address);
+        free (self);
+        *self_p = NULL;
+    }
+}
+
+//  .split backend agent class
+//  Here is the implementation of the backend agent itself:
+
+//  Number of servers to which we will talk to
+#define SERVER_MAX      2
+
+//  Server considered dead if silent for this long
+#define SERVER_TTL      5000    //  msecs
+
+//  States we can be in
+#define STATE_INITIAL       0   //  Before asking server for state
+#define STATE_SYNCING       1   //  Getting state from server
+#define STATE_ACTIVE        2   //  Getting new updates from server
+
+typedef struct {
+    zctx_t *ctx;                //  Context wrapper
+    void *pipe;                 //  Pipe back to application
+    zhash_t *kvmap;             //  Actual key/value table
+    char *subtree;              //  Subtree specification, if any
+    server_t *server [SERVER_MAX];
+    uint nbr_servers;           //  0 to SERVER_MAX
+    uint state;                 //  Current state
+    uint cur_server;            //  If active, server 0 or 1
+    int64_t sequence;           //  Last kvmsg processed
+    void *publisher;            //  Outgoing updates
+} agent_t;
+
+static agent_t *
+agent_new (zctx_t *ctx, void *pipe)
+{
+    agent_t *self = (agent_t *) zmalloc (sizeof (agent_t));
+    self->ctx = ctx;
+    self->pipe = pipe;
+    self->kvmap = zhash_new ();
+    self->subtree = strdup ("");
+    self->state = STATE_INITIAL;
+    self->publisher = zsocket_new (self->ctx, ZMQ_PUB);
+    return self;
+}
+
+static void
+agent_destroy (agent_t **self_p)
+{
+    assert (self_p);
+    if (*self_p) {
+        agent_t *self = *self_p;
+        int server_nbr;
+        for (server_nbr = 0; server_nbr < self->nbr_servers; server_nbr++)
+            server_destroy (&self->server [server_nbr]);
+        zhash_destroy (&self->kvmap);
+        free (self->subtree);
+        free (self);
+        *self_p = NULL;
+    }
+}
+
+//  .split handling a control message
+//  Here we handle the different control messages from the frontend;
+//  SUBTREE, CONNECT, SET, and GET:
+
+static int
+agent_control_message (agent_t *self)
+{
+    zmsg_t *msg = zmsg_recv (self->pipe);
+    char *command = zmsg_popstr (msg);
+    if (command == NULL)
+        return -1;      //  Interrupted
+
+    if (streq (command, "SUBTREE")) {
+        free (self->subtree);
+        self->subtree = zmsg_popstr (msg);
+    }
+    else
+    if (streq (command, "CONNECT")) {
+        char *address = zmsg_popstr (msg);
+        char *service = zmsg_popstr (msg);
+        if (self->nbr_servers < SERVER_MAX) {
+            self->server [self->nbr_servers++] = server_new (
+                self->ctx, address, atoi (service), self->subtree);
+            //  We broadcast updates to all known servers
+            zsocket_connect (self->publisher, "%s:%d",
+                address, atoi (service) + 2);
+        }
+        else
+            zclock_log ("E: too many servers (max. %d)", SERVER_MAX);
+        free (address);
+        free (service);
+    }
+    else
+    //  .split set and get commands
+    //  When we set a property, we push the new key-value pair onto
+    //  all our connected servers:
+    if (streq (command, "SET")) {
+        char *key = zmsg_popstr (msg);
+        char *value = zmsg_popstr (msg);
+        char *ttl = zmsg_popstr (msg);
+
+        //  Send key-value pair on to server
+        kvmsg_t *kvmsg = kvmsg_new (0);
+        kvmsg_set_key  (kvmsg, key);
+        kvmsg_set_uuid (kvmsg);
+        kvmsg_fmt_body (kvmsg, "%s", value);
+        kvmsg_set_prop (kvmsg, "ttl", ttl);
+        kvmsg_send     (kvmsg, self->publisher);
+        kvmsg_store    (&kvmsg, self->kvmap);
+        free (key);
+        free (value);
+        free (ttl);
+    }
+    else
+    if (streq (command, "GET")) {
+        char *key = zmsg_popstr (msg);
+        kvmsg_t *kvmsg = (kvmsg_t *) zhash_lookup (self->kvmap, key);
+        byte *value = kvmsg? kvmsg_body (kvmsg): NULL;
+        if (value)
+            zmq_send (self->pipe, value, kvmsg_size (kvmsg), 0);
+        else
+            zstr_send (self->pipe, "");
+        free (key);
+    }
+    free (command);
+    zmsg_destroy (&msg);
+    return 0;
+}
+
+//  .split backend agent
+//  The asynchronous agent manages a server pool and handles the
+//  request-reply dialog when the application asks for it:
+
+static void
+clone_agent (void *args, zctx_t *ctx, void *pipe)
+{
+    agent_t *self = agent_new (ctx, pipe);
+
+    while (true) {
+        zmq_pollitem_t poll_set [] = {
+            { pipe, 0, ZMQ_POLLIN, 0 },
+            { 0,    0, ZMQ_POLLIN, 0 }
+        };
+        int poll_timer = -1;
+        int poll_size = 2;
+        server_t *server = self->server [self->cur_server];
+        switch (self->state) {
+            case STATE_INITIAL:
+                //  In this state we ask the server for a snapshot,
+                //  if we have a server to talk to...
+                if (self->nbr_servers > 0) {
+                    zclock_log ("I: waiting for server at %s:%d...",
+                        server->address, server->port);
+                    if (server->requests < 2) {
+                        zstr_sendm (server->snapshot, "ICANHAZ?");
+                        zstr_send  (server->snapshot, self->subtree);
+                        server->requests++;
+                    }
+                    server->expiry = zclock_time () + SERVER_TTL;
+                    self->state = STATE_SYNCING;
+                    poll_set [1].socket = server->snapshot;
+                }
+                else
+                    poll_size = 1;
+                break;
+                
+            case STATE_SYNCING:
+                //  In this state we read from snapshot and we expect
+                //  the server to respond, else we fail over.
+                poll_set [1].socket = server->snapshot;
+                break;
+                
+            case STATE_ACTIVE:
+                //  In this state we read from subscriber and we expect
+                //  the server to give HUGZ, else we fail over.
+                poll_set [1].socket = server->subscriber;
+                break;
+        }
+        if (server) {
+            poll_timer = (server->expiry - zclock_time ())
+                       * ZMQ_POLL_MSEC;
+            if (poll_timer < 0)
+                poll_timer = 0;
+        }
+        //  .split client poll loop
+        //  We're ready to process incoming messages; if nothing at all
+        //  comes from our server within the timeout, that means the
+        //  server is dead:
+        
+        int rc = zmq_poll (poll_set, poll_size, poll_timer);
+        if (rc == -1)
+            break;              //  Context has been shut down
+
+        if (poll_set [0].revents & ZMQ_POLLIN) {
+            if (agent_control_message (self))
+                break;          //  Interrupted
+        }
+        else
+        if (poll_set [1].revents & ZMQ_POLLIN) {
+            kvmsg_t *kvmsg = kvmsg_recv (poll_set [1].socket);
+            if (!kvmsg)
+                break;          //  Interrupted
+
+            //  Anything from server resets its expiry time
+            server->expiry = zclock_time () + SERVER_TTL;
+            if (self->state == STATE_SYNCING) {
+                //  Store in snapshot until we're finished
+                server->requests = 0;
+                if (streq (kvmsg_key (kvmsg), "KTHXBAI")) {
+                    self->sequence = kvmsg_sequence (kvmsg);
+                    self->state = STATE_ACTIVE;
+                    zclock_log ("I: received from %s:%d snapshot=%d",
+                        server->address, server->port,
+                        (int) self->sequence);
+                    kvmsg_destroy (&kvmsg);
+                }
+                else
+                    kvmsg_store (&kvmsg, self->kvmap);
+            }
+            else
+            if (self->state == STATE_ACTIVE) {
+                //  Discard out-of-sequence updates, incl. HUGZ
+                if (kvmsg_sequence (kvmsg) > self->sequence) {
+                    self->sequence = kvmsg_sequence (kvmsg);
+                    kvmsg_store (&kvmsg, self->kvmap);
+                    zclock_log ("I: received from %s:%d update=%d",
+                        server->address, server->port,
+                        (int) self->sequence);
+                }
+                else
+                    kvmsg_destroy (&kvmsg);
+            }
+        }
+        else {
+            //  Server has died, failover to next
+            zclock_log ("I: server at %s:%d didn't give HUGZ",
+                    server->address, server->port);
+            self->cur_server = (self->cur_server + 1) % self->nbr_servers;
+            self->state = STATE_INITIAL;
+        }
+    }
+    agent_destroy (&self);
+}
+```
