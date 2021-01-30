@@ -27,7 +27,7 @@
       - [Intermediaries and Proxies](#intermediaries-and-proxies)
       - [The Dynamic Discovery Problem](#the-dynamic-discovery-problem)
       - [Shared Queue (DEALER and ROUTER sockets)](#shared-queue-dealer-and-router-sockets)
-      - [ZeroMQ’s Built-In Proxy Function](#zeromqs-built-in-proxy-function)
+      - [ZeroMQ's Built-In Proxy Function](#zeromqs-built-in-proxy-function)
       - [Transport Bridging](#transport-bridging)
     - [Handling Errors and ETERM](#handling-errors-and-eterm)
     - [Handling Interrupt Signals](#handling-interrupt-signals)
@@ -43,7 +43,7 @@
     - [The Request-Reply Mechanisms](#the-request-reply-mechanisms)
       - [The Simple Reply Envelope](#the-simple-reply-envelope)
       - [The Extended Reply Envelope](#the-extended-reply-envelope)
-      - [What’s This Good For?](#whats-this-good-for)
+      - [What's This Good For?](#whats-this-good-for)
       - [Recap of Request-Reply Socket](#recap-of-request-reply-socket)
     - [Request-Reply Combination](#request-reply-combination)
       - [The REQ to REP Combination](#the-req-to-rep-combination)
@@ -132,42 +132,28 @@
 So let's start with some code. We start of course with a Hello World example. We'll make a client and a server. The client sends "Hello" to the server, which replies with "World". Here's the server in C, which opens a ZeroMQ socket on port 5555, reads requests on it, and replies with "World" to each request:
 
 ```c++
-//
-//  Hello World server in C++
-//  Binds REP socket to tcp://*:5555
-//  Expects "Hello" from client, replies with "World"
-//
-#include <zmq.hpp>
-#include <string>
-#include <iostream>
-#ifndef _WIN32
+//  Hello World server
+
+#include <zmq.h>
+#include <stdio.h>
 #include <unistd.h>
-#else
-#include <windows.h>
+#include <string.h>
+#include <assert.h>
 
-#define sleep(n)	Sleep(n)
-#endif
+int main (void)
+{
+    //  Socket to talk to clients
+    void *context = zmq_ctx_new ();
+    void *responder = zmq_socket (context, ZMQ_REP);
+    int rc = zmq_bind (responder, "tcp://*:5555");
+    assert (rc == 0);
 
-int main () {
-    //  Prepare our context and socket
-    zmq::context_t context (1);
-    zmq::socket_t socket (context, ZMQ_REP);
-    socket.bind ("tcp://*:5555");
-
-    while (true) {
-        zmq::message_t request;
-
-        //  Wait for next request from client
-        socket.recv (&request);
-        std::cout << "Received Hello" << std::endl;
-
-        //  Do some 'work'
-    	  sleep(1);
-
-        //  Send reply back to client
-        zmq::message_t reply (5);
-        memcpy (reply.data (), "World", 5);
-        socket.send (reply);
+    while (1) {
+        char buffer [10];
+        zmq_recv (responder, buffer, 10, 0);
+        printf ("Received Hello\n");
+        sleep (1);          //  Do some 'work'
+        zmq_send (responder, "World", 5, 0);
     }
     return 0;
 }
@@ -175,7 +161,7 @@ int main () {
 
 ![](./pics/zmq/fig2.png)
 
-The REQ-REP socket pair is in lockstep. The client issues zmq_send() and then zmq_recv(), in a loop (or once if that's all it needs). Doing any other sequence (e.g., sending two messages in a row) will result in a return code of -1 from the send or recv call. Similarly, the service issues zmq_recv() and then zmq_send() in that order, as often as it needs to.
+The REQ-REP socket pair is in lockstep [环环相扣，步伐一致]. The client issues `zmq_send()` and then `zmq_recv()`, in a loop (or once if that's all it needs). Doing any other sequence (e.g., sending two messages in a row) will result in a return code of -1 from the send or recv call. Similarly, the service issues `zmq_recv()` and then `zmq_send()` in that order, as often as it needs to. [熟悉这一套模式]
 
 ZeroMQ uses C as its reference language and this is the main language we'll use for examples. If you're reading this online, the link below the example takes you to translations into other programming languages. Let's compare the same server in C++:
 
@@ -281,7 +267,6 @@ However, if you send a string from another language, it probably will not includ
 ```python
 socket.send ("Hello")
 ```
-
 
 Then what goes onto the wire is a length (one byte for shorter strings) and the string contents as individual characters.
 
@@ -395,10 +380,11 @@ int main (int argc, char *argv[])
     //  Socket to talk to server
     std::cout << "Collecting updates from weather server...\n" << std::endl;
     zmq::socket_t subscriber (context, ZMQ_SUB); /// ZMQ_SUB
-    subscriber.connect("tcp://localhost:5556");
+    subscriber.connect("tcp://localhost:5556"); // [可以订阅多个源]
 
     //  Subscribe to zipcode, default is NYC, 10001
-	  const char *filter = (argc > 1)? argv [1]: "10001 ";
+    // [这个filter是只接受这个字符串开头的消息?]
+    const char *filter = (argc > 1)? argv [1]: "10001 ";
     subscriber.setsockopt(ZMQ_SUBSCRIBE, filter, strlen (filter));
 
     //  Process 100 updates
@@ -412,12 +398,12 @@ int main (int argc, char *argv[])
         subscriber.recv(&update);
 
         std::istringstream iss(static_cast<char*>(update.data()));
-	    	iss >> zipcode >> temperature >> relhumidity ;
+	    iss >> zipcode >> temperature >> relhumidity ;
 
-	    	total_temp += temperature;
+	    total_temp += temperature;
     }
     std::cout 	<< "Average temperature for zipcode '"<< filter
-    			<<"' was "<<(int) (total_temp / update_nbr) <<"F"
+    			<< "' was "<<(int) (total_temp / update_nbr) << "F"
     			<< std::endl;
     return 0;
 }
@@ -425,7 +411,7 @@ int main (int argc, char *argv[])
 
 ![](./pics/zmq/fig4.png)
 
-Note that when you use a SUB socket you must set a subscription using `zmq_setsockopt()` and `SUBSCRIBE`, as in this code. If you don't set any subscription, you won't get any messages. It's a common mistake for beginners. The subscriber can set many subscriptions, which are added together. That is, if an update matches `ANY` subscription, the subscriber receives it. The subscriber can also cancel specific subscriptions. A subscription is often, but not always, a printable string. See `zmq_setsockopt()` for how this works.
+Note that *when you use a SUB socket you must set a subscription using `zmq_setsockopt()` and `SUBSCRIBE`*, as in this code. If you don't set any subscription, you won't get any messages. It's a common mistake for beginners. The subscriber can set many subscriptions, which are added together. That is, if an update matches `ANY` subscription, the subscriber receives it. The subscriber can also cancel specific subscriptions. A subscription is often, but not always, a printable string. See `zmq_setsockopt()` for how this works.
 
 The PUB-SUB socket pair is asynchronous. The client does `zmq_recv()`, in a loop (or once if that's all it needs). Trying to send a message to a SUB socket will cause an error. Similarly, the service does `zmq_send()` as often as it needs to, but must not do `zmq_recv()` on a PUB socket.
 
@@ -440,19 +426,19 @@ This "slow joiner" symptom hits enough people often enough that we're going to e
 
 Then the subscriber will most likely not receive anything. You'll blink, check that you set a correct filter and try again, and the subscriber will still not receive anything.
 
-Making a TCP connection involves to and from handshaking that takes several milliseconds depending on your network and the number of hops between peers. In that time, ZeroMQ can send many messages. For sake of argument assume it takes 5 msecs to establish a connection, and that same link can handle 1M messages per second. During the 5 msecs that the subscriber is connecting to the publisher, it takes the publisher only 1 msec to send out those 1K messages.
+*Making a TCP connection involves to and from handshaking that takes several milliseconds depending on your network and the number of hops between peers. In that time, ZeroMQ can send many messages. For sake of argument assume it takes 5 msecs to establish a connection, and that same link can handle 1M messages per second. During the 5 msecs that the subscriber is connecting to the publisher, it takes the publisher only 1 msec to send out those 1K messages.*
 
-In *Chapter 2 - Sockets and Patterns* we'll explain how to synchronize a publisher and subscribers so that you don't start to publish data until the subscribers really are connected and ready. There is a simple and stupid way to delay the publisher, which is to sleep. Don't do this in a real application, though, because it is extremely fragile as well as inelegant and slow. Use sleeps to prove to yourself what's happening, and then wait for *Chapter 2 - Sockets and Patterns* to see how to do this right.
+In *Chapter 2 - Sockets and Patterns* we'll explain *how to synchronize a publisher and subscribers so that you don't start to publish data until the subscribers really are connected and ready*. There is a simple and stupid way to delay the publisher, which is to sleep. Don't do this in a real application, though, because it is extremely fragile as well as inelegant and slow. Use sleeps to prove to yourself what's happening, and then wait for *Chapter 2 - Sockets and Patterns* to see how to do this right.
 
 The alternative to synchronization is to simply assume that the published data stream is infinite and has no start and no end. One also assumes that the subscriber doesn't care what transpired before it started up. This is how we built our weather client example.
 
-So the client subscribes to its chosen zip code and collects 100 updates for that zip code. That means about ten million updates from the server, if zip codes are randomly distributed. You can start the client, and then the server, and the client will keep working. You can stop and restart the server as often as you like, and the client will keep working. When the client has collected its hundred updates, it calculates the average, prints it, and exits.
+*So the client subscribes to its chosen zip code and collects 100 updates for that zip code. That means about ten million updates from the server, if zip codes are randomly distributed. You can start the client, and then the server, and the client will keep working. You can stop and restart the server as often as you like, and the client will keep working. When the client has collected its hundred updates, it calculates the average, prints it, and exits.*
 
 Some points about the publish-subscribe (pub-sub) pattern:
 
-- A subscriber can connect to more than one publisher, using one connect call each time. Data will then arrive and be interleaved ("fair-queued") so that no single publisher drowns out the others.
-- If a publisher has no connected subscribers, then it will simply drop all messages.
-- If you're using TCP and a subscriber is slow, messages will queue up on the publisher. We'll look at how to protect publishers against this using the "high-water mark" later.
+- *A subscriber can connect to more than one publisher, using one connect call each time.* Data will then arrive and be interleaved ("fair-queued") so that no single publisher drowns out the others.
+- *If a publisher has no connected subscribers, then it will simply drop all messages*.
+- *If you're using TCP and a subscriber is slow, messages will queue up on the publisher*. We'll look at how to protect publishers against this using the "high-water mark" later. [pub实际上是看到有几个sub才发给他们.]
 
 From ZeroMQ v3.x, filtering happens at the publisher side when using a connected protocol (`tcp:<>` or `ipc:<>`). Using the `epgm:<>` protocol, filtering happens at the subscriber side. In ZeroMQ v2.x, all filtering happened at the subscriber side.
 
@@ -512,7 +498,7 @@ int main (int argc, char *argv[])
     sink.connect("tcp://localhost:5558");
     zmq::message_t message(2);
     memcpy(message.data(), "0", 1);
-    sink.send(message);
+    sink.send(message); // [这个sink的意思是通知sink可以开始等结果了.]
 
     //  Initialize random number generator
     srandom ((unsigned) time (NULL));
@@ -529,7 +515,7 @@ int main (int argc, char *argv[])
         message.rebuild(10);
         memset(message.data(), '\0', 10);
         sprintf ((char *) message.data(), "%d", workload);
-        sender.send(message);
+        sender.send(message); // [ventilator从5557 push了100条消息出去.]
     }
     std::cout << "Total expected cost: " << total_msec << " msec" << std::endl;
     sleep (1);              //  Give 0MQ time to deliver
@@ -558,11 +544,11 @@ int main (int argc, char *argv[])
 
     //  Socket to receive messages on
     zmq::socket_t receiver(context, ZMQ_PULL);
-    receiver.connect("tcp://localhost:5557");
+    receiver.connect("tcp://localhost:5557"); // [接收任务]
 
     //  Socket to send messages to
     zmq::socket_t sender(context, ZMQ_PUSH);
-    sender.connect("tcp://localhost:5558");
+    sender.connect("tcp://localhost:5558"); // [发送结果]
 
     //  Process tasks forever
     while (1) {
@@ -621,9 +607,8 @@ int main (int argc, char *argv[])
 
     //  Process 100 confirmations
     int task_nbr;
-    int total_msec = 0;     //  Total calculated cost in msecs
+    int total_msec = 0;     //  Total calculated cost in msecs [这里就是等100个任务都做完]
     for (task_nbr = 0; task_nbr < 100; task_nbr++) {
-
         receiver.recv(&message);
         if (task_nbr % 10 == 0)
             std::cout << ":" << std::flush;
@@ -654,11 +639,13 @@ The average cost of a batch is 5 seconds. When we start 1, 2, or 4 workers we ge
 - 2 workers: total elapsed time: 2421 msecs.
 - 4 workers: total elapsed time: 1018 msecs.
 
+[这个消息模式是:有一个人不停的产生任务,有很多打工人去取任务然后做了,每个人做的任务互相不同.]
+
 Let's look at some aspects of this code in more detail:
 
-The workers connect upstream to the ventilator, and downstream to the sink. This means you can add workers arbitrarily. If the workers bound to their endpoints, you would need (a) more endpoints and (b) to modify the ventilator and/or the sink each time you added a worker. We say that the ventilator and sink are stable parts of our architecture and the workers are dynamic parts of it.
+The workers connect upstream to the ventilator, and downstream to the sink. This means you can add workers arbitrarily. If the workers bound to their endpoints, you would need (a) more endpoints and (b) to modify the ventilator and/or the sink each time you added a worker. [但这个例子里面不需要这么做,所有的打工人都在一个endpoint上接受任务.] We say that the ventilator and sink are stable parts of our architecture and the workers are dynamic parts of it.
 
-We have to synchronize the start of the batch with all workers being up and running. This is a fairly common gotcha in ZeroMQ and there is no easy solution. The `zmq_connect` method takes a certain time. So when a set of workers connect to the ventilator, the first one to successfully connect will get a whole load of messages in that short time while the others are also connecting. If you don't synchronize the start of the batch somehow, the system won't run in parallel at all. Try removing the wait in the ventilator, and see what happens.
+We have to synchronize the start of the batch with all workers being up and running. This is a fairly common gotcha in ZeroMQ and there is no easy solution. The `zmq_connect` method takes a certain time. So when a set of workers connect to the ventilator, the first one to successfully connect will get a whole load of messages in that short time while the others are also connecting. [第一个人把活儿都干了.] If you don't synchronize the start of the batch somehow, the system won't run in parallel at all. Try removing the wait in the ventilator, and see what happens.
 
 The ventilator's PUSH socket distributes tasks to workers (assuming they are all connected before the batch starts going out) evenly. This is called load balancing and it's something we'll look at again in more detail.
 
@@ -837,13 +824,13 @@ Like a favorite dish, ZeroMQ sockets are easy to digest. Sockets have a life in 
 - Plugging sockets into the network topology by creating ZeroMQ connections to and from them (see `zmq_bind()`, `zmq_connect()`).
 - Using the sockets to carry data by writing and receiving messages on them (see `zmq_msg_send()`, `zmq_msg_recv()`).
 
-Note that sockets are always `void` pointers, and messages (which we'll come to very soon) are structures. So in C you pass sockets as-such, but you pass addresses of messages in all functions that work with messages, like `zmq_msg_send()` and `zmq_msg_recv()`. As a mnemonic, realize that "*in ZeroMQ, all your sockets are belong to us*", *but messages are things you actually own in your code*.
+Note that sockets are always `void` pointers, and messages (which we'll come to very soon) are structures. So in C you pass sockets as-such, but you pass addresses of messages in all functions that work with messages, like `zmq_msg_send()` and `zmq_msg_recv()`. As a mnemonic, realize that "*in ZeroMQ, all your sockets are belong to us*", *but messages are things you actually own in your code*. [用户对socket几乎没有控制，只能控制消息.]
 
 Creating, destroying, and configuring sockets works as you'd expect for any object. But remember that ZeroMQ is an asynchronous, elastic fabric. This has some impact on how we plug sockets into the network topology and how we use the sockets after that.
 
 #### Plugging Sockets into the Topology
 
-To create a connection between two nodes, you use `zmq_bind()` in one node and `zmq_connect()` in the other. As a general rule of thumb, the node that does `zmq_bind()` is a "server", sitting on a well-known network address, and the node which does `zmq_connect()` is a "client", with unknown or arbitrary network addresses. Thus we say that we "bind a socket to an endpoint" and "connect a socket to an endpoint", the endpoint being that well-known network address.
+*To create a connection between two nodes, you use `zmq_bind()` in one node and `zmq_connect()` in the other* [z]. As a general rule of thumb, the node that does `zmq_bind()` is a "server", sitting on a well-known network address, and the node which does `zmq_connect()` is a "client", with unknown or arbitrary network addresses. Thus we say that we "bind a socket to an endpoint" and "connect a socket to an endpoint", the endpoint being that well-known network address.
 
 ZeroMQ connections are somewhat different from classic TCP connections. The main notable differences are:
 
@@ -855,7 +842,7 @@ ZeroMQ connections are somewhat different from classic TCP connections. The main
 
 Many architectures follow some kind of client/server model, where the server is the component that is most static, and the clients are the components that are most dynamic, i.e., they come and go the most. There are sometimes issues of addressing: servers will be visible to clients, but not necessarily vice versa. So mostly it's obvious which node should be doing `zmq_bind()` (the server) and which should be doing `zmq_connect()` (the client). It also depends on the kind of sockets you're using, with some exceptions for unusual network architectures. We'll look at socket types later.
 
-Now, imagine we start the client before we start the server. In traditional networking, we get a big red Fail flag. But ZeroMQ lets us start and stop pieces arbitrarily. As soon as the client node does `zmq_connect()`, the connection exists and that node can start to write messages to the socket. At some stage (hopefully before messages queue up so much that they start to get discarded, or the client blocks), the server comes alive, does a zmq_bind(), and ZeroMQ starts to deliver messages.
+Now, imagine we start the client before we start the server. In traditional networking, we get a big red Fail flag. But ZeroMQ lets us start and stop pieces arbitrarily. [在配置好连接后，两个结点可以同时掉线或者在线.] As soon as the client node does `zmq_connect()`, the connection exists and that node can start to write messages to the socket. At some stage (hopefully before messages queue up so much that they start to get discarded, or the client blocks), the server comes alive, does a zmq_bind(), and ZeroMQ starts to deliver messages.
 
 A server node can bind to many endpoints (that is, a combination of protocol and address) and it can do this using a single socket. This means it will accept connections across different transports:
 
@@ -879,9 +866,9 @@ To send and receive messages you use the `zmq_msg_send()` and `zmq_msg_recv()` m
 
 ![](./pics/zmq/fig9.png)
 
-Let’s look at the main differences between TCP sockets and ZeroMQ sockets when it comes to working with data:
+Let's look at the main differences between TCP sockets and ZeroMQ sockets when it comes to working with data:
 
-- *ZeroMQ sockets carry messages, like UDP, rather than a stream of bytes as TCP does. A ZeroMQ message is length-specified binary data.* We’ll come to messages shortly; their design is optimized for performance and so a little tricky.
+- *ZeroMQ sockets carry messages, like UDP, rather than a stream of bytes as TCP does. A ZeroMQ message is length-specified binary data.* We'll come to messages shortly; their design is optimized for performance and so a little tricky.
 - *ZeroMQ sockets do their I/O in a background thread. This means that messages arrive in local input queues and are sent from local output queues, no matter what your application is busy doing.*
 - *ZeroMQ sockets have one-to-N routing behavior built-in, according to the socket type*.
 
@@ -889,9 +876,9 @@ Let’s look at the main differences between TCP sockets and ZeroMQ sockets when
 
 #### Unicast Transports
 
-ZeroMQ provides a set of unicast transports (inproc, ipc, and tcp) and multicast transports (epgm, pgm). Multicast is an advanced technique that we’ll come to later. Don’t even start using it unless you know that your fan-out ratios will make 1-to-N unicast impossible.
+ZeroMQ provides a set of unicast transports (inproc, ipc, and tcp) and multicast transports (epgm, pgm). Multicast is an advanced technique that we'll come to later. Don't even start using it unless you know that your fan-out ratios will make 1-to-N unicast impossible.
 
-*For most common cases, use tcp, which is a disconnected TCP transport.* It is elastic, portable, and fast enough for most cases. *We call this disconnected because ZeroMQ’s tcp transport doesn’t require that the endpoint exists before you connect to it.* Clients and servers can connect and bind at any time, can go and come back, and it remains transparent to applications.
+*For most common cases, use tcp, which is a disconnected TCP transport.* It is elastic, portable, and fast enough for most cases. *We call this disconnected because ZeroMQ's tcp transport doesn't require that the endpoint exists before you connect to it.* Clients and servers can connect and bind at any time, can go and come back, and it remains transparent to applications.
 
 *The inter-process ipc transport is disconnected, like tcp*. It has one limitation: it does not yet work on Windows. By convention we use endpoint names with an “.ipc” extension to avoid potential conflict with other file names. On UNIX systems, if you use ipc endpoints you need to create these with appropriate permissions otherwise they may not be shareable between processes running under different user IDs. You must also make sure all processes can access the files, e.g., by running in the same working directory.
 
@@ -899,7 +886,7 @@ The inter-thread transport, inproc, is a connected signaling transport. It is mu
 
 #### ZeroMQ is Not a Neutral Carrier
 
-A common question that newcomers to ZeroMQ ask (it’s one I’ve asked myself) is, “how do I write an XYZ server in ZeroMQ?” For example, “how do I write an HTTP server in ZeroMQ?” The implication is that if we use normal sockets to carry HTTP requests and responses, we should be able to use ZeroMQ sockets to do the same, only much faster and better.
+A common question that newcomers to ZeroMQ ask (it's one I've asked myself) is, “how do I write an XYZ server in ZeroMQ?” For example, “how do I write an HTTP server in ZeroMQ?” The implication is that if we use normal sockets to carry HTTP requests and responses, we should be able to use ZeroMQ sockets to do the same, only much faster and better.
 
 The answer used to be “this is not how it works”. ZeroMQ is not a neutral carrier: it imposes a framing on the transport protocols it uses. This framing is not compatible with existing protocols, which tend to use their own framing. For example, compare an HTTP request and a ZeroMQ request, both over TCP/IP.
 
@@ -913,7 +900,7 @@ Since v3.3, however, ZeroMQ has a socket option called `ZMQ_ROUTER_RAW` that let
 
 #### I/O Threads
 
-We said that ZeroMQ does I/O in a background thread. One I/O thread (for all sockets) is sufficient for all but the most extreme applications. *When you create a new context, it starts with one I/O thread*. The general rule of thumb is to *allow one I/O thread per gigabyte of data in or out per second*. To raise the number of I/O threads, use the zmq_ctx_set() call before creating any sockets:
+We said that ZeroMQ does I/O in a background thread. One I/O thread (for all sockets) is sufficient for all but the most extreme applications. *When you create a new context, it starts with one I/O thread*. The general rule of thumb is to *allow one I/O thread per gigabyte of data in or out per second*. To raise the number of I/O threads, use the `zmq_ctx_set()` call before creating any sockets:
 
 ```c
 int io_threads = 4;
@@ -922,17 +909,17 @@ zmq_ctx_set (context, ZMQ_IO_THREADS, io_threads);
 assert (zmq_ctx_get (context, ZMQ_IO_THREADS) == io_threads);
 ```
 
-We’ve seen that one socket can handle dozens, even thousands of connections at once. This has a fundamental impact on how you write applications. A traditional networked application has one process or one thread per remote connection, and that process or thread handles one socket. ZeroMQ lets you collapse this entire structure into a single process and then break it up as necessary for scaling.
+We've seen that one socket can handle dozens, even thousands of connections at once. This has a fundamental impact on how you write applications. A traditional networked application has one process or one thread per remote connection [现代生产程序应该以epoll为主吧], and that process or thread handles one socket. ZeroMQ lets you collapse this entire structure into a single process and then break it up as necessary for scaling.
 
-If you are using ZeroMQ for inter-thread communications only (i.e., a multithreaded application that does no external socket I/O) you can set the I/O threads to zero. It’s not a significant optimization though, more of a curiosity.
+If you are using ZeroMQ for inter-thread communications only (i.e., a multithreaded application that does no external socket I/O) you can set the I/O threads to zero. It's not a significant optimization though, more of a curiosity.
 
 ### Messaging Patterns
 
-Underneath the brown paper wrapping of ZeroMQ’s socket API lies the world of messaging patterns. If you have a background in enterprise messaging, or know UDP well, these will be vaguely familiar. But to most ZeroMQ newcomers, they are a surprise. We’re so used to the TCP paradigm where a socket maps one-to-one to another node.
+*Underneath the brown paper wrapping of ZeroMQ's socket API lies the world of messaging patterns.* If you have a background in enterprise messaging, or *know UDP well, these will be vaguely familiar*. But to most ZeroMQ newcomers, they are a surprise. We're so used to the TCP paradigm where a socket maps one-to-one to another node.
 
-Let’s recap briefly what ZeroMQ does for you. *It delivers blobs of data (messages) to nodes, quickly and efficiently. You can map nodes to threads, processes, or nodes. ZeroMQ gives your applications a single socket API to work with, no matter what the actual transport (like in-process, inter-process, TCP, or multicast). It automatically reconnects to peers as they come and go. It queues messages at both sender and receiver, as needed. It limits these queues to guard processes against running out of memory. It handles socket errors. It does all I/O in background threads. It uses lock-free techniques for talking between nodes, so there are never locks, waits, semaphores, or deadlocks.*
+Let's recap briefly what ZeroMQ does for you. **It delivers blobs of data (messages) to nodes, quickly and efficiently. You can map nodes to threads, processes, or nodes. ZeroMQ gives your applications a single socket API to work with, no matter what the actual transport (like in-process, inter-process, TCP, or multicast). It automatically reconnects to peers as they come and go. It queues messages at both sender and receiver, as needed. It limits these queues to guard processes against running out of memory. It handles socket errors. It does all I/O in background threads. It uses lock-free techniques for talking between nodes, so there are never locks, waits, semaphores, or deadlocks.**
 
-But cutting through that, *it routes and queues messages according to precise recipes called patterns.* It is these patterns that provide ZeroMQ’s intelligence. They encapsulate our hard-earned experience of the best ways to distribute data and work. ZeroMQ’s patterns are hard-coded but future versions may allow user-definable patterns.
+But cutting through that, **it routes and queues messages according to precise recipes called patterns.** It is these patterns that provide ZeroMQ's intelligence. They encapsulate our hard-earned experience of the best ways to distribute data and work. ZeroMQ's patterns are hard-coded but future versions may allow user-definable patterns.
 
 ZeroMQ patterns are implemented by pairs of sockets with matching types. In other words, to understand ZeroMQ patterns you need to understand socket types and how they work together. Mostly, this just takes study; there is little that is obvious at this level.
 
@@ -943,7 +930,7 @@ The built-in core ZeroMQ patterns are:
 - *Pipeline, which connects nodes in a fan-out/fan-in pattern that can have multiple steps and loops*. This is a parallel task distribution and collection pattern.
 - *Exclusive pair, which connects two sockets exclusively*. This is a pattern for connecting two threads in a process, not to be confused with “normal” pairs of sockets.
 
-We looked at the first three of these in *Chapter 1 - Basics*, and we’ll see the exclusive pair pattern later in this chapter. The `zmq_socket()` man page is fairly clear about the patterns – it’s worth reading several times until it starts to make sense. These are the socket combinations that are valid for a connect-bind pair (either side can bind):
+We looked at the first three of these in *Chapter 1 - Basics*, and we'll see the exclusive pair pattern later in this chapter. The `zmq_socket()` man page is fairly clear about the patterns – it's worth reading several times until it starts to make sense. These are the socket combinations that are valid for a connect-bind pair (either side can bind):
 
 - PUB and SUB
 - REQ and REP
@@ -955,19 +942,19 @@ We looked at the first three of these in *Chapter 1 - Basics*, and we’ll see t
 - PUSH and PULL
 - PAIR and PAIR
 
-You’ll also see references to XPUB and XSUB sockets, which we’ll come to later (they’re like raw versions of PUB and SUB). Any other combination will produce undocumented and unreliable results, and future versions of ZeroMQ will probably return errors if you try them. You can and will, of course, bridge other socket types via code, i.e., read from one socket type and write to another.
+You'll also see references to XPUB and XSUB sockets, which we'll come to later (they're like raw versions of PUB and SUB). Any other combination will produce undocumented and unreliable results, and future versions of ZeroMQ will probably return errors if you try them. You can and will, of course, bridge other socket types via code, i.e., read from one socket type and write to another.
 
 #### High-Level Messaging Patterns
 
 These four core patterns are cooked into ZeroMQ. They are part of the ZeroMQ API, implemented in the core C++ library, and are guaranteed to be available in all fine retail stores.
 
-On top of those, we add high-level messaging patterns. We build these high-level patterns on top of ZeroMQ and implement them in whatever language we’re using for our application. They are not part of the core library, do not come with the ZeroMQ package, and exist in their own space as part of the ZeroMQ community. For example the Majordomo pattern, which we explore in *Chapter 4 - Reliable Request-Reply Patterns*, sits in the GitHub Majordomo project in the ZeroMQ organization.
+On top of those, we add high-level messaging patterns. We build these high-level patterns on top of ZeroMQ and implement them in whatever language we're using for our application. They are not part of the core library, do not come with the ZeroMQ package, and exist in their own space as part of the ZeroMQ community. For example the Majordomo pattern, which we explore in *Chapter 4 - Reliable Request-Reply Patterns*, sits in the GitHub Majordomo project in the ZeroMQ organization.
 
 One of the things we aim to provide you with in this book are a set of such high-level patterns, both small (how to handle messages sanely) and large (how to make a reliable pub-sub architecture).
 
 #### Working with Messages
 
-The libzmq core library has in fact two APIs to send and receive messages. The `zmq_send()` and `zmq_recv()` methods that we’ve already seen and used are simple one-liners. We will use these often, but `zmq_recv()` is bad at dealing with arbitrary message sizes: it truncates messages to whatever buffer size you provide. So there’s a second API that works with zmq_msg_t structures, with a richer but more difficult API:
+The libzmq core library has in fact two APIs to send and receive messages. The `zmq_send()` and `zmq_recv()` methods that we've already seen and used are simple one-liners. We will use these often, but `zmq_recv()` is bad at dealing with arbitrary message sizes: it truncates messages to whatever buffer size you provide. So there's a second API that works with `zmq_msg_t` structures, with a richer but more difficult API:
 
 - Initialise a message: `zmq_msg_init()`, `zmq_msg_init_size()`, `zmq_msg_init_data()`.
 - Sending and receiving a message: `zmq_msg_send()`, `zmq_msg_recv()`.
@@ -976,7 +963,7 @@ The libzmq core library has in fact two APIs to send and receive messages. The `
 - Work with message properties: `zmq_msg_get()`, `zmq_msg_set()`.
 - Message manipulation: `zmq_msg_copy()`, `zmq_msg_move()`.
 
-On the wire, ZeroMQ messages are blobs of any size from zero upwards that fit in memory. You do your own serialization using protocol buffers, msgpack, JSON, or whatever else your applications need to speak. It’s wise to choose a data representation that is portable, but you can make your own decisions about trade-offs.
+On the wire, ZeroMQ messages are blobs of any size from zero upwards that fit in memory. You do your own serialization using protocol buffers, msgpack, JSON, or whatever else your applications need to speak. It's wise to choose a data representation that is portable, but you can make your own decisions about trade-offs.
 
 In memory, ZeroMQ messages are `zmq_msg_t` structures (or classes depending on your language). Here are the basic ground rules for using ZeroMQ messages in C:
 
@@ -987,19 +974,19 @@ In memory, ZeroMQ messages are `zmq_msg_t` structures (or classes depending on y
 - To access the message content, you use `zmq_msg_data()`. To know how much data the message contains, use `zmq_msg_size()`.
 - Do not use `zmq_msg_move()`, `zmq_msg_copy()`, or `zmq_msg_init_data()` unless you read the man pages and know precisely why you need these.
 - *After you pass a message to `zmq_msg_send()`, ØMQ will clear the message, i.e., set the size to zero. You cannot send the same message twice, and you cannot access the message data after sending it.*
-- These rules don’t apply if you use `zmq_send()` and `zmq_recv()`, to which you pass byte arrays, not message structures.
+- These rules don't apply if you use `zmq_send()` and `zmq_recv()`, to which you pass byte arrays, not message structures.
 
-If you want to send the same message more than once, and it’s sizable, create a second message, initialize it using `zmq_msg_init()`, and then use `zmq_msg_copy()` to create a copy of the first message. This does not copy the data but copies a reference. You can then send the message twice (or more, if you create more copies) and the message will only be finally destroyed when the last copy is sent or closed.
+If you want to send the same message more than once, and it's sizable, create a second message, initialize it using `zmq_msg_init()`, and then use `zmq_msg_copy()` to create a copy of the first message. This does not copy the data but copies a reference. You can then send the message twice (or more, if you create more copies) and the message will only be finally destroyed when the last copy is sent or closed.
 
-ZeroMQ also supports multipart messages, which let you send or receive a list of frames as a single on-the-wire message. This is widely used in real applications and we’ll look at that later in this chapter and in *Chapter 3 - Advanced Request-Reply Patterns*.
+ZeroMQ also supports multipart messages, which let you send or receive a list of frames as a single on-the-wire message. This is widely used in real applications and we'll look at that later in this chapter and in *Chapter 3 - Advanced Request-Reply Patterns*.
 
-*Frames (also called “message parts” in the ZeroMQ reference manual pages) are the basic wire format for ZeroMQ messages. A frame is a length-specified block of data.* The length can be zero upwards. If you’ve done any TCP programming you’ll appreciate why frames are a useful answer to the question “how much data am I supposed to read of this network socket now?”
+*Frames (also called “message parts” in the ZeroMQ reference manual pages) are the basic wire format for ZeroMQ messages. A frame is a length-specified block of data.* The length can be zero upwards. If you've done any TCP programming you'll appreciate why frames are a useful answer to the question “how much data am I supposed to read of this network socket now?”
 
-There is a wire-level protocol called ZMTP that defines how ZeroMQ reads and writes frames on a TCP connection. If you’re interested in how this works, the spec is quite short.
+There is a wire-level protocol called ZMTP that defines how ZeroMQ reads and writes frames on a TCP connection. If you're interested in how this works, the spec is quite short.
 
-Originally, a ZeroMQ message was one frame, like UDP. We later extended this with multipart messages, which are quite simply series of frames with a “more” bit set to one, followed by one with that bit set to zero. The ZeroMQ API then lets you write messages with a “more” flag and when you read messages, it lets you check if there’s “more”.
+Originally, a ZeroMQ message was one frame, like UDP. We later extended this with multipart messages, which are quite simply series of frames with a “more” bit set to one, followed by one with that bit set to zero. The ZeroMQ API then lets you write messages with a “more” flag and when you read messages, it lets you check if there's “more”.
 
-In the low-level ZeroMQ API and the reference manual, therefore, there’s some fuzziness about messages versus frames. So here’s a useful lexicon:
+In the low-level ZeroMQ API and the reference manual, therefore, there's some fuzziness about messages versus frames. So here's a useful lexicon:
 
 - A message can be one or more parts.
 - These parts are also called “frames”.
@@ -1013,11 +1000,11 @@ Some other things that are worth knowing about messages:
 - *ZeroMQ guarantees to deliver all the parts (one or more) for a message, or none of them.*
 - *ZeroMQ does not send the message (single or multipart) right away, but at some indeterminate later time*. A multipart message must therefore fit in memory.
 - *A message (single or multipart) must fit in memory. If you want to send files of arbitrary sizes, you should break them into pieces and send each piece as separate single-part messages. Using multipart data will not reduce memory consumption.*
-- You must call `zmq_msg_close()` when finished with a received message, in languages that don’t automatically destroy objects when a scope closes. You don’t call this method after sending a message.
+- You must call `zmq_msg_close()` when finished with a received message, in languages that don't automatically destroy objects when a scope closes. You don't call this method after sending a message.
 
 And to be repetitive, do not use `zmq_msg_init_data()` yet. This is a zero-copy method and is guaranteed to create trouble for you. There are far more important things to learn about ZeroMQ before you start to worry about shaving off microseconds.
 
-This rich API can be tiresome to work with. The methods are optimized for performance, not simplicity. If you start using these you will almost definitely get them wrong until you’ve read the man pages with some care. So one of the main jobs of a good language binding is to wrap this API up in classes that are easier to use.
+This rich API can be tiresome to work with. The methods are optimized for performance, not simplicity. If you start using these you will almost definitely get them wrong until you've read the man pages with some care. So one of the main jobs of a good language binding is to wrap this API up in classes that are easier to use.
 
 #### Handling Multiple Sockets
 
@@ -1029,7 +1016,7 @@ In all the examples so far, the main loop of most examples has been:
 
 What if we want to read from multiple endpoints at the same time? The simplest way is to connect one socket to all the endpoints and get ZeroMQ to do the fan-in for us. This is legal if the remote endpoints are in the same pattern, but it would be wrong to connect a PULL socket to a PUB endpoint.
 
-To actually read from multiple sockets all at once, use `zmq_poll()`. An even better way might be to wrap `zmq_poll()` in a framework that turns it into a nice event-driven reactor, but it’s significantly more work than we want to cover here.
+To actually read from multiple sockets all at once, use `zmq_poll()`. An even better way might be to wrap `zmq_poll()` in a framework that turns it into a nice event-driven reactor, but it's significantly more work than we want to cover here.
 
 ```c++
 //
@@ -1088,7 +1075,7 @@ The cost of this approach is some additional latency on the first message (the s
 
 You can treat the sockets fairly by reading first from one, then the second rather than prioritizing them as we did in this example.
 
-Now let’s see the same senseless little application done right, using `zmq_poll()`:
+Now let's see the same senseless little application done right, using `zmq_poll()`:
 
 ```c++
 //
@@ -1148,9 +1135,9 @@ typedef struct {
 
 #### Multipart Messages
 
-ZeroMQ lets us compose a message out of several frames, giving us a “multipart message”. *Realistic applications use multipart messages heavily, both for wrapping messages with address information and for simple serialization*. We’ll look at reply envelopes later.
+ZeroMQ lets us compose a message out of several frames, giving us a “multipart message”. *Realistic applications use multipart messages heavily, both for wrapping messages with address information and for simple serialization*. We'll look at reply envelopes later.
 
-What we’ll learn now is simply how to blindly and safely read and write multipart messages in any application (such as a proxy) that needs to forward messages without inspecting them.
+What we'll learn now is simply how to blindly and safely read and write multipart messages in any application (such as a proxy) that needs to forward messages without inspecting them.
 
 When you work with multipart messages, each part is a `zmq_msg` item. E.g., *if you are sending a message with five parts, you must construct, send, and destroy five `zmq_msg` items*. You can do this in advance (and store the `zmq_msg` items in an array or other structure), or as you send them, one-by-one.
 
@@ -1191,27 +1178,27 @@ Some things to know about multipart messages:
 
 #### Intermediaries and Proxies 
 
-ZeroMQ aims for decentralized intelligence, but that doesn’t mean your network is empty space in the middle. It’s filled with message-aware infrastructure and quite often, we build that infrastructure with ZeroMQ. The ZeroMQ plumbing can range from tiny pipes to full-blown service-oriented brokers. The messaging industry calls this intermediation, meaning that the stuff in the middle deals with either side. In ZeroMQ, we call these proxies, queues, forwarders, device, or brokers, depending on the context.
+ZeroMQ aims for decentralized intelligence, but that doesn't mean your network is empty space in the middle. It's filled with message-aware infrastructure and quite often, we build that infrastructure with ZeroMQ. The ZeroMQ plumbing can range from tiny pipes to full-blown service-oriented brokers. The messaging industry calls this intermediation, meaning that the stuff in the middle deals with either side. In ZeroMQ, we call these proxies, queues, forwarders, device, or brokers, depending on the context.
 
 This pattern is extremely common in the real world and is why our societies and economies are filled with intermediaries who have no other real function than to reduce the complexity and scaling costs of larger networks. Real-world intermediaries are typically called wholesalers, distributors, managers, and so on.
 
 #### The Dynamic Discovery Problem
 
-One of the problems you will hit as you design larger distributed architectures is discovery. That is, how do pieces know about each other? It’s especially difficult if pieces come and go, so we call this the “dynamic discovery problem”.
+One of the problems you will hit as you design larger distributed architectures is discovery. That is, how do pieces know about each other? It's especially difficult if pieces come and go, so we call this the “dynamic discovery problem”.
 
 There are several solutions to dynamic discovery. The simplest is to entirely avoid it by hard-coding (or configuring) the network architecture so discovery is done by hand. That is, when you add a new piece, you reconfigure the network to know about it.
 
 ![](./pics/zmq/fig12.png)
 
-In practice, this leads to increasingly fragile and unwieldy architectures. Let’s say you have one publisher and a hundred subscribers. You connect each subscriber to the publisher by configuring a publisher endpoint in each subscriber. That’s easy. Subscribers are dynamic; the publisher is static. *Now say you add more publishers. Suddenly, it’s not so easy any more.* If you continue to connect each subscriber to each publisher, the cost of avoiding dynamic discovery gets higher and higher.
+In practice, this leads to increasingly fragile and unwieldy architectures. Let's say you have one publisher and a hundred subscribers. You connect each subscriber to the publisher by configuring a publisher endpoint in each subscriber. That's easy. Subscribers are dynamic; the publisher is static. *Now say you add more publishers. Suddenly, it's not so easy any more.* If you continue to connect each subscriber to each publisher, the cost of avoiding dynamic discovery gets higher and higher.
 
 ![](./pics/zmq/fig13.png)
 
-There are quite a few answers to this, but the very simplest answer is to add an intermediary; that is, a static point in the network to which all other nodes connect. In classic messaging, this is the job of the message broker. ZeroMQ doesn’t come with a message broker as such, but it lets us build intermediaries quite easily.
+There are quite a few answers to this, but the very simplest answer is to add an intermediary; that is, a static point in the network to which all other nodes connect. In classic messaging, this is the job of the message broker. ZeroMQ doesn't come with a message broker as such, but it lets us build intermediaries quite easily.
 
-You might wonder, if all networks eventually get large enough to need intermediaries, why don’t we simply have a message broker in place for all applications? For beginners, it’s a fair compromise. Just always use a star topology, forget about performance, and things will usually work. However, message brokers are greedy things; in their role as central intermediaries, they become too complex, too stateful, and eventually a problem.
+You might wonder, if all networks eventually get large enough to need intermediaries, why don't we simply have a message broker in place for all applications? For beginners, it's a fair compromise. Just always use a star topology, forget about performance, and things will usually work. However, message brokers are greedy things; in their role as central intermediaries, they become too complex, too stateful, and eventually a problem.
 
-It’s better to think of intermediaries as simple stateless message switches. A good analogy is an HTTP proxy; it’s there, but doesn’t have any special role. *Adding a pub-sub proxy solves the dynamic discovery problem in our example*. We set the proxy in the “middle” of the network. The proxy opens an XSUB socket, an XPUB socket, and binds each to well-known IP addresses and ports. Then, all other processes connect to the proxy, instead of to each other. It becomes trivial to add more subscribers or publishers.
+It's better to think of intermediaries as simple stateless message switches. A good analogy is an HTTP proxy; it's there, but doesn't have any special role. *Adding a pub-sub proxy solves the dynamic discovery problem in our example*. We set the proxy in the “middle” of the network. The proxy opens an XSUB socket, an XPUB socket, and binds each to well-known IP addresses and ports. Then, all other processes connect to the proxy, instead of to each other. It becomes trivial to add more subscribers or publishers.
 
 ![](./pics/zmq/fig14.png)
 
@@ -1223,21 +1210,21 @@ In the Hello World client/server application, we have one client that talks to o
 
 ![](./pics/zmq/fig15.png)
 
-There are two ways to connect multiple clients to multiple servers. The brute force way is to connect each client socket to multiple service endpoints. One client socket can connect to multiple service sockets, and the REQ socket will then distribute requests among these services. Let’s say you connect a client socket to three service endpoints; A, B, and C. The client makes requests R1, R2, R3, R4. R1 and R4 go to service A, R2 goes to B, and R3 goes to service C.
+There are two ways to connect multiple clients to multiple servers. The brute force way is to connect each client socket to multiple service endpoints. One client socket can connect to multiple service sockets, and the REQ socket will then distribute requests among these services. Let's say you connect a client socket to three service endpoints; A, B, and C. The client makes requests R1, R2, R3, R4. R1 and R4 go to service A, R2 goes to B, and R3 goes to service C.
 
 This design lets you add more clients cheaply. You can also add more services. Each client will distribute its requests to the services. But each client has to know the service topology. If you have 100 clients and then you decide to add three more services, you need to reconfigure and restart 100 clients in order for the clients to know about the three new services.
 
-That’s clearly not the kind of thing we want to be doing at 3 a.m. when our supercomputing cluster has run out of resources and we desperately need to add a couple of hundred of new service nodes. Too many static pieces are like liquid concrete: knowledge is distributed and the more static pieces you have, the more effort it is to change the topology. What we want is something sitting in between clients and services that centralizes all knowledge of the topology. Ideally, we should be able to add and remove services or clients at any time without touching any other part of the topology.
+That's clearly not the kind of thing we want to be doing at 3 a.m. when our supercomputing cluster has run out of resources and we desperately need to add a couple of hundred of new service nodes. Too many static pieces are like liquid concrete: knowledge is distributed and the more static pieces you have, the more effort it is to change the topology. What we want is something sitting in between clients and services that centralizes all knowledge of the topology. Ideally, we should be able to add and remove services or clients at any time without touching any other part of the topology.
 
-*So we’ll write a little message queuing broker that gives us this flexibility. The broker binds to two endpoints, a frontend for clients and a backend for services. It then uses `zmq_poll()` to monitor these two sockets for activity and when it has some, it shuttles messages between its two sockets.* It doesn’t actually manage any queues explicitly–ZeroMQ does that automatically on each socket.
+*So we'll write a little message queuing broker that gives us this flexibility. The broker binds to two endpoints, a frontend for clients and a backend for services. It then uses `zmq_poll()` to monitor these two sockets for activity and when it has some, it shuttles messages between its two sockets.* It doesn't actually manage any queues explicitly–ZeroMQ does that automatically on each socket.
 
 When you use REQ to talk to REP, you get a strictly synchronous request-reply dialog. The client sends a request. The service reads the request and sends a reply. The client then reads the reply. If either the client or the service try to do anything else (e.g., sending two requests in a row without waiting for a response), they will get an error.
 
-But our broker has to be nonblocking. Obviously, we can use `zmq_poll()` to wait for activity on either socket, but we can’t use REP and REQ.
+But our broker has to be nonblocking. Obviously, we can use `zmq_poll()` to wait for activity on either socket, but we can't use REP and REQ.
 
 ![](./pics/zmq/fig16.png)
 
-Luckily, there are two sockets called DEALER and ROUTER that let you do nonblocking request-response. You’ll see in *Chapter 3 - Advanced Request-Reply Patterns* how DEALER and ROUTER sockets let you build all kinds of asynchronous request-reply flows. For now, we’re just going to see how DEALER and ROUTER let us extend REQ-REP across an intermediary, that is, our little broker.
+Luckily, there are two sockets called DEALER and ROUTER that let you do nonblocking request-response. You'll see in *Chapter 3 - Advanced Request-Reply Patterns* how DEALER and ROUTER sockets let you build all kinds of asynchronous request-reply flows. For now, we're just going to see how DEALER and ROUTER let us extend REQ-REP across an intermediary, that is, our little broker.
 
 In this simple extended request-reply pattern, REQ talks to ROUTER and DEALER talks to REP. In between the DEALER and ROUTER, we have to have code (like our broker) that pulls messages off the one socket and shoves them onto the other.
 
@@ -1368,17 +1355,17 @@ int main (int argc, char *argv[])
 
 ![](./pics/zmq/fig17.png)
 
-Using a request-reply broker makes your client/server architectures easier to scale because clients don’t see workers, and workers don’t see clients. The only static node is the broker in the middle.
+Using a request-reply broker makes your client/server architectures easier to scale because clients don't see workers, and workers don't see clients. The only static node is the broker in the middle.
 
-#### ZeroMQ’s Built-In Proxy Function
+#### ZeroMQ's Built-In Proxy Function
 
-It turns out that the core loop in the previous section’s rrbroker is very useful, and reusable. It lets us build pub-sub forwarders and shared queues and other little intermediaries with very little effort. ZeroMQ wraps this up in a single method, zmq_proxy():
+It turns out that the core loop in the previous section's rrbroker is very useful, and reusable. It lets us build pub-sub forwarders and shared queues and other little intermediaries with very little effort. ZeroMQ wraps this up in a single method, zmq_proxy():
 
 ```c++
 zmq_proxy (frontend, backend, capture);
 ```
 
-The two (or three sockets, if we want to capture data) must be properly connected, bound, and configured. When we call the zmq_proxy method, it’s exactly like starting the main loop of rrbroker. Let’s rewrite the request-reply broker to call zmq_proxy, and re-badge this as an expensive-sounding “message queue” (people have charged houses for code that did less):
+The two (or three sockets, if we want to capture data) must be properly connected, bound, and configured. When we call the zmq_proxy method, it's exactly like starting the main loop of rrbroker. Let's rewrite the request-reply broker to call zmq_proxy, and re-badge this as an expensive-sounding “message queue” (people have charged houses for code that did less):
 
 ```c++
 //
@@ -1408,7 +1395,7 @@ int main (int argc, char *argv[])
 }
 ```
 
-If you’re like most ZeroMQ users, at this stage your mind is starting to think, “What kind of evil stuff can I do if I plug random socket types into the proxy?” The short answer is: try it and work out what is happening. In practice, you would usually stick to ROUTER/DEALER, XSUB/XPUB, or PULL/PUSH.
+If you're like most ZeroMQ users, at this stage your mind is starting to think, “What kind of evil stuff can I do if I plug random socket types into the proxy?” The short answer is: try it and work out what is happening. In practice, you would usually stick to ROUTER/DEALER, XSUB/XPUB, or PULL/PUSH.
 
 #### Transport Bridging
 
@@ -1418,7 +1405,7 @@ A frequent request from ZeroMQ users is, “How do I connect my ZeroMQ network w
 
 The simple answer is to build a bridge. A bridge is a small application that speaks one protocol at one socket, and converts to/from a second protocol at another socket. A protocol interpreter, if you like. A common bridging problem in ZeroMQ is to bridge two transports or networks.
 
-As an example, we’re going to write a little proxy that sits in between a publisher and a set of subscribers, bridging two networks. The frontend socket (SUB) faces the internal network where the weather server is sitting, and the backend (PUB) faces subscribers on the external network. It subscribes to the weather service on the frontend socket, and republishes its data on the backend socket.
+As an example, we're going to write a little proxy that sits in between a publisher and a set of subscribers, bridging two networks. The frontend socket (SUB) faces the internal network where the weather server is sitting, and the backend (PUB) faces subscribers on the external network. It subscribes to the weather service on the frontend socket, and republishes its data on the backend socket.
 
 ```c++
 //
@@ -1465,13 +1452,13 @@ It looks very similar to the earlier proxy example, but the key part is that the
 
 ### Handling Errors and ETERM
 
-ZeroMQ’s error handling philosophy is a mix of fail-fast and resilience. Processes, we believe, should be as vulnerable as possible to internal errors, and as robust as possible against external attacks and errors. To give an analogy, a living cell will self-destruct if it detects a single internal error, yet it will resist attack from the outside by all means possible.
+ZeroMQ's error handling philosophy is a mix of fail-fast and resilience. Processes, we believe, should be as vulnerable as possible to internal errors, and as robust as possible against external attacks and errors. To give an analogy, a living cell will self-destruct if it detects a single internal error, yet it will resist attack from the outside by all means possible.
 
 Assertions, which pepper the ZeroMQ code, are absolutely vital to robust code; they just have to be on the right side of the cellular wall. And there should be such a wall. If it is unclear whether a fault is internal or external, that is a design flaw to be fixed. In C/C++, assertions stop the application immediately with an error. In other languages, you may get exceptions or halts.
 
 When ZeroMQ detects an external fault it returns an error to the calling code. In some rare cases, it drops messages silently if there is no obvious strategy for recovering from the error.
 
-In most of the C examples we’ve seen so far there’s been no error handling. Real code should do error handling on every single ZeroMQ call. If you’re using a language binding other than C, the binding may handle errors for you. In C, you do need to do this yourself. There are some simple rules, starting with POSIX conventions:
+In most of the C examples we've seen so far there's been no error handling. Real code should do error handling on every single ZeroMQ call. If you're using a language binding other than C, the binding may handle errors for you. In C, you do need to do this yourself. There are some simple rules, starting with POSIX conventions:
 
 - Methods that create objects return NULL if they fail.
 - Methods that process data may return the number of bytes processed, or -1 on an error or failure.
@@ -1498,13 +1485,13 @@ There are two main exceptional conditions that you should handle as nonfatal:
 - When your code receives a message with the ZMQ_DONTWAIT option and there is no waiting data, ZeroMQ will return -1 and set errno to EAGAIN.
 - When one thread calls zmq_ctx_destroy(), and other threads are still doing blocking work, the zmq_ctx_destroy() call closes the context and all blocking calls exit with -1, and errno set to ETERM.
 
-In C/C++, asserts can be removed entirely in optimized code, so don’t make the mistake of wrapping the whole ZeroMQ call in an assert(). It looks neat; then the optimizer removes all the asserts and the calls you want to make, and your application breaks in impressive ways.
+In C/C++, asserts can be removed entirely in optimized code, so don't make the mistake of wrapping the whole ZeroMQ call in an assert(). It looks neat; then the optimizer removes all the asserts and the calls you want to make, and your application breaks in impressive ways.
 
 ![](./pics/zmq/fig19.png)
 
-Let’s see how to shut down a process cleanly. We’ll take the parallel pipeline example from the previous section. If we’ve started a whole lot of workers in the background, we now want to kill them when the batch is finished. Let’s do this by sending a kill message to the workers. The best place to do this is the sink because it really knows when the batch is done.
+Let's see how to shut down a process cleanly. We'll take the parallel pipeline example from the previous section. If we've started a whole lot of workers in the background, we now want to kill them when the batch is finished. Let's do this by sending a kill message to the workers. The best place to do this is the sink because it really knows when the batch is done.
 
-How do we connect the sink to the workers? The PUSH/PULL sockets are one-way only. We could switch to another socket type, or we could mix multiple socket flows. Let’s try the latter: using a pub-sub model to send kill messages to the workers:
+How do we connect the sink to the workers? The PUSH/PULL sockets are one-way only. We could switch to another socket type, or we could mix multiple socket flows. Let's try the latter: using a pub-sub model to send kill messages to the workers:
 
 - The sink creates a PUB socket on a new endpoint.
 - Workers connect their input socket to this endpoint.
@@ -1512,7 +1499,7 @@ How do we connect the sink to the workers? The PUSH/PULL sockets are one-way onl
 - When a worker detects this kill message, it exits.
 
 
-It doesn’t take much new code in the sink:
+It doesn't take much new code in the sink:
 
 ```c++
 void *controller = zmq_socket (context, ZMQ_PUB);
@@ -1592,7 +1579,7 @@ int main (int argc, char *argv[])
 }
 ```
 
-Here is the modified sink application. When it’s finished collecting results, it broadcasts a kill message to all workers:
+Here is the modified sink application. When it's finished collecting results, it broadcasts a kill message to all workers:
 
 ```c++
 //
@@ -1658,7 +1645,7 @@ int main (int argc, char *argv[])
 
 ### Handling Interrupt Signals
 
-Realistic applications need to shut down cleanly when interrupted with Ctrl-C or another signal such as SIGTERM. By default, these simply kill the process, meaning messages won’t be flushed, files won’t be closed cleanly, and so on.
+Realistic applications need to shut down cleanly when interrupted with Ctrl-C or another signal such as SIGTERM. By default, these simply kill the process, meaning messages won't be flushed, files won't be closed cleanly, and so on.
 
 Here is how we handle a signal in various languages:
 
@@ -1731,11 +1718,11 @@ while (!s_interrupted) {
 zmq_close (client);
 ```
 
-If you call s_catch_signals() and don’t test for interrupts, then your application will become immune to Ctrl-C and SIGTERM, which may be useful, but is usually not.
+If you call s_catch_signals() and don't test for interrupts, then your application will become immune to Ctrl-C and SIGTERM, which may be useful, but is usually not.
 
 ### Detecting Memory Leaks
 
-Any long-running application has to manage memory correctly, or eventually it’ll use up all available memory and crash. If you use a language that handles this automatically for you, congratulations. If you program in C or C++ or any other language where you’re responsible for memory management, here’s a short tutorial on using valgrind, which among other things will report on any leaks your programs have.
+Any long-running application has to manage memory correctly, or eventually it'll use up all available memory and crash. If you use a language that handles this automatically for you, congratulations. If you program in C or C++ or any other language where you're responsible for memory management, here's a short tutorial on using valgrind, which among other things will report on any leaks your programs have.
 
 To install valgrind, e.g., on Ubuntu or Debian, issue this command:
 
@@ -1762,8 +1749,8 @@ By default, ZeroMQ will cause valgrind to complain a lot. To remove these warnin
 }
 ```
 
-- Fix your applications to exit cleanly after Ctrl-C. For any application that exits by itself, that’s not needed, but for long-running applications, this is essential, otherwise valgrind will complain about all currently allocated memory.
-- Build your application with -DDEBUG if it’s not your default setting. That ensures valgrind can tell you exactly where memory is being leaked.
+- Fix your applications to exit cleanly after Ctrl-C. For any application that exits by itself, that's not needed, but for long-running applications, this is essential, otherwise valgrind will complain about all currently allocated memory.
+- Build your application with -DDEBUG if it's not your default setting. That ensures valgrind can tell you exactly where memory is being leaked.
 - Finally, run valgrind thus:
 
 ```
@@ -1778,17 +1765,17 @@ And after fixing any errors it reported, you should get the pleasant message:
 
 ### Multithreading with ZeroMQ
 
-ZeroMQ is perhaps the nicest way ever to write multithreaded (MT) applications. Whereas ZeroMQ sockets require some readjustment if you are used to traditional sockets, ZeroMQ multithreading will take everything you know about writing MT applications, throw it into a heap in the garden, pour gasoline over it, and set it alight. It’s a rare book that deserves burning, but most books on concurrent programming do.
+ZeroMQ is perhaps the nicest way ever to write multithreaded (MT) applications. Whereas ZeroMQ sockets require some readjustment if you are used to traditional sockets, ZeroMQ multithreading will take everything you know about writing MT applications, throw it into a heap in the garden, pour gasoline over it, and set it alight. It's a rare book that deserves burning, but most books on concurrent programming do.
 
-To make utterly perfect MT programs (and I mean that literally), we don’t need mutexes, locks, or any other form of inter-thread communication except messages sent across ZeroMQ sockets.
+To make utterly perfect MT programs (and I mean that literally), we don't need mutexes, locks, or any other form of inter-thread communication except messages sent across ZeroMQ sockets.
 
-By “perfect MT programs”, I mean code that’s easy to write and understand, that works with the same design approach in any programming language, and on any operating system, and that scales across any number of CPUs with zero wait states and no point of diminishing returns.
+By “perfect MT programs”, I mean code that's easy to write and understand, that works with the same design approach in any programming language, and on any operating system, and that scales across any number of CPUs with zero wait states and no point of diminishing returns.
 
-If you’ve spent years learning tricks to make your MT code work at all, let alone rapidly, with locks and semaphores and critical sections, you will be disgusted when you realize it was all for nothing. If there’s one lesson we’ve learned from 30+ years of concurrent programming, it is: just don’t share state. It’s like two drunkards trying to share a beer. It doesn’t matter if they’re good buddies. Sooner or later, they’re going to get into a fight. And the more drunkards you add to the table, the more they fight each other over the beer. The tragic majority of MT applications look like drunken bar fights.
+If you've spent years learning tricks to make your MT code work at all, let alone rapidly, with locks and semaphores and critical sections, you will be disgusted when you realize it was all for nothing. If there's one lesson we've learned from 30+ years of concurrent programming, it is: just don't share state. It's like two drunkards trying to share a beer. It doesn't matter if they're good buddies. Sooner or later, they're going to get into a fight. And the more drunkards you add to the table, the more they fight each other over the beer. The tragic majority of MT applications look like drunken bar fights.
 
-The list of weird problems that you need to fight as you write classic shared-state MT code would be hilarious if it didn’t translate directly into stress and risk, as code that seems to work suddenly fails under pressure. A large firm with world-beating experience in buggy code released its list of “11 Likely Problems In Your Multithreaded Code”, which covers forgotten synchronization, incorrect granularity, read and write tearing, lock-free reordering, lock convoys, two-step dance, and priority inversion.
+The list of weird problems that you need to fight as you write classic shared-state MT code would be hilarious if it didn't translate directly into stress and risk, as code that seems to work suddenly fails under pressure. A large firm with world-beating experience in buggy code released its list of “11 Likely Problems In Your Multithreaded Code”, which covers forgotten synchronization, incorrect granularity, read and write tearing, lock-free reordering, lock convoys, two-step dance, and priority inversion.
 
-Yeah, we counted seven problems, not eleven. That’s not the point though. The point is, do you really want that code running the power grid or stock market to start getting two-step lock convoys at 3 p.m. on a busy Thursday? Who cares what the terms actually mean? This is not what turned us on to programming, fighting ever more complex side effects with ever more complex hacks.
+Yeah, we counted seven problems, not eleven. That's not the point though. The point is, do you really want that code running the power grid or stock market to start getting two-step lock convoys at 3 p.m. on a busy Thursday? Who cares what the terms actually mean? This is not what turned us on to programming, fighting ever more complex side effects with ever more complex hacks.
 
 Some widely used models, despite being the basis for entire industries, are fundamentally broken, and shared state concurrency is one of them. Code that wants to scale without limit does it like the Internet does, by sending messages and sharing nothing except a common contempt for broken programming models.
 
@@ -1800,17 +1787,17 @@ You should follow some rules to write happy multithreaded code with ZeroMQ:
 - Use attached threads to create structure within your application, and connect these to their parent threads using PAIR sockets over inproc. The pattern is: bind parent socket, then create child thread which connects its socket.
 - Use detached threads to simulate independent tasks, with their own contexts. Connect these over tcp. Later you can move these to stand-alone processes without changing the code significantly.
 - All interaction between threads happens as ZeroMQ messages, which you can define more or less formally.
-- Don’t share ZeroMQ sockets between threads. ZeroMQ sockets are not threadsafe. Technically it’s possible to migrate a socket from one thread to another but it demands skill. The only place where it’s remotely sane to share sockets between threads are in language bindings that need to do magic like garbage collection on sockets.
+- Don't share ZeroMQ sockets between threads. ZeroMQ sockets are not threadsafe. Technically it's possible to migrate a socket from one thread to another but it demands skill. The only place where it's remotely sane to share sockets between threads are in language bindings that need to do magic like garbage collection on sockets.
 
 If you need to start more than one proxy in an application, for example, you will want to run each in their own thread. It is easy to make the error of creating the proxy frontend and backend sockets in one thread, and then passing the sockets to the proxy in another thread. This may appear to work at first but will fail randomly in real use. Remember: Do not use or close sockets except in the thread that created them.
 
 If you follow these rules, you can quite easily build elegant multithreaded applications, and later split off threads into separate processes as you need to. Application logic can sit in threads, processes, or nodes: whatever your scale needs.
 
-ZeroMQ uses native OS threads rather than virtual “green” threads. The advantage is that you don’t need to learn any new threading API, and that ZeroMQ threads map cleanly to your operating system. You can use standard tools like Intel’s ThreadChecker to see what your application is doing. The disadvantages are that native threading APIs are not always portable, and that if you have a huge number of threads (in the thousands), some operating systems will get stressed.
+ZeroMQ uses native OS threads rather than virtual “green” threads. The advantage is that you don't need to learn any new threading API, and that ZeroMQ threads map cleanly to your operating system. You can use standard tools like Intel's ThreadChecker to see what your application is doing. The disadvantages are that native threading APIs are not always portable, and that if you have a huge number of threads (in the thousands), some operating systems will get stressed.
 
-Let’s see how this works in practice. We’ll turn our old Hello World server into something more capable. The original server ran in a single thread. If the work per request is low, that’s fine: one ØMQ thread can run at full speed on a CPU core, with no waits, doing an awful lot of work. But realistic servers have to do nontrivial work per request. A single core may not be enough when 10,000 clients hit the server all at once. So a realistic server will start multiple worker threads. It then accepts requests as fast as it can and distributes these to its worker threads. The worker threads grind through the work and eventually send their replies back.
+Let's see how this works in practice. We'll turn our old Hello World server into something more capable. The original server ran in a single thread. If the work per request is low, that's fine: one ØMQ thread can run at full speed on a CPU core, with no waits, doing an awful lot of work. But realistic servers have to do nontrivial work per request. A single core may not be enough when 10,000 clients hit the server all at once. So a realistic server will start multiple worker threads. It then accepts requests as fast as it can and distributes these to its worker threads. The worker threads grind through the work and eventually send their replies back.
 
-You can, of course, do all this using a proxy broker and external worker processes, but often it’s easier to start one process that gobbles up sixteen cores than sixteen processes, each gobbling up one core. Further, running workers as threads will cut out a network hop, latency, and network traffic.
+You can, of course, do all this using a proxy broker and external worker processes, but often it's easier to start one process that gobbles up sixteen cores than sixteen processes, each gobbling up one core. Further, running workers as threads will cut out a network hop, latency, and network traffic.
 
 The MT version of the Hello World service basically collapses the broker and workers into a single process:
 
@@ -1882,15 +1869,15 @@ All the code should be recognizable to you by now. How it works:
 - The server creates a DEALER socket to talk to the workers and binds this to its internal interface (over inproc).
 - The server starts a proxy that connects the two sockets. The proxy pulls incoming requests fairly from all clients, and distributes those out to workers. It also routes replies back to their origin.
 
-Note that creating threads is not portable in most programming languages. The POSIX library is pthreads, but on Windows you have to use a different API. In our example, the pthread_create call starts up a new thread running the worker_routine function we defined. We’ll see in Chapter 3 - Advanced Request-Reply Patterns how to wrap this in a portable API.
+Note that creating threads is not portable in most programming languages. The POSIX library is pthreads, but on Windows you have to use a different API. In our example, the pthread_create call starts up a new thread running the worker_routine function we defined. We'll see in Chapter 3 - Advanced Request-Reply Patterns how to wrap this in a portable API.
 
 Here the “work” is just a one-second pause. We could do anything in the workers, including talking to other nodes. This is what the MT server looks like in terms of ØMQ sockets and nodes. Note how the request-reply chain is REQ-ROUTER-queue-DEALER-REP.
 
 ### Signaling Between Threads (PAIR Sockets)
 
-When you start making multithreaded applications with ZeroMQ, you’ll encounter the question of how to coordinate your threads. Though you might be tempted to insert “sleep” statements, or use multithreading techniques such as semaphores or mutexes, the only mechanism that you should use are ZeroMQ messages. Remember the story of The Drunkards and The Beer Bottle.
+When you start making multithreaded applications with ZeroMQ, you'll encounter the question of how to coordinate your threads. Though you might be tempted to insert “sleep” statements, or use multithreading techniques such as semaphores or mutexes, the only mechanism that you should use are ZeroMQ messages. Remember the story of The Drunkards and The Beer Bottle.
 
-Let’s make three threads that signal each other when they are ready. In this example, we use PAIR sockets over the inproc transport:
+Let's make three threads that signal each other when they are ready. In this example, we use PAIR sockets over the inproc transport:
 
 ```c++
 //
@@ -1967,33 +1954,33 @@ This is a classic pattern for multithreading with ZeroMQ:
 
 1. Two threads communicate over inproc, using a shared context.
 2. The parent thread creates one socket, binds it to an inproc:@<*>@ endpoint, and *then// starts the child thread, passing the context to it.
-3. The child thread creates the second socket, connects it to that inproc:@<*>@ endpoint, and *then// signals to the parent thread that it’s ready.
+3. The child thread creates the second socket, connects it to that inproc:@<*>@ endpoint, and *then// signals to the parent thread that it's ready.
 
 Note that multithreading code using this pattern is not scalable out to processes. If you use inproc and socket pairs, you are building a tightly-bound application, i.e., one where your threads are structurally interdependent. Do this when low latency is really vital. The other design pattern is a loosely bound application, where threads have their own context and communicate over ipc or tcp. You can easily break loosely bound threads into separate processes.
 
-This is the first time we’ve shown an example using PAIR sockets. Why use PAIR? Other socket combinations might seem to work, but they all have side effects that could interfere with signaling:
+This is the first time we've shown an example using PAIR sockets. Why use PAIR? Other socket combinations might seem to work, but they all have side effects that could interfere with signaling:
 
-- You can use PUSH for the sender and PULL for the receiver. This looks simple and will work, but remember that PUSH will distribute messages to all available receivers. If you by accident start two receivers (e.g., you already have one running and you start a second), you’ll “lose” half of your signals. PAIR has the advantage of refusing more than one connection; the pair is exclusive.
-- You can use DEALER for the sender and ROUTER for the receiver. ROUTER, however, wraps your message in an “envelope”, meaning your zero-size signal turns into a multipart message. If you don’t care about the data and treat anything as a valid signal, and if you don’t read more than once from the socket, that won’t matter. If, however, you decide to send real data, you will suddenly find ROUTER providing you with “wrong” messages. DEALER also distributes outgoing messages, giving the same risk as PUSH.
+- You can use PUSH for the sender and PULL for the receiver. This looks simple and will work, but remember that PUSH will distribute messages to all available receivers. If you by accident start two receivers (e.g., you already have one running and you start a second), you'll “lose” half of your signals. PAIR has the advantage of refusing more than one connection; the pair is exclusive.
+- You can use DEALER for the sender and ROUTER for the receiver. ROUTER, however, wraps your message in an “envelope”, meaning your zero-size signal turns into a multipart message. If you don't care about the data and treat anything as a valid signal, and if you don't read more than once from the socket, that won't matter. If, however, you decide to send real data, you will suddenly find ROUTER providing you with “wrong” messages. DEALER also distributes outgoing messages, giving the same risk as PUSH.
 - You can use PUB for the sender and SUB for the receiver. This will correctly deliver your messages exactly as you sent them and PUB does not distribute as PUSH or DEALER do. However, you need to configure the subscriber with an empty subscription, which is annoying.
 
 For these reasons, PAIR makes the best choice for coordination between pairs of threads.
 
 ### Node Coordination
 
-When you want to coordinate a set of nodes on a network, PAIR sockets won’t work well any more. This is one of the few areas where the strategies for threads and nodes are different. Principally, nodes come and go whereas threads are usually static. PAIR sockets do not automatically reconnect if the remote node goes away and comes back.
+When you want to coordinate a set of nodes on a network, PAIR sockets won't work well any more. This is one of the few areas where the strategies for threads and nodes are different. Principally, nodes come and go whereas threads are usually static. PAIR sockets do not automatically reconnect if the remote node goes away and comes back.
 
 ![](./pics/zmq/fig22.png)
 
-The second significant difference between threads and nodes is that you typically have a fixed number of threads but a more variable number of nodes. Let’s take one of our earlier scenarios (the weather server and clients) and use node coordination to ensure that subscribers don’t lose data when starting up.
+The second significant difference between threads and nodes is that you typically have a fixed number of threads but a more variable number of nodes. Let's take one of our earlier scenarios (the weather server and clients) and use node coordination to ensure that subscribers don't lose data when starting up.
 
 This is how the application will work:
 
 - The publisher knows in advance how many subscribers it expects. This is just a magic number it gets from somewhere.
-- The publisher starts up and waits for all subscribers to connect. This is the node coordination part. Each subscriber subscribes and then tells the publisher it’s ready via another socket.
+- The publisher starts up and waits for all subscribers to connect. This is the node coordination part. Each subscriber subscribes and then tells the publisher it's ready via another socket.
 - When the publisher has all subscribers connected, it starts to publish data.
 
-In this case, we’ll use a REQ-REP socket flow to synchronize subscribers and publisher. Here is the publisher:
+In this case, we'll use a REQ-REP socket flow to synchronize subscribers and publisher. Here is the publisher:
 
 ```c++
 //
@@ -2114,7 +2101,7 @@ Received 1000000 updates
 Received 1000000 updates
 ```
 
-We can’t assume that the SUB connect will be finished by the time the REQ/REP dialog is complete. There are no guarantees that outbound connects will finish in any order whatsoever, if you’re using any transport except inproc. So, the example does a brute force sleep of one second between subscribing, and sending the REQ/REP synchronization.
+We can't assume that the SUB connect will be finished by the time the REQ/REP dialog is complete. There are no guarantees that outbound connects will finish in any order whatsoever, if you're using any transport except inproc. So, the example does a brute force sleep of one second between subscribing, and sending the REQ/REP synchronization.
 
 A more robust model could be:
 
@@ -2124,7 +2111,7 @@ A more robust model could be:
 
 ### Zero-Copy
 
-ZeroMQ’s message API lets you send and receive messages directly from and to application buffers without copying data. We call this zero-copy, and it can improve performance in some applications.
+ZeroMQ's message API lets you send and receive messages directly from and to application buffers without copying data. We call this zero-copy, and it can improve performance in some applications.
 
 You should think about using zero-copy in the specific case where you are sending large blocks of memory (thousands of bytes), at a high frequency. For short messages, or for lower message rates, using zero-copy will make your code messier and more complex with no measurable benefit. Like all optimizations, use this when you know it helps, and measure before and after.
 
@@ -2140,19 +2127,19 @@ zmq_msg_init_data (&message, buffer, 1000, my_free, NULL);
 zmq_msg_send (&message, socket, 0);
 ```
 
-Note that you don’t call zmq_msg_close() after sending a message–libzmq will do this automatically when it’s actually done sending the message.
+Note that you don't call zmq_msg_close() after sending a message–libzmq will do this automatically when it's actually done sending the message.
 
 There is no way to do zero-copy on receive: ZeroMQ delivers you a buffer that you can store as long as you wish, but it will not write data directly into application buffers.
 
-On writing, ZeroMQ’s multipart messages work nicely together with zero-copy. In traditional messaging, you need to marshal different buffers together into one buffer that you can send. That means copying data. With ZeroMQ, you can send multiple buffers coming from different sources as individual message frames. Send each field as a length-delimited frame. To the application, it looks like a series of send and receive calls. But internally, the multiple parts get written to the network and read back with single system calls, so it’s very efficient.
+On writing, ZeroMQ's multipart messages work nicely together with zero-copy. In traditional messaging, you need to marshal different buffers together into one buffer that you can send. That means copying data. With ZeroMQ, you can send multiple buffers coming from different sources as individual message frames. Send each field as a length-delimited frame. To the application, it looks like a series of send and receive calls. But internally, the multiple parts get written to the network and read back with single system calls, so it's very efficient.
 
 ### Pub-Sub Message Envelopes
 
-In the pub-sub pattern, we can split the key into a separate message frame that we call an envelope. If you want to use pub-sub envelopes, make them yourself. It’s optional, and in previous pub-sub examples we didn’t do this. Using a pub-sub envelope is a little more work for simple cases, but it’s cleaner especially for real cases, where the key and the data are naturally separate things.
+In the pub-sub pattern, we can split the key into a separate message frame that we call an envelope. If you want to use pub-sub envelopes, make them yourself. It's optional, and in previous pub-sub examples we didn't do this. Using a pub-sub envelope is a little more work for simple cases, but it's cleaner especially for real cases, where the key and the data are naturally separate things.
 
 ![](./pics/zmq/fig23.png)
 
-Subscriptions do a prefix match. That is, they look for “all messages starting with XYZ”. The obvious question is: how to delimit keys from data so that the prefix match doesn’t accidentally match data. The best answer is to use an envelope because the match won’t cross a frame boundary. Here is a minimalist example of how pub-sub envelopes look in code. This publisher sends messages of two types, A and B.
+Subscriptions do a prefix match. That is, they look for “all messages starting with XYZ”. The obvious question is: how to delimit keys from data so that the prefix match doesn't accidentally match data. The best answer is to use an envelope because the match won't cross a frame boundary. Here is a minimalist example of how pub-sub envelopes look in code. This publisher sends messages of two types, A and B.
 
 The envelope holds the message type:
 
@@ -2220,7 +2207,7 @@ When you run the two programs, the subscriber should show you this:
 ...
 ```
 
-This example shows that the subscription filter rejects or accepts the entire multipart message (key plus data). You won’t get part of a multipart message, ever. If you subscribe to multiple publishers and you want to know their address so that you can send them data via another socket (and this is a typical use case), create a three-part message.
+This example shows that the subscription filter rejects or accepts the entire multipart message (key plus data). You won't get part of a multipart message, ever. If you subscribe to multiple publishers and you want to know their address so that you can send them data via another socket (and this is a typical use case), create a three-part message.
 
 ![](./pics/zmq/fig24.png)
 
@@ -2228,17 +2215,17 @@ This example shows that the subscription filter rejects or accepts the entire mu
 
 When you can send messages rapidly from process to process, you soon discover that memory is a precious resource, and one that can be trivially filled up. A few seconds of delay somewhere in a process can turn into a backlog that blows up a server unless you understand the problem and take precautions.
 
-The problem is this: imagine you have process A sending messages at high frequency to process B, which is processing them. Suddenly B gets very busy (garbage collection, CPU overload, whatever), and can’t process the messages for a short period. It could be a few seconds for some heavy garbage collection, or it could be much longer, if there’s a more serious problem. What happens to the messages that process A is still trying to send frantically? Some will sit in B’s network buffers. Some will sit on the Ethernet wire itself. Some will sit in A’s network buffers. And the rest will accumulate in A’s memory, as rapidly as the application behind A sends them. If you don’t take some precaution, A can easily run out of memory and crash.
+The problem is this: imagine you have process A sending messages at high frequency to process B, which is processing them. Suddenly B gets very busy (garbage collection, CPU overload, whatever), and can't process the messages for a short period. It could be a few seconds for some heavy garbage collection, or it could be much longer, if there's a more serious problem. What happens to the messages that process A is still trying to send frantically? Some will sit in B's network buffers. Some will sit on the Ethernet wire itself. Some will sit in A's network buffers. And the rest will accumulate in A's memory, as rapidly as the application behind A sends them. If you don't take some precaution, A can easily run out of memory and crash.
 
-It is a consistent, classic problem with message brokers. What makes it hurt more is that it’s B’s fault, superficially, and B is typically a user-written application which A has no control over.
+It is a consistent, classic problem with message brokers. What makes it hurt more is that it's B's fault, superficially, and B is typically a user-written application which A has no control over.
 
-What are the answers? One is to pass the problem upstream. A is getting the messages from somewhere else. So tell that process, “Stop!” And so on. This is called flow control. It sounds plausible, but what if you’re sending out a Twitter feed? Do you tell the whole world to stop tweeting while B gets its act together?
+What are the answers? One is to pass the problem upstream. A is getting the messages from somewhere else. So tell that process, “Stop!” And so on. This is called flow control. It sounds plausible, but what if you're sending out a Twitter feed? Do you tell the whole world to stop tweeting while B gets its act together?
 
-Flow control works in some cases, but not in others. The transport layer can’t tell the application layer to “stop” any more than a subway system can tell a large business, “please keep your staff at work for another half an hour. I’m too busy”. The answer for messaging is to set limits on the size of buffers, and then when we reach those limits, to take some sensible action. In some cases (not for a subway system, though), the answer is to throw away messages. In others, the best strategy is to wait.
+Flow control works in some cases, but not in others. The transport layer can't tell the application layer to “stop” any more than a subway system can tell a large business, “please keep your staff at work for another half an hour. I'm too busy”. The answer for messaging is to set limits on the size of buffers, and then when we reach those limits, to take some sensible action. In some cases (not for a subway system, though), the answer is to throw away messages. In others, the best strategy is to wait.
 
 ZeroMQ uses the concept of HWM (high-water mark) to define the capacity of its internal pipes. Each connection out of a socket or into a socket has its own pipe, and HWM for sending, and/or receiving, depending on the socket type. Some sockets (PUB, PUSH) only have send buffers. Some (SUB, PULL, REQ, REP) only have receive buffers. Some (DEALER, ROUTER, PAIR) have both send and receive buffers.
 
-In ZeroMQ v2.x, the HWM was infinite by default. This was easy but also typically fatal for high-volume publishers. In ZeroMQ v3.x, it’s set to 1,000 by default, which is more sensible. If you’re still using ZeroMQ v2.x, you should always set a HWM on your sockets, be it 1,000 to match ZeroMQ v3.x or another figure that takes into account your message sizes and expected subscriber performance.
+In ZeroMQ v2.x, the HWM was infinite by default. This was easy but also typically fatal for high-volume publishers. In ZeroMQ v3.x, it's set to 1,000 by default, which is more sensible. If you're still using ZeroMQ v2.x, you should always set a HWM on your sockets, be it 1,000 to match ZeroMQ v3.x or another figure that takes into account your message sizes and expected subscriber performance.
 
 When your socket reaches its HWM, it will either block or drop data depending on the socket type. PUB and ROUTER sockets will drop data if they reach their HWM, while other socket types will block. Over the inproc transport, the sender and receiver share the same buffers, so the real HWM is the sum of the HWM set by both sides.
 
@@ -2250,23 +2237,23 @@ As you build applications with ZeroMQ, you will come across this problem more th
 
 ![](./pics/zmq/fig25.png)
 
-Here’s a summary of what the graphic says:
+Here's a summary of what the graphic says:
 
-- On SUB sockets, set a subscription using zmq_setsockopt() with ZMQ_SUBSCRIBE, or you won’t get messages. Because you subscribe to messages by prefix, if you subscribe to "” (an empty subscription), you will get everything.
+- On SUB sockets, set a subscription using zmq_setsockopt() with ZMQ_SUBSCRIBE, or you won't get messages. Because you subscribe to messages by prefix, if you subscribe to "” (an empty subscription), you will get everything.
 - If you start the SUB socket (i.e., establish a connection to a PUB socket) after the PUB socket has started sending out data, you will lose whatever it published before the connection was made. If this is a problem, set up your architecture so the SUB socket starts first, then the PUB socket starts publishing.
-- Even if you synchronize a SUB and PUB socket, you may still lose messages. It’s due to the fact that internal queues aren’t created until a connection is actually created. If you can switch the bind/connect direction so the SUB socket binds, and the PUB socket connects, you may find it works more as you’d expect.
-- If you’re using REP and REQ sockets, and you’re not sticking to the synchronous send/recv/send/recv order, ZeroMQ will report errors, which you might ignore. Then, it would look like you’re losing messages. If you use REQ or REP, stick to the send/recv order, and always, in real code, check for errors on ZeroMQ calls.
-- If you’re using PUSH sockets, you’ll find that the first PULL socket to connect will grab an unfair share of messages. The accurate rotation of messages only happens when all PULL sockets are successfully connected, which can take some milliseconds. As an alternative to PUSH/PULL, for lower data rates, consider using ROUTER/DEALER and the load balancing pattern.
-- If you’re sharing sockets across threads, don’t. It will lead to random weirdness, and crashes.
-- If you’re using inproc, make sure both sockets are in the same context. Otherwise the connecting side will in fact fail. Also, bind first, then connect. inproc is not a disconnected transport like tcp.
-- If you’re using ROUTER sockets, it’s remarkably easy to lose messages by accident, by sending malformed identity frames (or forgetting to send an identity frame). In general setting the ZMQ_ROUTER_MANDATORY option on ROUTER sockets is a good idea, but do also check the return code on every send call.
-- Lastly, if you really can’t figure out what’s going wrong, make a minimal test case that reproduces the problem, and ask for help from the ZeroMQ community.
+- Even if you synchronize a SUB and PUB socket, you may still lose messages. It's due to the fact that internal queues aren't created until a connection is actually created. If you can switch the bind/connect direction so the SUB socket binds, and the PUB socket connects, you may find it works more as you'd expect.
+- If you're using REP and REQ sockets, and you're not sticking to the synchronous send/recv/send/recv order, ZeroMQ will report errors, which you might ignore. Then, it would look like you're losing messages. If you use REQ or REP, stick to the send/recv order, and always, in real code, check for errors on ZeroMQ calls.
+- If you're using PUSH sockets, you'll find that the first PULL socket to connect will grab an unfair share of messages. The accurate rotation of messages only happens when all PULL sockets are successfully connected, which can take some milliseconds. As an alternative to PUSH/PULL, for lower data rates, consider using ROUTER/DEALER and the load balancing pattern.
+- If you're sharing sockets across threads, don't. It will lead to random weirdness, and crashes.
+- If you're using inproc, make sure both sockets are in the same context. Otherwise the connecting side will in fact fail. Also, bind first, then connect. inproc is not a disconnected transport like tcp.
+- If you're using ROUTER sockets, it's remarkably easy to lose messages by accident, by sending malformed identity frames (or forgetting to send an identity frame). In general setting the ZMQ_ROUTER_MANDATORY option on ROUTER sockets is a good idea, but do also check the return code on every send call.
+- Lastly, if you really can't figure out what's going wrong, make a minimal test case that reproduces the problem, and ask for help from the ZeroMQ community.
 
 ## Advanced Request-Reply Patterns
 
-In Chapter 2 - Sockets and Patterns we worked through the basics of using ZeroMQ by developing a series of small applications, each time exploring new aspects of ZeroMQ. We’ll continue this approach in this chapter as we explore advanced patterns built on top of ZeroMQ’s core request-reply pattern.
+In Chapter 2 - Sockets and Patterns we worked through the basics of using ZeroMQ by developing a series of small applications, each time exploring new aspects of ZeroMQ. We'll continue this approach in this chapter as we explore advanced patterns built on top of ZeroMQ's core request-reply pattern.
 
-We’ll cover:
+We'll cover:
 
 - How the request-reply mechanisms work
 - How to combine REQ, REP, DEALER, and ROUTER sockets
@@ -2279,28 +2266,28 @@ We’ll cover:
 
 ### The Request-Reply Mechanisms
 
-We already looked briefly at multipart messages. Let’s now look at a major use case, which is reply message envelopes. An envelope is a way of safely packaging up data with an address, without touching the data itself. By separating reply addresses into an envelope we make it possible to write general purpose intermediaries such as APIs and proxies that create, read, and remove addresses no matter what the message payload or structure is.
+We already looked briefly at multipart messages. Let's now look at a major use case, which is reply message envelopes. An envelope is a way of safely packaging up data with an address, without touching the data itself. By separating reply addresses into an envelope we make it possible to write general purpose intermediaries such as APIs and proxies that create, read, and remove addresses no matter what the message payload or structure is.
 
 In the request-reply pattern, the envelope holds the return address for replies. It is how a ZeroMQ network with no state can create round-trip request-reply dialogs.
 
-When you use REQ and REP sockets you don’t even see envelopes; these sockets deal with them automatically. But for most of the interesting request-reply patterns, you’ll want to understand envelopes and particularly ROUTER sockets. We’ll work through this step-by-step.
+When you use REQ and REP sockets you don't even see envelopes; these sockets deal with them automatically. But for most of the interesting request-reply patterns, you'll want to understand envelopes and particularly ROUTER sockets. We'll work through this step-by-step.
 
 #### The Simple Reply Envelope
 
-A request-reply exchange consists of a request message, and an eventual reply message. In the simple request-reply pattern, there’s one reply for each request. In more advanced patterns, requests and replies can flow asynchronously. However, the reply envelope always works the same way.
+A request-reply exchange consists of a request message, and an eventual reply message. In the simple request-reply pattern, there's one reply for each request. In more advanced patterns, requests and replies can flow asynchronously. However, the reply envelope always works the same way.
 
-The ZeroMQ reply envelope formally consists of zero or more reply addresses, followed by an empty frame (the envelope delimiter), followed by the message body (zero or more frames). The envelope is created by multiple sockets working together in a chain. We’ll break this down.
+The ZeroMQ reply envelope formally consists of zero or more reply addresses, followed by an empty frame (the envelope delimiter), followed by the message body (zero or more frames). The envelope is created by multiple sockets working together in a chain. We'll break this down.
 
-We’ll start by sending “Hello” through a REQ socket. The REQ socket creates the simplest possible reply envelope, which has no addresses, just an empty delimiter frame and the message frame containing the “Hello” string. This is a two-frame message.
+We'll start by sending “Hello” through a REQ socket. The REQ socket creates the simplest possible reply envelope, which has no addresses, just an empty delimiter frame and the message frame containing the “Hello” string. This is a two-frame message.
 
 ![](./pics/zmq/fig26.png)
 
 The REP socket does the matching work: it strips off the envelope, up to and including the delimiter frame, saves the whole envelope, and passes the “Hello” string up the application. Thus our original Hello World example used request-reply envelopes internally, but the application never saw them.
 
-If you spy on the network data flowing between hwclient and hwserver, this is what you’ll see: every request and every reply is in fact two frames, an empty frame and then the body. It doesn’t seem to make much sense for a simple REQ-REP dialog. However you’ll see the reason when we explore how ROUTER and DEALER handle envelopes.
+If you spy on the network data flowing between hwclient and hwserver, this is what you'll see: every request and every reply is in fact two frames, an empty frame and then the body. It doesn't seem to make much sense for a simple REQ-REP dialog. However you'll see the reason when we explore how ROUTER and DEALER handle envelopes.
 
 #### The Extended Reply Envelope
-Now let’s extend the REQ-REP pair with a ROUTER-DEALER proxy in the middle and see how this affects the reply envelope. This is the extended request-reply pattern we already saw in Chapter 2 - Sockets and Patterns. We can, in fact, insert any number of proxy steps. The mechanics are the same.
+Now let's extend the REQ-REP pair with a ROUTER-DEALER proxy in the middle and see how this affects the reply envelope. This is the extended request-reply pattern we already saw in Chapter 2 - Sockets and Patterns. We can, in fact, insert any number of proxy steps. The mechanics are the same.
 
 ![](./pics/zmq/fig27.png)
 
@@ -2324,11 +2311,11 @@ The zmq_socket() man page describes it thus:
 
 - When receiving messages a ZMQ_ROUTER socket shall prepend a message part containing the identity of the originating peer to the message before passing it to the application. Messages received are fair-queued from among all connected peers. When sending messages a ZMQ_ROUTER socket shall remove the first part of the message and use it to determine the identity of the peer the message shall be routed to.
 
-As a historical note, ZeroMQ v2.2 and earlier use UUIDs as identities. ZeroMQ v3.0 and later generate a 5 byte identity by default (0 + a random 32bit integer). There’s some impact on network performance, but only when you use multiple proxy hops, which is rare. Mostly the change was to simplify building libzmq by removing the dependency on a UUID library.
+As a historical note, ZeroMQ v2.2 and earlier use UUIDs as identities. ZeroMQ v3.0 and later generate a 5 byte identity by default (0 + a random 32bit integer). There's some impact on network performance, but only when you use multiple proxy hops, which is rare. Mostly the change was to simplify building libzmq by removing the dependency on a UUID library.
 
-Identities are a difficult concept to understand, but it’s essential if you want to become a ZeroMQ expert. The ROUTER socket invents a random identity for each connection with which it works. If there are three REQ sockets connected to a ROUTER socket, it will invent three random identities, one for each REQ socket.
+Identities are a difficult concept to understand, but it's essential if you want to become a ZeroMQ expert. The ROUTER socket invents a random identity for each connection with which it works. If there are three REQ sockets connected to a ROUTER socket, it will invent three random identities, one for each REQ socket.
 
-So if we continue our worked example, let’s say the REQ socket has a 3-byte identity ABC. Internally, this means the ROUTER socket keeps a hash table where it can search for ABC and find the TCP connection for the REQ socket.
+So if we continue our worked example, let's say the REQ socket has a 3-byte identity ABC. Internally, this means the ROUTER socket keeps a hash table where it can search for ABC and find the TCP connection for the REQ socket.
 
 When we receive the message off the ROUTER socket, we get three frames.
 
@@ -2348,20 +2335,20 @@ Now the DEALER reads these three frames, and sends all three out via the ROUTER 
 
 The REQ socket picks this message up, and checks that the first frame is the empty delimiter, which it is. The REQ socket discards that frame and passes “World” to the calling application, which prints it out to the amazement of the younger us looking at ZeroMQ for the first time.
 
-#### What’s This Good For?
+#### What's This Good For?
 
-To be honest, the use cases for strict request-reply or extended request-reply are somewhat limited. For one thing, there’s no easy way to recover from common failures like the server crashing due to buggy application code. We’ll see more about this in Chapter 4 - Reliable Request-Reply Patterns. However once you grasp the way these four sockets deal with envelopes, and how they talk to each other, you can do very useful things. We saw how ROUTER uses the reply envelope to decide which client REQ socket to route a reply back to. Now let’s express this another way:
+To be honest, the use cases for strict request-reply or extended request-reply are somewhat limited. For one thing, there's no easy way to recover from common failures like the server crashing due to buggy application code. We'll see more about this in Chapter 4 - Reliable Request-Reply Patterns. However once you grasp the way these four sockets deal with envelopes, and how they talk to each other, you can do very useful things. We saw how ROUTER uses the reply envelope to decide which client REQ socket to route a reply back to. Now let's express this another way:
 
 - Each time ROUTER gives you a message, it tells you what peer that came from, as an identity.
 - You can use this with a hash table (with the identity as key) to track new peers as they arrive.
 - ROUTER will route messages asynchronously to any peer connected to it, if you prefix the identity as the first frame of the message.
   
 
-ROUTER sockets don’t care about the whole envelope. They don’t know anything about the empty delimiter. All they care about is that one identity frame that lets them figure out which connection to send a message to.
+ROUTER sockets don't care about the whole envelope. They don't know anything about the empty delimiter. All they care about is that one identity frame that lets them figure out which connection to send a message to.
 
 #### Recap of Request-Reply Socket
 
-Let’s recap this:
+Let's recap this:
 
 - The REQ socket sends, to the network, an empty delimiter frame in front of the message data. REQ sockets are synchronous. REQ sockets always send one request and then wait for one reply. REQ sockets talk to one peer at a time. If you connect a REQ socket to multiple peers, requests are distributed to and replies expected from each peer one turn at a time.
 - The REP socket reads and saves all identity frames up to and including the empty delimiter, then passes the following frame or frames to the caller. REP sockets are synchronous and talk to one peer at a time. If you connect a REP socket to multiple peers, requests are read from peers in fair fashion, and replies are always sent to the same peer that made the last request.
@@ -2370,7 +2357,7 @@ Let’s recap this:
 
 ### Request-Reply Combination
 
-We have four request-reply sockets, each with a certain behavior. We’ve seen how they connect in simple and extended request-reply patterns. But these sockets are building blocks that you can use to solve many problems.
+We have four request-reply sockets, each with a certain behavior. We've seen how they connect in simple and extended request-reply patterns. But these sockets are building blocks that you can use to solve many problems.
 
 These are the legal combinations:
 
@@ -2382,7 +2369,7 @@ These are the legal combinations:
 - ROUTER to ROUTER
   
 
-And these combinations are invalid (and I’ll explain why):
+And these combinations are invalid (and I'll explain why):
 
 - REQ to REQ
 - REQ to DEALER
@@ -2391,15 +2378,15 @@ And these combinations are invalid (and I’ll explain why):
 
 Here are some tips for remembering the semantics. DEALER is like an asynchronous REQ socket, and ROUTER is like an asynchronous REP socket. Where we use a REQ socket, we can use a DEALER; we just have to read and write the envelope ourselves. Where we use a REP socket, we can stick a ROUTER; we just need to manage the identities ourselves.
 
-Think of REQ and DEALER sockets as “clients” and REP and ROUTER sockets as “servers”. Mostly, you’ll want to bind REP and ROUTER sockets, and connect REQ and DEALER sockets to them. It’s not always going to be this simple, but it is a clean and memorable place to start.
+Think of REQ and DEALER sockets as “clients” and REP and ROUTER sockets as “servers”. Mostly, you'll want to bind REP and ROUTER sockets, and connect REQ and DEALER sockets to them. It's not always going to be this simple, but it is a clean and memorable place to start.
 
 #### The REQ to REP Combination
 
-We’ve already covered a REQ client talking to a REP server but let’s take one aspect: the REQ client must initiate the message flow. A REP server cannot talk to a REQ client that hasn’t first sent it a request. Technically, it’s not even possible, and the API also returns an EFSM error if you try it.
+We've already covered a REQ client talking to a REP server but let's take one aspect: the REQ client must initiate the message flow. A REP server cannot talk to a REQ client that hasn't first sent it a request. Technically, it's not even possible, and the API also returns an EFSM error if you try it.
 
 #### The DEALER to REP Combination
 
-Now, let’s replace the REQ client with a DEALER. This gives us an asynchronous client that can talk to multiple REP servers. If we rewrote the “Hello World” client using DEALER, we’d be able to send off any number of “Hello” requests without waiting for replies.
+Now, let's replace the REQ client with a DEALER. This gives us an asynchronous client that can talk to multiple REP servers. If we rewrote the “Hello World” client using DEALER, we'd be able to send off any number of “Hello” requests without waiting for replies.
 
 When we use a DEALER to talk to a REP socket, we must accurately emulate the envelope that the REQ socket would have sent, or the REP socket will discard the message as invalid. So, to send a message, we:
 
@@ -2408,19 +2395,19 @@ When we use a DEALER to talk to a REP socket, we must accurately emulate the env
 
 And when we receive a message, we:
 
-- Receive the first frame and if it’s not empty, discard the whole message;
+- Receive the first frame and if it's not empty, discard the whole message;
 - Receive the next frame and pass that to the application.
 
 #### The REQ to ROUTER Combination
 
-In the same way that we can replace REQ with DEALER, we can replace REP with ROUTER. This gives us an asynchronous server that can talk to multiple REQ clients at the same time. If we rewrote the “Hello World” server using ROUTER, we’d be able to process any number of “Hello” requests in parallel. We saw this in the Chapter 2 - Sockets and Patterns mtserver example.
+In the same way that we can replace REQ with DEALER, we can replace REP with ROUTER. This gives us an asynchronous server that can talk to multiple REQ clients at the same time. If we rewrote the “Hello World” server using ROUTER, we'd be able to process any number of “Hello” requests in parallel. We saw this in the Chapter 2 - Sockets and Patterns mtserver example.
 
 We can use ROUTER in two distinct ways:
 
 - As a proxy that switches messages between frontend and backend sockets.
 - As an application that reads the message and acts on it.
 
-In the first case, the ROUTER simply reads all frames, including the artificial identity frame, and passes them on blindly. In the second case the ROUTER must know the format of the reply envelope it’s being sent. As the other peer is a REQ socket, the ROUTER gets the identity frame, an empty frame, and then the data frame.
+In the first case, the ROUTER simply reads all frames, including the artificial identity frame, and passes them on blindly. In the second case the ROUTER must know the format of the reply envelope it's being sent. As the other peer is a REQ socket, the ROUTER gets the identity frame, an empty frame, and then the data frame.
 
 #### The DEALER to ROUTER Combination
 
@@ -2432,28 +2419,28 @@ Because both DEALER and ROUTER can work with arbitrary message formats, if you h
 
 You can swap a REP with a ROUTER, but you can also swap a REP with a DEALER, if the DEALER is talking to one and only one peer.
 
-When you replace a REP with a DEALER, your worker can suddenly go full asynchronous, sending any number of replies back. The cost is that you have to manage the reply envelopes yourself, and get them right, or nothing at all will work. We’ll see a worked example later. Let’s just say for now that DEALER to DEALER is one of the trickier patterns to get right, and happily it’s rare that we need it.
+When you replace a REP with a DEALER, your worker can suddenly go full asynchronous, sending any number of replies back. The cost is that you have to manage the reply envelopes yourself, and get them right, or nothing at all will work. We'll see a worked example later. Let's just say for now that DEALER to DEALER is one of the trickier patterns to get right, and happily it's rare that we need it.
 
 #### The ROUTER to ROUTER Combination
 
-This sounds perfect for N-to-N connections, but it’s the most difficult combination to use. You should avoid it until you are well advanced with ZeroMQ. We’ll see one example it in the Freelance pattern in Chapter 4 - Reliable Request-Reply Patterns, and an alternative DEALER to ROUTER design for peer-to-peer work in Chapter 8 - A Framework for Distributed Computing.
+This sounds perfect for N-to-N connections, but it's the most difficult combination to use. You should avoid it until you are well advanced with ZeroMQ. We'll see one example it in the Freelance pattern in Chapter 4 - Reliable Request-Reply Patterns, and an alternative DEALER to ROUTER design for peer-to-peer work in Chapter 8 - A Framework for Distributed Computing.
 
 #### Invalid Combinations
 
-Mostly, trying to connect clients to clients, or servers to servers is a bad idea and won’t work. However, rather than give general vague warnings, I’ll explain in detail:
+Mostly, trying to connect clients to clients, or servers to servers is a bad idea and won't work. However, rather than give general vague warnings, I'll explain in detail:
 
 - REQ to REQ: both sides want to start by sending messages to each other, and this could only work if you timed things so that both peers exchanged messages at the same time. It hurts my brain to even think about it.
 - REQ to DEALER: you could in theory do this, but it would break if you added a second REQ because DEALER has no way of sending a reply to the original peer. Thus the REQ socket would get confused, and/or return messages meant for another client.
 - REP to REP: both sides would wait for the other to send the first message.
-- REP to ROUTER: the ROUTER socket can in theory initiate the dialog and send a properly-formatted request, if it knows the REP socket has connected and it knows the identity of that connection. It’s messy and adds nothing over DEALER to ROUTER.
+- REP to ROUTER: the ROUTER socket can in theory initiate the dialog and send a properly-formatted request, if it knows the REP socket has connected and it knows the identity of that connection. It's messy and adds nothing over DEALER to ROUTER.
 
-The common thread in this valid versus invalid breakdown is that a ZeroMQ socket connection is always biased towards one peer that binds to an endpoint, and another that connects to that. Further, that which side binds and which side connects is not arbitrary, but follows natural patterns. The side which we expect to “be there” binds: it’ll be a server, a broker, a publisher, a collector. The side that “comes and goes” connects: it’ll be clients and workers. Remembering this will help you design better ZeroMQ architectures.
+The common thread in this valid versus invalid breakdown is that a ZeroMQ socket connection is always biased towards one peer that binds to an endpoint, and another that connects to that. Further, that which side binds and which side connects is not arbitrary, but follows natural patterns. The side which we expect to “be there” binds: it'll be a server, a broker, a publisher, a collector. The side that “comes and goes” connects: it'll be clients and workers. Remembering this will help you design better ZeroMQ architectures.
 
 ### Exploring ROUTER Sockets
-Let’s look at ROUTER sockets a little closer. We’ve already seen how they work by routing individual messages to specific connections. I’ll explain in more detail how we identify those connections, and what a ROUTER socket does when it can’t send a message.
+Let's look at ROUTER sockets a little closer. We've already seen how they work by routing individual messages to specific connections. I'll explain in more detail how we identify those connections, and what a ROUTER socket does when it can't send a message.
 
 #### Identities and Addresses
-The identity concept in ZeroMQ refers specifically to ROUTER sockets and how they identify the connections they have to other sockets. More broadly, identities are used as addresses in the reply envelope. In most cases, the identity is arbitrary and local to the ROUTER socket: it’s a lookup key in a hash table. Independently, a peer can have an address that is physical (a network endpoint like “tcp://192.168.55.117:5670”) or logical (a UUID or email address or other unique key).
+The identity concept in ZeroMQ refers specifically to ROUTER sockets and how they identify the connections they have to other sockets. More broadly, identities are used as addresses in the reply envelope. In most cases, the identity is arbitrary and local to the ROUTER socket: it's a lookup key in a hash table. Independently, a peer can have an address that is physical (a network endpoint like “tcp://192.168.55.117:5670”) or logical (a UUID or email address or other unique key).
 
 An application that uses a ROUTER socket to talk to specific peers can convert a logical address to an identity if it has built the necessary hash table. Because ROUTER sockets only announce the identity of a connection (to a specific peer) when that peer sends a message, you can only really reply to a message, not spontaneously talk to a peer.
 
@@ -2462,7 +2449,7 @@ This is true even if you flip the rules and make the ROUTER connect to the peer 
 - The peer application sets the ZMQ_IDENTITY option of its peer socket (DEALER or REQ) before binding or connecting.
 - Usually the peer then connects to the already-bound ROUTER socket. But the ROUTER can also connect to the peer.
 - At connection time, the peer socket tells the router socket, “please use this identity for this connection”.
-- If the peer socket doesn’t say that, the router generates its usual arbitrary random identity for the connection.
+- If the peer socket doesn't say that, the router generates its usual arbitrary random identity for the connection.
 - The ROUTER socket now provides this logical address to the application as a prefix identity frame for any messages coming in from that peer.
 - The ROUTER also expects the logical address as the prefix identity frame for any outgoing messages.
 
@@ -2517,29 +2504,29 @@ Here is what the program prints:
 
 #### ROUTER Error Handling
 
-ROUTER sockets do have a somewhat brutal way of dealing with messages they can’t send anywhere: they drop them silently. It’s an attitude that makes sense in working code, but it makes debugging hard. The “send identity as first frame” approach is tricky enough that we often get this wrong when we’re learning, and the ROUTER’s stony silence when we mess up isn’t very constructive.
+ROUTER sockets do have a somewhat brutal way of dealing with messages they can't send anywhere: they drop them silently. It's an attitude that makes sense in working code, but it makes debugging hard. The “send identity as first frame” approach is tricky enough that we often get this wrong when we're learning, and the ROUTER's stony silence when we mess up isn't very constructive.
 
-Since ZeroMQ v3.2 there’s a socket option you can set to catch this error: ZMQ_ROUTER_MANDATORY. Set that on the ROUTER socket and then when you provide an unroutable identity on a send call, the socket will signal an EHOSTUNREACH error.
+Since ZeroMQ v3.2 there's a socket option you can set to catch this error: ZMQ_ROUTER_MANDATORY. Set that on the ROUTER socket and then when you provide an unroutable identity on a send call, the socket will signal an EHOSTUNREACH error.
 
 ### The Load Balancing Pattern
 
-Now let’s look at some code. We’ll see how to connect a ROUTER socket to a REQ socket, and then to a DEALER socket. These two examples follow the same logic, which is a load balancing pattern. This pattern is our first exposure to using the ROUTER socket for deliberate routing, rather than simply acting as a reply channel.
+Now let's look at some code. We'll see how to connect a ROUTER socket to a REQ socket, and then to a DEALER socket. These two examples follow the same logic, which is a load balancing pattern. This pattern is our first exposure to using the ROUTER socket for deliberate routing, rather than simply acting as a reply channel.
 
-The load balancing pattern is very common and we’ll see it several times in this book. It solves the main problem with simple round robin routing (as PUSH and DEALER offer) which is that round robin becomes inefficient if tasks do not all roughly take the same time.
+The load balancing pattern is very common and we'll see it several times in this book. It solves the main problem with simple round robin routing (as PUSH and DEALER offer) which is that round robin becomes inefficient if tasks do not all roughly take the same time.
 
-It’s the post office analogy. If you have one queue per counter, and you have some people buying stamps (a fast, simple transaction), and some people opening new accounts (a very slow transaction), then you will find stamp buyers getting unfairly stuck in queues. Just as in a post office, if your messaging architecture is unfair, people will get annoyed.
+It's the post office analogy. If you have one queue per counter, and you have some people buying stamps (a fast, simple transaction), and some people opening new accounts (a very slow transaction), then you will find stamp buyers getting unfairly stuck in queues. Just as in a post office, if your messaging architecture is unfair, people will get annoyed.
 
 The solution in the post office is to create a single queue so that even if one or two counters get stuck with slow work, other counters will continue to serve clients on a first-come, first-serve basis.
 
-One reason PUSH and DEALER use the simplistic approach is sheer performance. If you arrive in any major US airport, you’ll find long queues of people waiting at immigration. The border patrol officials will send people in advance to queue up at each counter, rather than using a single queue. Having people walk fifty yards in advance saves a minute or two per passenger. And because every passport check takes roughly the same time, it’s more or less fair. This is the strategy for PUSH and DEALER: send work loads ahead of time so that there is less travel distance.
+One reason PUSH and DEALER use the simplistic approach is sheer performance. If you arrive in any major US airport, you'll find long queues of people waiting at immigration. The border patrol officials will send people in advance to queue up at each counter, rather than using a single queue. Having people walk fifty yards in advance saves a minute or two per passenger. And because every passport check takes roughly the same time, it's more or less fair. This is the strategy for PUSH and DEALER: send work loads ahead of time so that there is less travel distance.
 
-This is a recurring theme with ZeroMQ: the world’s problems are diverse and you can benefit from solving different problems each in the right way. The airport isn’t the post office and one size fits no one, really well.
+This is a recurring theme with ZeroMQ: the world's problems are diverse and you can benefit from solving different problems each in the right way. The airport isn't the post office and one size fits no one, really well.
 
-Let’s return to the scenario of a worker (DEALER or REQ) connected to a broker (ROUTER). The broker has to know when the worker is ready, and keep a list of workers so that it can take the least recently used worker each time.
+Let's return to the scenario of a worker (DEALER or REQ) connected to a broker (ROUTER). The broker has to know when the worker is ready, and keep a list of workers so that it can take the least recently used worker each time.
 
-The solution is really simple, in fact: workers send a “ready” message when they start, and after they finish each task. The broker reads these messages one-by-one. Each time it reads a message, it is from the last used worker. And because we’re using a ROUTER socket, we get an identity that we can then use to send a task back to the worker.
+The solution is really simple, in fact: workers send a “ready” message when they start, and after they finish each task. The broker reads these messages one-by-one. Each time it reads a message, it is from the last used worker. And because we're using a ROUTER socket, we get an identity that we can then use to send a task back to the worker.
 
-It’s a twist on request-reply because the task is sent with the reply, and any response for the task is sent as a new request. The following code examples should make it clearer.
+It's a twist on request-reply because the task is sent with the reply, and any response for the task is sent as a new request. The following code examples should make it clearer.
 
 #### ROUTER Broker and REQ Workers
 
@@ -2631,7 +2618,7 @@ int main() {
 ```
 
 
-The example runs for five seconds and then each worker prints how many tasks they handled. If the routing worked, we’d expect a fair distribution of work:
+The example runs for five seconds and then each worker prints how many tasks they handled. If the routing worked, we'd expect a fair distribution of work:
 
 ```
 Completed: 20 tasks
@@ -2656,9 +2643,9 @@ Anywhere you can use REQ, you can use DEALER. There are two specific differences
 
 The REQ socket always sends an empty delimiter frame before any data frames; the DEALER does not.
 The REQ socket will send only one message before it receives a reply; the DEALER is fully asynchronous.
-The synchronous versus asynchronous behavior has no effect on our example because we’re doing strict request-reply. It is more relevant when we address recovering from failures, which we’ll come to in Chapter 4 - Reliable Request-Reply Patterns.
+The synchronous versus asynchronous behavior has no effect on our example because we're doing strict request-reply. It is more relevant when we address recovering from failures, which we'll come to in Chapter 4 - Reliable Request-Reply Patterns.
 
-Now let’s look at exactly the same example but with the REQ socket replaced by a DEALER socket:
+Now let's look at exactly the same example but with the REQ socket replaced by a DEALER socket:
 
 ```c++
 //
@@ -2757,7 +2744,7 @@ int main() {
 
 The code is almost identical except that the worker uses a DEALER socket, and reads and writes that empty frame before the data frame. This is the approach I use when I want to keep compatibility with REQ workers.
 
-However, remember the reason for that empty delimiter frame: it’s to allow multihop extended requests that terminate in a REP socket, which uses that delimiter to split off the reply envelope so it can hand the data frames to its application.
+However, remember the reason for that empty delimiter frame: it's to allow multihop extended requests that terminate in a REP socket, which uses that delimiter to split off the reply envelope so it can hand the data frames to its application.
 
 If we never need to pass the message along to a REP socket, we can simply drop the empty delimiter frame at both sides, which makes things simpler. This is usually the design I use for pure DEALER to ROUTER protocols.
 
@@ -2955,9 +2942,9 @@ int main(int argc, char *argv[])
 }
 ```
 
-The difficult part of this program is (a) the envelopes that each socket reads and writes, and (b) the load balancing algorithm. We’ll take these in turn, starting with the message envelope formats.
+The difficult part of this program is (a) the envelopes that each socket reads and writes, and (b) the load balancing algorithm. We'll take these in turn, starting with the message envelope formats.
 
-Let’s walk through a full request-reply chain from client to worker and back. In this code we set the identity of client and worker sockets to make it easier to trace the message frames. In reality, we’d allow the ROUTER sockets to invent identities for connections. Let’s assume the client’s identity is “CLIENT” and the worker’s identity is “WORKER”. The client application sends a single frame containing “Hello”.
+Let's walk through a full request-reply chain from client to worker and back. In this code we set the identity of client and worker sockets to make it easier to trace the message frames. In reality, we'd allow the ROUTER sockets to invent identities for connections. Let's assume the client's identity is “CLIENT” and the worker's identity is “WORKER”. The client application sends a single frame containing “Hello”.
 
 ![](./pics/zmq/fig33.png)
 
@@ -2973,11 +2960,11 @@ This complex envelope stack gets chewed up first by the backend ROUTER socket, w
 
 ![](./pics/zmq/fig36.png)
 
-The worker has to save the envelope (which is all the parts up to and including the empty message frame) and then it can do what’s needed with the data part. Note that a REP socket would do this automatically, but we’re using the REQ-ROUTER pattern so that we can get proper load balancing.
+The worker has to save the envelope (which is all the parts up to and including the empty message frame) and then it can do what's needed with the data part. Note that a REP socket would do this automatically, but we're using the REQ-ROUTER pattern so that we can get proper load balancing.
 
 On the return path, the messages are the same as when they come in, i.e., the backend socket gives the broker a message in five parts, and the broker sends the frontend socket a message in three parts, and the client gets a message in one part.
 
-Now let’s look at the load balancing algorithm. It requires that both clients and workers use REQ sockets, and that workers correctly store and replay the envelope on messages they get. The algorithm is:
+Now let's look at the load balancing algorithm. It requires that both clients and workers use REQ sockets, and that workers correctly store and replay the envelope on messages they get. The algorithm is:
 
 - Create a pollset that always polls the backend, and polls the frontend only if there are one or more workers available.
 - Poll for activity with infinite timeout.
@@ -2988,7 +2975,7 @@ You should now see that you can reuse and extend the load balancing algorithm wi
 
 ### A High-Level API for ZeroMQ
 
-We’re going to push request-reply onto the stack and open a different area, which is the ZeroMQ API itself. There’s a reason for this detour: as we write more complex examples, the low-level ZeroMQ API starts to look increasingly clumsy. Look at the core of the worker thread from our load balancing broker:
+We're going to push request-reply onto the stack and open a different area, which is the ZeroMQ API itself. There's a reason for this detour: as we write more complex examples, the low-level ZeroMQ API starts to look increasingly clumsy. Look at the core of the worker thread from our load balancing broker:
 
 ```c++
 while (true) {
@@ -3010,7 +2997,7 @@ while (true) {
 }
 ```
 
-That code isn’t even reusable because it can only handle one reply address in the envelope, and it already does some wrapping around the ZeroMQ API. If we used the libzmq simple message API this is what we’d have to write:
+That code isn't even reusable because it can only handle one reply address in the envelope, and it already does some wrapping around the ZeroMQ API. If we used the libzmq simple message API this is what we'd have to write:
 
 ```c++
 while (true) {
@@ -3040,15 +3027,15 @@ while (true) {
 }
 ```
 
-And when code is too long to write quickly, it’s also too long to understand. Up until now, I’ve stuck to the native API because, as ZeroMQ users, we need to know that intimately. But when it gets in our way, we have to treat it as a problem to solve.
+And when code is too long to write quickly, it's also too long to understand. Up until now, I've stuck to the native API because, as ZeroMQ users, we need to know that intimately. But when it gets in our way, we have to treat it as a problem to solve.
 
-We can’t of course just change the ZeroMQ API, which is a documented public contract on which thousands of people agree and depend. Instead, we construct a higher-level API on top based on our experience so far, and most specifically, our experience from writing more complex request-reply patterns.
+We can't of course just change the ZeroMQ API, which is a documented public contract on which thousands of people agree and depend. Instead, we construct a higher-level API on top based on our experience so far, and most specifically, our experience from writing more complex request-reply patterns.
 
 What we want is an API that lets us receive and send an entire message in one shot, including the reply envelope with any number of reply addresses. One that lets us do what we want with the absolute least lines of code.
 
-Making a good message API is fairly difficult. We have a problem of terminology: ZeroMQ uses “message” to describe both multipart messages, and individual message frames. We have a problem of expectations: sometimes it’s natural to see message content as printable string data, sometimes as binary blobs. And we have technical challenges, especially if we want to avoid copying data around too much.
+Making a good message API is fairly difficult. We have a problem of terminology: ZeroMQ uses “message” to describe both multipart messages, and individual message frames. We have a problem of expectations: sometimes it's natural to see message content as printable string data, sometimes as binary blobs. And we have technical challenges, especially if we want to avoid copying data around too much.
 
-The challenge of making a good API affects all languages, though my specific use case is C. Whatever language you use, think about how you could contribute to your language binding to make it as good (or better) than the C binding I’m going to describe.
+The challenge of making a good API affects all languages, though my specific use case is C. Whatever language you use, think about how you could contribute to your language binding to make it as good (or better) than the C binding I'm going to describe.
 
 #### Features of a Higher-Level API
 
@@ -3062,11 +3049,11 @@ while (true) {
 }
 ```
 
-Cutting the amount of code we need to read and write complex messages is great: the results are easy to read and understand. Let’s continue this process for other aspects of working with ZeroMQ. Here’s a wish list of things I’d like in a higher-level API, based on my experience with ZeroMQ so far:
+Cutting the amount of code we need to read and write complex messages is great: the results are easy to read and understand. Let's continue this process for other aspects of working with ZeroMQ. Here's a wish list of things I'd like in a higher-level API, based on my experience with ZeroMQ so far:
 
-- Automatic handling of sockets. I find it cumbersome to have to close sockets manually, and to have to explicitly define the linger timeout in some (but not all) cases. It’d be great to have a way to close sockets automatically when I close the context.
-- Portable thread management. Every nontrivial ZeroMQ application uses threads, but POSIX threads aren’t portable. So a decent high-level API should hide this under a portable layer.
-- Piping from parent to child threads. It’s a recurrent problem: how to signal between parent and child threads. Our API should provide a ZeroMQ message pipe (using PAIR sockets and inproc automatically.
+- Automatic handling of sockets. I find it cumbersome to have to close sockets manually, and to have to explicitly define the linger timeout in some (but not all) cases. It'd be great to have a way to close sockets automatically when I close the context.
+- Portable thread management. Every nontrivial ZeroMQ application uses threads, but POSIX threads aren't portable. So a decent high-level API should hide this under a portable layer.
+- Piping from parent to child threads. It's a recurrent problem: how to signal between parent and child threads. Our API should provide a ZeroMQ message pipe (using PAIR sockets and inproc automatically.
 - Portable clocks. Even getting the time to a millisecond resolution, or sleeping for some milliseconds, is not portable. Realistic ZeroMQ applications need portable clocks, so our API should provide them.
 - A reactor to replace zmq_poll(). The poll loop is simple, but clumsy. Writing a lot of these, we end up doing the same work over and over: calculating timers, and calling code when sockets are ready. A simple reactor with socket readers and timers would save a lot of repeated work.
 - Proper handling of Ctrl-C. We already saw how to catch an interrupt. It would be useful if this happened in all applications.
@@ -3260,7 +3247,7 @@ while (true) {
 }
 ```
 
-Or, if you’re calling zmq_poll(), test on the return code:
+Or, if you're calling zmq_poll(), test on the return code:
 
 ```c++
 if (zmq_poll (items, 2, 1000 * 1000) == -1)
@@ -3284,7 +3271,7 @@ zloop_start (reactor);
 zloop_destroy (&reactor);
 ```
 
-The actual handling of messages sits inside dedicated functions or methods. You may not like the style–it’s a matter of taste. What it does help with is mixing timers and socket activity. In the rest of this text, we’ll use zmq_poll() in simpler cases, and zloop in more complex examples.
+The actual handling of messages sits inside dedicated functions or methods. You may not like the style–it's a matter of taste. What it does help with is mixing timers and socket activity. In the rest of this text, we'll use zmq_poll() in simpler cases, and zloop in more complex examples.
 
 Here is the load balancing broker rewritten once again, this time to use zloop:
 
@@ -3471,12 +3458,12 @@ int main (void)
 }
 ```
 
-Getting applications to properly shut down when you send them Ctrl-C can be tricky. If you use the zctx class it’ll automatically set up signal handling, but your code still has to cooperate. You must break any loop if zmq_poll returns -1 or if any of the zstr_recv, zframe_recv, or zmsg_recv methods return NULL. If you have nested loops, it can be useful to make the outer ones conditional on !zctx_interrupted.
+Getting applications to properly shut down when you send them Ctrl-C can be tricky. If you use the zctx class it'll automatically set up signal handling, but your code still has to cooperate. You must break any loop if zmq_poll returns -1 or if any of the zstr_recv, zframe_recv, or zmsg_recv methods return NULL. If you have nested loops, it can be useful to make the outer ones conditional on !zctx_interrupted.
 
-If you’re using child threads, they won’t receive the interrupt. To tell them to shutdown, you can either:
+If you're using child threads, they won't receive the interrupt. To tell them to shutdown, you can either:
 
 - Destroy the context, if they are sharing the same context, in which case any blocking calls they are waiting on will end with ETERM.
-- Send them shutdown messages, if they are using their own contexts. For this you’ll need some socket plumbing.
+- Send them shutdown messages, if they are using their own contexts. For this you'll need some socket plumbing.
 
 ### The Asynchronous Client/Server Pattern
 
@@ -3484,7 +3471,7 @@ In the ROUTER to DEALER example, we saw a 1-to-N use case where one server talks
 
 ![](./pics/zmq/fig37.png)
 
-Here’s how it works:
+Here's how it works:
 
 - Clients connect to the server and send requests.
 - For each request, the server sends 0 or more replies.
@@ -3492,7 +3479,7 @@ Here’s how it works:
 - Servers can send multiple replies without waiting for new requests.
   
 
-Here’s code that shows how this works:
+Here's code that shows how this works:
 
 ```c++
 //  Asynchronous client-to-server (DEALER to ROUTER)
@@ -3680,18 +3667,18 @@ int main (void)
 }
 ```
 
-The example runs in one process, with multiple threads simulating a real multiprocess architecture. When you run the example, you’ll see three clients (each with a random ID), printing out the replies they get from the server. Look carefully and you’ll see each client task gets 0 or more replies per request.
+The example runs in one process, with multiple threads simulating a real multiprocess architecture. When you run the example, you'll see three clients (each with a random ID), printing out the replies they get from the server. Look carefully and you'll see each client task gets 0 or more replies per request.
 
 Some comments on this code:
 
-- The clients send a request once per second, and get zero or more replies back. To make this work using zmq_poll(), we can’t simply poll with a 1-second timeout, or we’d end up sending a new request only one second after we received the last reply. So we poll at a high frequency (100 times at 1/100th of a second per poll), which is approximately accurate.
+- The clients send a request once per second, and get zero or more replies back. To make this work using zmq_poll(), we can't simply poll with a 1-second timeout, or we'd end up sending a new request only one second after we received the last reply. So we poll at a high frequency (100 times at 1/100th of a second per poll), which is approximately accurate.
 - The server uses a pool of worker threads, each processing one request synchronously. It connects these to its frontend socket using an internal queue. It connects the frontend and backend sockets using a zmq_proxy() call.
 
 ![](./pics/zmq/fig38.png)
 
-Note that we’re doing DEALER to ROUTER dialog between client and server, but internally between the server main thread and workers, we’re doing DEALER to DEALER. If the workers were strictly synchronous, we’d use REP. However, because we want to send multiple replies, we need an async socket. We do not want to route replies, they always go to the single server thread that sent us the request.
+Note that we're doing DEALER to ROUTER dialog between client and server, but internally between the server main thread and workers, we're doing DEALER to DEALER. If the workers were strictly synchronous, we'd use REP. However, because we want to send multiple replies, we need an async socket. We do not want to route replies, they always go to the single server thread that sent us the request.
 
-Let’s think about the routing envelope. The client sends a message consisting of a single frame. The server thread receives a two-frame message (original message prefixed by client identity). We send these two frames on to the worker, which treats it as a normal reply envelope, returns that to us as a two frame message. We then use the first frame as an identity to route the second frame back to the client as a reply.
+Let's think about the routing envelope. The client sends a message consisting of a single frame. The server thread receives a two-frame message (original message prefixed by client identity). We send these two frames on to the worker, which treats it as a normal reply envelope, returns that to us as a two frame message. We then use the first frame as an identity to route the second frame back to the client as a reply.
 
 It looks something like this:
 
@@ -3701,19 +3688,19 @@ It looks something like this:
              1 part         2 parts       2 parts
 ```
 
-Now for the sockets: we could use the load balancing ROUTER to DEALER pattern to talk to workers, but it’s extra work. In this case, a DEALER to DEALER pattern is probably fine: the trade-off is lower latency for each request, but higher risk of unbalanced work distribution. Simplicity wins in this case.
+Now for the sockets: we could use the load balancing ROUTER to DEALER pattern to talk to workers, but it's extra work. In this case, a DEALER to DEALER pattern is probably fine: the trade-off is lower latency for each request, but higher risk of unbalanced work distribution. Simplicity wins in this case.
 
-When you build servers that maintain stateful conversations with clients, you will run into a classic problem. If the server keeps some state per client, and clients keep coming and going, eventually it will run out of resources. Even if the same clients keep connecting, if you’re using default identities, each connection will look like a new one.
+When you build servers that maintain stateful conversations with clients, you will run into a classic problem. If the server keeps some state per client, and clients keep coming and going, eventually it will run out of resources. Even if the same clients keep connecting, if you're using default identities, each connection will look like a new one.
 
-We cheat in the above example by keeping state only for a very short time (the time it takes a worker to process a request) and then throwing away the state. But that’s not practical for many cases. To properly manage client state in a stateful asynchronous server, you have to:
+We cheat in the above example by keeping state only for a very short time (the time it takes a worker to process a request) and then throwing away the state. But that's not practical for many cases. To properly manage client state in a stateful asynchronous server, you have to:
 
 - Do heartbeating from client to server. In our example, we send a request once per second, which can reliably be used as a heartbeat.
 - Store state using the client identity (whether generated or explicit) as key.
-- Detect a stopped heartbeat. If there’s no request from a client within, say, two seconds, the server can detect this and destroy any state it’s holding for that client.
+- Detect a stopped heartbeat. If there's no request from a client within, say, two seconds, the server can detect this and destroy any state it's holding for that client.
 
 ### Worked Example: Inter-Broker Routing
 
-Let’s take everything we’ve seen so far, and scale things up to a real application. We’ll build this step-by-step over several iterations. Our best client calls us urgently and asks for a design of a large cloud computing facility. He has this vision of a cloud that spans many data centers, each a cluster of clients and workers, and that works together as a whole. Because we’re smart enough to know that practice always beats theory, we propose to make a working simulation using ZeroMQ. Our client, eager to lock down the budget before his own boss changes his mind, and having read great things about ZeroMQ on Twitter, agrees.
+Let's take everything we've seen so far, and scale things up to a real application. We'll build this step-by-step over several iterations. Our best client calls us urgently and asks for a design of a large cloud computing facility. He has this vision of a cloud that spans many data centers, each a cluster of clients and workers, and that works together as a whole. Because we're smart enough to know that practice always beats theory, we propose to make a working simulation using ZeroMQ. Our client, eager to lock down the budget before his own boss changes his mind, and having read great things about ZeroMQ on Twitter, agrees.
 
 #### Establishing the Details
 
@@ -3722,26 +3709,26 @@ Several espressos later, we want to jump into writing code, but a little voice t
 The client explains:
 
 - Workers run on various kinds of hardware, but they are all able to handle any task. There are several hundred workers per cluster, and as many as a dozen clusters in total.
-- Clients create tasks for workers. Each task is an independent unit of work and all the client wants is to find an available worker, and send it the task, as soon as possible. There will be a lot of clients and they’ll come and go arbitrarily.
+- Clients create tasks for workers. Each task is an independent unit of work and all the client wants is to find an available worker, and send it the task, as soon as possible. There will be a lot of clients and they'll come and go arbitrarily.
 - The real difficulty is to be able to add and remove clusters at any time. A cluster can leave or join the cloud instantly, bringing all its workers and clients with it.
-- If there are no workers in their own cluster, clients’ tasks will go off to other available workers in the cloud.
-- Clients send out one task at a time, waiting for a reply. If they don’t get an answer within X seconds, they’ll just send out the task again. This isn’t our concern; the client API does it already.
+- If there are no workers in their own cluster, clients' tasks will go off to other available workers in the cloud.
+- Clients send out one task at a time, waiting for a reply. If they don't get an answer within X seconds, they'll just send out the task again. This isn't our concern; the client API does it already.
 - Workers process one task at a time; they are very simple beasts. If they crash, they get restarted by whatever script started them.
 
 So we double-check to make sure that we understood this correctly:
 
-- “There will be some kind of super-duper network interconnect between clusters, right?”, we ask. The client says, “Yes, of course, we’re not idiots.”
+- “There will be some kind of super-duper network interconnect between clusters, right?”, we ask. The client says, “Yes, of course, we're not idiots.”
 - “What kind of volumes are we talking about?”, we ask. The client replies, “Up to a thousand clients per cluster, each doing at most ten requests per second. Requests are small, and replies are also small, no more than 1K bytes each.”
 
 So we do a little calculation and see that this will work nicely over plain TCP. 2,500 clients x 10/second x 1,000 bytes x 2 directions = 50MB/sec or 400Mb/sec, not a problem for a 1Gb network.
 
-It’s a straightforward problem that requires no exotic hardware or protocols, just some clever routing algorithms and careful design. We start by designing one cluster (one data center) and then we figure out how to connect clusters together.
+It's a straightforward problem that requires no exotic hardware or protocols, just some clever routing algorithms and careful design. We start by designing one cluster (one data center) and then we figure out how to connect clusters together.
 
 #### Architecture of a Single Cluster
 
 Workers and clients are synchronous. We want to use the load balancing pattern to route tasks to workers. Workers are all identical; our facility has no notion of different services. Workers are anonymous; clients never address them directly. We make no attempt here to provide guaranteed delivery, retry, and so on.
 
-For reasons we already examined, clients and workers won’t speak to each other directly. It makes it impossible to add or remove nodes dynamically. So our basic model consists of the request-reply message broker we saw earlier.
+For reasons we already examined, clients and workers won't speak to each other directly. It makes it impossible to add or remove nodes dynamically. So our basic model consists of the request-reply message broker we saw earlier.
 
 ![](./pics/zmq/fig39.png)
 
@@ -3753,29 +3740,29 @@ Now we scale this out to more than one cluster. Each cluster has a set of client
 
 The question is: how do we get the clients of each cluster talking to the workers of the other cluster? There are a few possibilities, each with pros and cons:
 
-- Clients could connect directly to both brokers. The advantage is that we don’t need to modify brokers or workers. But clients get more complex and become aware of the overall topology. If we want to add a third or forth cluster, for example, all the clients are affected. In effect we have to move routing and failover logic into the clients and that’s not nice.
-- Workers might connect directly to both brokers. But REQ workers can’t do that, they can only reply to one broker. We might use REPs but REPs don’t give us customizable broker-to-worker routing like load balancing does, only the built-in load balancing. That’s a fail; if we want to distribute work to idle workers, we precisely need load balancing. One solution would be to use ROUTER sockets for the worker nodes. Let’s label this “Idea #1”.
-- Brokers could connect to each other. This looks neatest because it creates the fewest additional connections. We can’t add clusters on the fly, but that is probably out of scope. Now clients and workers remain ignorant of the real network topology, and brokers tell each other when they have spare capacity. Let’s label this “Idea #2”.
+- Clients could connect directly to both brokers. The advantage is that we don't need to modify brokers or workers. But clients get more complex and become aware of the overall topology. If we want to add a third or forth cluster, for example, all the clients are affected. In effect we have to move routing and failover logic into the clients and that's not nice.
+- Workers might connect directly to both brokers. But REQ workers can't do that, they can only reply to one broker. We might use REPs but REPs don't give us customizable broker-to-worker routing like load balancing does, only the built-in load balancing. That's a fail; if we want to distribute work to idle workers, we precisely need load balancing. One solution would be to use ROUTER sockets for the worker nodes. Let's label this “Idea #1”.
+- Brokers could connect to each other. This looks neatest because it creates the fewest additional connections. We can't add clusters on the fly, but that is probably out of scope. Now clients and workers remain ignorant of the real network topology, and brokers tell each other when they have spare capacity. Let's label this “Idea #2”.
 
-Let’s explore Idea #1. In this model, we have workers connecting to both brokers and accepting jobs from either one.
+Let's explore Idea #1. In this model, we have workers connecting to both brokers and accepting jobs from either one.
 
 ![](./pics/zmq/fig41.png)
 
-It looks feasible. However, it doesn’t provide what we wanted, which was that clients get local workers if possible and remote workers only if it’s better than waiting. Also workers will signal “ready” to both brokers and can get two jobs at once, while other workers remain idle. It seems this design fails because again we’re putting routing logic at the edges.
+It looks feasible. However, it doesn't provide what we wanted, which was that clients get local workers if possible and remote workers only if it's better than waiting. Also workers will signal “ready” to both brokers and can get two jobs at once, while other workers remain idle. It seems this design fails because again we're putting routing logic at the edges.
 
-So, idea #2 then. We interconnect the brokers and don’t touch the clients or workers, which are REQs like we’re used to.
+So, idea #2 then. We interconnect the brokers and don't touch the clients or workers, which are REQs like we're used to.
 
 ![](./pics/zmq/fig42.png)
 
-This design is appealing because the problem is solved in one place, invisible to the rest of the world. Basically, brokers open secret channels to each other and whisper, like camel traders, “Hey, I’ve got some spare capacity. If you have too many clients, give me a shout and we’ll deal”.
+This design is appealing because the problem is solved in one place, invisible to the rest of the world. Basically, brokers open secret channels to each other and whisper, like camel traders, “Hey, I've got some spare capacity. If you have too many clients, give me a shout and we'll deal”.
 
 In effect it is just a more sophisticated routing algorithm: brokers become subcontractors for each other. There are other things to like about this design, even before we play with real code:
 
 - It treats the common case (clients and workers on the same cluster) as default and does extra work for the exceptional case (shuffling jobs between clusters).
 - It lets us use different message flows for the different types of work. That means we can handle them differently, e.g., using different types of network connection.
-- It feels like it would scale smoothly. Interconnecting three or more brokers doesn’t get overly complex. If we find this to be a problem, it’s easy to solve by adding a super-broker.
+- It feels like it would scale smoothly. Interconnecting three or more brokers doesn't get overly complex. If we find this to be a problem, it's easy to solve by adding a super-broker.
 
-We’ll now make a worked example. We’ll pack an entire cluster into one process. That is obviously not realistic, but it makes it simple to simulate, and the simulation can accurately scale to real processes. This is the beauty of ZeroMQ–you can design at the micro-level and scale that up to the macro-level. Threads become processes, and then become boxes and the patterns and logic remain the same. Each of our “cluster” processes contains client threads, worker threads, and a broker thread.
+We'll now make a worked example. We'll pack an entire cluster into one process. That is obviously not realistic, but it makes it simple to simulate, and the simulation can accurately scale to real processes. This is the beauty of ZeroMQ–you can design at the micro-level and scale that up to the macro-level. Threads become processes, and then become boxes and the patterns and logic remain the same. Each of our “cluster” processes contains client threads, worker threads, and a broker thread.
 
 We know the basic model well by now:
 
@@ -3785,34 +3772,34 @@ We know the basic model well by now:
 
 #### Federation Versus Peering
 
-There are several possible ways to interconnect brokers. What we want is to be able to tell other brokers, “we have capacity”, and then receive multiple tasks. We also need to be able to tell other brokers, “stop, we’re full”. It doesn’t need to be perfect; sometimes we may accept jobs we can’t process immediately, then we’ll do them as soon as possible.
+There are several possible ways to interconnect brokers. What we want is to be able to tell other brokers, “we have capacity”, and then receive multiple tasks. We also need to be able to tell other brokers, “stop, we're full”. It doesn't need to be perfect; sometimes we may accept jobs we can't process immediately, then we'll do them as soon as possible.
 
-The simplest interconnect is federation, in which brokers simulate clients and workers for each other. We would do this by connecting our frontend to the other broker’s backend socket. Note that it is legal to both bind a socket to an endpoint and connect it to other endpoints.
+The simplest interconnect is federation, in which brokers simulate clients and workers for each other. We would do this by connecting our frontend to the other broker's backend socket. Note that it is legal to both bind a socket to an endpoint and connect it to other endpoints.
 
 ![](./pics/zmq/fig43.png)
 
-This would give us simple logic in both brokers and a reasonably good mechanism: when there are no workers, tell the other broker “ready”, and accept one job from it. The problem is also that it is too simple for this problem. A federated broker would be able to handle only one task at a time. If the broker emulates a lock-step client and worker, it is by definition also going to be lock-step, and if it has lots of available workers they won’t be used. Our brokers need to be connected in a fully asynchronous fashion.
+This would give us simple logic in both brokers and a reasonably good mechanism: when there are no workers, tell the other broker “ready”, and accept one job from it. The problem is also that it is too simple for this problem. A federated broker would be able to handle only one task at a time. If the broker emulates a lock-step client and worker, it is by definition also going to be lock-step, and if it has lots of available workers they won't be used. Our brokers need to be connected in a fully asynchronous fashion.
 
-The federation model is perfect for other kinds of routing, especially service-oriented architectures (SOAs), which route by service name and proximity rather than load balancing or round robin. So don’t dismiss it as useless, it’s just not right for all use cases.
+The federation model is perfect for other kinds of routing, especially service-oriented architectures (SOAs), which route by service name and proximity rather than load balancing or round robin. So don't dismiss it as useless, it's just not right for all use cases.
 
-Instead of federation, let’s look at a peering approach in which brokers are explicitly aware of each other and talk over privileged channels. Let’s break this down, assuming we want to interconnect N brokers. Each broker has (N - 1) peers, and all brokers are using exactly the same code and logic. There are two distinct flows of information between brokers:
+Instead of federation, let's look at a peering approach in which brokers are explicitly aware of each other and talk over privileged channels. Let's break this down, assuming we want to interconnect N brokers. Each broker has (N - 1) peers, and all brokers are using exactly the same code and logic. There are two distinct flows of information between brokers:
 
 - Each broker needs to tell its peers how many workers it has available at any time. This can be fairly simple information–just a quantity that is updated regularly. The obvious (and correct) socket pattern for this is pub-sub. So every broker opens a PUB socket and publishes state information on that, and every broker also opens a SUB socket and connects that to the PUB socket of every other broker to get state information from its peers.
-- Each broker needs a way to delegate tasks to a peer and get replies back, asynchronously. We’ll do this using ROUTER sockets; no other combination works. Each broker has two such sockets: one for tasks it receives and one for tasks it delegates. If we didn’t use two sockets, it would be more work to know whether we were reading a request or a reply each time. That would mean adding more information to the message envelope.
+- Each broker needs a way to delegate tasks to a peer and get replies back, asynchronously. We'll do this using ROUTER sockets; no other combination works. Each broker has two such sockets: one for tasks it receives and one for tasks it delegates. If we didn't use two sockets, it would be more work to know whether we were reading a request or a reply each time. That would mean adding more information to the message envelope.
 
 And there is also the flow of information between a broker and its local clients and workers.
 
 #### The Naming Ceremony
 
-Three flows x two sockets for each flow = six sockets that we have to manage in the broker. Choosing good names is vital to keeping a multisocket juggling act reasonably coherent in our minds. Sockets do something and what they do should form the basis for their names. It’s about being able to read the code several weeks later on a cold Monday morning before coffee, and not feel any pain.
+Three flows x two sockets for each flow = six sockets that we have to manage in the broker. Choosing good names is vital to keeping a multisocket juggling act reasonably coherent in our minds. Sockets do something and what they do should form the basis for their names. It's about being able to read the code several weeks later on a cold Monday morning before coffee, and not feel any pain.
 
-Let’s do a shamanistic naming ceremony for the sockets. The three flows are:
+Let's do a shamanistic naming ceremony for the sockets. The three flows are:
 
 - A local request-reply flow between the broker and its clients and workers.
 - A cloud request-reply flow between the broker and its peer brokers.
 - A state flow between the broker and its peer brokers.
 
-Finding meaningful names that are all the same length means our code will align nicely. It’s not a big thing, but attention to details helps. For each flow the broker has two sockets that we can orthogonally call the frontend and backend. We’ve used these names quite often. A frontend receives information or tasks. A backend sends those out to other peers. The conceptual flow is from front to back (with replies going in the opposite direction from back to front).
+Finding meaningful names that are all the same length means our code will align nicely. It's not a big thing, but attention to details helps. For each flow the broker has two sockets that we can orthogonally call the frontend and backend. We've used these names quite often. A frontend receives information or tasks. A backend sends those out to other peers. The conceptual flow is from front to back (with replies going in the opposite direction from back to front).
 
 So in all the code we write for this tutorial, we will use these socket names:
 
@@ -3820,9 +3807,9 @@ So in all the code we write for this tutorial, we will use these socket names:
 - cloudfe and cloudbe for the cloud flow.
 - statefe and statebe for the state flow.
 
-For our transport and because we’re simulating the whole thing on one box, we’ll use ipc for everything. This has the advantage of working like tcp in terms of connectivity (i.e., it’s a disconnected transport, unlike inproc), yet we don’t need IP addresses or DNS names, which would be a pain here. Instead, we will use ipc endpoints called something-local, something-cloud, and something-state, where something is the name of our simulated cluster.
+For our transport and because we're simulating the whole thing on one box, we'll use ipc for everything. This has the advantage of working like tcp in terms of connectivity (i.e., it's a disconnected transport, unlike inproc), yet we don't need IP addresses or DNS names, which would be a pain here. Instead, we will use ipc endpoints called something-local, something-cloud, and something-state, where something is the name of our simulated cluster.
 
-You might be thinking that this is a lot of work for some names. Why not call them s1, s2, s3, s4, etc.? The answer is that if your brain is not a perfect machine, you need a lot of help when reading code, and we’ll see that these names do help. It’s easier to remember “three flows, two directions” than “six different sockets”.
+You might be thinking that this is a lot of work for some names. Why not call them s1, s2, s3, s4, etc.? The answer is that if your brain is not a perfect machine, you need a lot of help when reading code, and we'll see that these names do help. It's easier to remember “three flows, two directions” than “six different sockets”.
 
 ![](./pics/zmq/fig44.png)
 
@@ -3830,7 +3817,7 @@ Note that we connect the cloudbe in each broker to the cloudfe in every other br
 
 #### Prototyping the State Flow
 
-Because each socket flow has its own little traps for the unwary, we will test them in real code one-by-one, rather than try to throw the whole lot into code in one go. When we’re happy with each flow, we can put them together into a full program. We’ll start with the state flow.
+Because each socket flow has its own little traps for the unwary, we will test them in real code one-by-one, rather than try to throw the whole lot into code in one go. When we're happy with each flow, we can put them together into a full program. We'll start with the state flow.
 
 ![](./pics/zmq/fig45.png)
 
@@ -3903,13 +3890,13 @@ int main (int argc, char *argv [])
 
 Notes about this code:
 
-- Each broker has an identity that we use to construct ipc endpoint names. A real broker would need to work with TCP and a more sophisticated configuration scheme. We’ll look at such schemes later in this book, but for now, using generated ipc names lets us ignore the problem of where to get TCP/IP addresses or names.
-- We use a zmq_poll() loop as the core of the program. This processes incoming messages and sends out state messages. We send a state message only if we did not get any incoming messages and we waited for a second. If we send out a state message each time we get one in, we’ll get message storms.
+- Each broker has an identity that we use to construct ipc endpoint names. A real broker would need to work with TCP and a more sophisticated configuration scheme. We'll look at such schemes later in this book, but for now, using generated ipc names lets us ignore the problem of where to get TCP/IP addresses or names.
+- We use a zmq_poll() loop as the core of the program. This processes incoming messages and sends out state messages. We send a state message only if we did not get any incoming messages and we waited for a second. If we send out a state message each time we get one in, we'll get message storms.
 - We use a two-part pub-sub message consisting of sender address and data. Note that we will need to know the address of the publisher in order to send it tasks, and the only way is to send this explicitly as a part of the message.
-- We don’t set identities on subscribers because if we did then we’d get outdated state information when connecting to running brokers.
-- We don’t set a HWM on the publisher, but if we were using ZeroMQ v2.x that would be a wise idea.
+- We don't set identities on subscribers because if we did then we'd get outdated state information when connecting to running brokers.
+- We don't set a HWM on the publisher, but if we were using ZeroMQ v2.x that would be a wise idea.
 
-We can build this little program and run it three times to simulate three clusters. Let’s call them DC1, DC2, and DC3 (the names are arbitrary). We run these three commands, each in a separate window:
+We can build this little program and run it three times to simulate three clusters. Let's call them DC1, DC2, and DC3 (the names are arbitrary). We run these three commands, each in a separate window:
 
 ```
 peering1 DC1 DC2 DC3  #  Start DC1 and connect to DC2 and DC3
@@ -3917,33 +3904,33 @@ peering1 DC2 DC1 DC3  #  Start DC2 and connect to DC1 and DC3
 peering1 DC3 DC1 DC2  #  Start DC3 and connect to DC1 and DC2
 ```
 
-You’ll see each cluster report the state of its peers, and after a few seconds they will all happily be printing random numbers once per second. Try this and satisfy yourself that the three brokers all match up and synchronize to per-second state updates.
+You'll see each cluster report the state of its peers, and after a few seconds they will all happily be printing random numbers once per second. Try this and satisfy yourself that the three brokers all match up and synchronize to per-second state updates.
 
-In real life, we’d not send out state messages at regular intervals, but rather whenever we had a state change, i.e., whenever a worker becomes available or unavailable. That may seem like a lot of traffic, but state messages are small and we’ve established that the inter-cluster connections are super fast.
+In real life, we'd not send out state messages at regular intervals, but rather whenever we had a state change, i.e., whenever a worker becomes available or unavailable. That may seem like a lot of traffic, but state messages are small and we've established that the inter-cluster connections are super fast.
 
-If we wanted to send state messages at precise intervals, we’d create a child thread and open the statebe socket in that thread. We’d then send irregular state updates to that child thread from our main thread and allow the child thread to conflate them into regular outgoing messages. This is more work than we need here.
+If we wanted to send state messages at precise intervals, we'd create a child thread and open the statebe socket in that thread. We'd then send irregular state updates to that child thread from our main thread and allow the child thread to conflate them into regular outgoing messages. This is more work than we need here.
 
 #### Prototyping the Local and Cloud Flow
 
-Let’s now prototype the flow of tasks via the local and cloud sockets. This code pulls requests from clients and then distributes them to local workers and cloud peers on a random basis.
+Let's now prototype the flow of tasks via the local and cloud sockets. This code pulls requests from clients and then distributes them to local workers and cloud peers on a random basis.
 
 ![](./pics/zmq/fig46.png)
 
-Before we jump into the code, which is getting a little complex, let’s sketch the core routing logic and break it down into a simple yet robust design.
+Before we jump into the code, which is getting a little complex, let's sketch the core routing logic and break it down into a simple yet robust design.
 
-We need two queues, one for requests from local clients and one for requests from cloud clients. One option would be to pull messages off the local and cloud frontends, and pump these onto their respective queues. But this is kind of pointless because ZeroMQ sockets are queues already. So let’s use the ZeroMQ socket buffers as queues.
+We need two queues, one for requests from local clients and one for requests from cloud clients. One option would be to pull messages off the local and cloud frontends, and pump these onto their respective queues. But this is kind of pointless because ZeroMQ sockets are queues already. So let's use the ZeroMQ socket buffers as queues.
 
-This was the technique we used in the load balancing broker, and it worked nicely. We only read from the two frontends when there is somewhere to send the requests. We can always read from the backends, as they give us replies to route back. As long as the backends aren’t talking to us, there’s no point in even looking at the frontends.
+This was the technique we used in the load balancing broker, and it worked nicely. We only read from the two frontends when there is somewhere to send the requests. We can always read from the backends, as they give us replies to route back. As long as the backends aren't talking to us, there's no point in even looking at the frontends.
 
 So our main loop becomes:
 
-- Poll the backends for activity. When we get a message, it may be “ready” from a worker or it may be a reply. If it’s a reply, route back via the local or cloud frontend.
+- Poll the backends for activity. When we get a message, it may be “ready” from a worker or it may be a reply. If it's a reply, route back via the local or cloud frontend.
 - If a worker replied, it became available, so we queue it and count it.
 - While there are workers available, take a request, if any, from either frontend and route to a local worker, or randomly, to a cloud peer.
 
-Randomly sending tasks to a peer broker rather than a worker simulates work distribution across the cluster. It’s dumb, but that is fine for this stage.
+Randomly sending tasks to a peer broker rather than a worker simulates work distribution across the cluster. It's dumb, but that is fine for this stage.
 
-We use broker identities to route messages between brokers. Each broker has a name that we provide on the command line in this simple prototype. As long as these names don’t overlap with the ZeroMQ-generated UUIDs used for client nodes, we can figure out whether to route a reply back to a client or to a broker.
+We use broker identities to route messages between brokers. Each broker has a name that we provide on the command line in this simple prototype. As long as these names don't overlap with the ZeroMQ-generated UUIDs used for client nodes, we can figure out whether to route a reply back to a client or to a broker.
 
 Here is how this works in code. The interesting part starts around the comment “Interesting part”.
 
@@ -4190,15 +4177,15 @@ peering2 you me
 
 Some comments on this code:
 
-- In the C code at least, using the zmsg class makes life much easier, and our code much shorter. It’s obviously an abstraction that works. If you build ZeroMQ applications in C, you should use CZMQ.
-- Because we’re not getting any state information from peers, we naively assume they are running. The code prompts you to confirm when you’ve started all the brokers. In the real case, we’d not send anything to brokers who had not told us they exist.
+- In the C code at least, using the zmsg class makes life much easier, and our code much shorter. It's obviously an abstraction that works. If you build ZeroMQ applications in C, you should use CZMQ.
+- Because we're not getting any state information from peers, we naively assume they are running. The code prompts you to confirm when you've started all the brokers. In the real case, we'd not send anything to brokers who had not told us they exist.
 
 You can satisfy yourself that the code works by watching it run forever. If there were any misrouted messages, clients would end up blocking, and the brokers would stop printing trace information. You can prove that by killing either of the brokers. The other broker tries to send requests to the cloud, and one-by-one its clients block, waiting for an answer.
 
 #### Putting it All Together
-Let’s put this together into a single package. As before, we’ll run an entire cluster as one process. We’re going to take the two previous examples and merge them into one properly working design that lets you simulate any number of clusters.
+Let's put this together into a single package. As before, we'll run an entire cluster as one process. We're going to take the two previous examples and merge them into one properly working design that lets you simulate any number of clusters.
 
-This code is the size of both previous prototypes together, at 270 LoC. That’s pretty good for a simulation of a cluster that includes clients and workers and cloud workload distribution. Here is the code:
+This code is the size of both previous prototypes together, at 270 LoC. That's pretty good for a simulation of a cluster that includes clients and workers and cloud workload distribution. Here is the code:
 
 ```c++
 //  Broker peering simulation (part 3)
@@ -4505,24 +4492,24 @@ int main (int argc, char *argv [])
 }
 ```
 
-It’s a nontrivial program and took about a day to get working. These are the highlights:
+It's a nontrivial program and took about a day to get working. These are the highlights:
 
 - The client threads detect and report a failed request. They do this by polling for a response and if none arrives after a while (10 seconds), printing an error message.
-- Client threads don’t print directly, but instead send a message to a monitor socket (PUSH) that the main loop collects (PULL) and prints off. This is the first case we’ve seen of using ZeroMQ sockets for monitoring and logging; this is a big use case that we’ll come back to later.
+- Client threads don't print directly, but instead send a message to a monitor socket (PUSH) that the main loop collects (PULL) and prints off. This is the first case we've seen of using ZeroMQ sockets for monitoring and logging; this is a big use case that we'll come back to later.
 - Clients simulate varying loads to get the cluster 100% at random moments, so that tasks are shifted over to the cloud. The number of clients and workers, and delays in the client and worker threads control this. Feel free to play with them to see if you can make a more realistic simulation.
 - The main loop uses two pollsets. It could in fact use three: information, backends, and frontends. As in the earlier prototype, there is no point in taking a frontend message if there is no backend capacity.
 
 These are some of the problems that arose during development of this program:
 
-- Clients would freeze, due to requests or replies getting lost somewhere. Recall that the ROUTER socket drops messages it can’t route. The first tactic here was to modify the client thread to detect and report such problems. Secondly, I put zmsg_dump() calls after every receive and before every send in the main loop, until the origin of the problems was clear.
+- Clients would freeze, due to requests or replies getting lost somewhere. Recall that the ROUTER socket drops messages it can't route. The first tactic here was to modify the client thread to detect and report such problems. Secondly, I put zmsg_dump() calls after every receive and before every send in the main loop, until the origin of the problems was clear.
 - The main loop was mistakenly reading from more than one ready socket. This caused the first message to be lost. I fixed that by reading only from the first ready socket.
 - The zmsg class was not properly encoding UUIDs as C strings. This caused UUIDs that contain 0 bytes to be corrupted. I fixed that by modifying zmsg to encode UUIDs as printable hex strings.
 
-This simulation does not detect disappearance of a cloud peer. If you start several peers and stop one, and it was broadcasting capacity to the others, they will continue to send it work even if it’s gone. You can try this, and you will get clients that complain of lost requests. The solution is twofold: first, only keep the capacity information for a short time so that if a peer does disappear, its capacity is quickly set to zero. Second, add reliability to the request-reply chain. We’ll look at reliability in the next chapter.
+This simulation does not detect disappearance of a cloud peer. If you start several peers and stop one, and it was broadcasting capacity to the others, they will continue to send it work even if it's gone. You can try this, and you will get clients that complain of lost requests. The solution is twofold: first, only keep the capacity information for a short time so that if a peer does disappear, its capacity is quickly set to zero. Second, add reliability to the request-reply chain. We'll look at reliability in the next chapter.
 
 ## Reliable Request-Reply Patterns
 
-Chapter 3 - Advanced Request-Reply Patterns covered advanced uses of ZeroMQ’s request-reply pattern with working examples. This chapter looks at the general question of reliability and builds a set of reliable messaging patterns on top of ZeroMQ’s core request-reply pattern.
+Chapter 3 - Advanced Request-Reply Patterns covered advanced uses of ZeroMQ's request-reply pattern with working examples. This chapter looks at the general question of reliability and builds a set of reliable messaging patterns on top of ZeroMQ's core request-reply pattern.
 
 In this chapter, we focus heavily on user-space request-reply patterns, reusable models that help you design your own ZeroMQ architectures:
 
@@ -4536,7 +4523,7 @@ In this chapter, we focus heavily on user-space request-reply patterns, reusable
 
 ### What is “Reliability”?
 
-Most people who speak of “reliability” don’t really know what they mean. We can only define reliability in terms of failure. That is, if we can handle a certain set of well-defined and understood failures, then we are reliable with respect to those failures. No more, no less. So let’s look at the possible causes of failure in a distributed ZeroMQ application, in roughly descending order of probability:
+Most people who speak of “reliability” don't really know what they mean. We can only define reliability in terms of failure. That is, if we can handle a certain set of well-defined and understood failures, then we are reliable with respect to those failures. No more, no less. So let's look at the possible causes of failure in a distributed ZeroMQ application, in roughly descending order of probability:
 
 - Application code is the worst offender. It can crash and exit, freeze and stop responding to input, run too slowly for its input, exhaust all memory, and so on.
 - System code–such as brokers we write using ZeroMQ–can die for the same reasons as application code. System code should be more reliable than application code, but it can still crash and burn, and especially run out of memory if it tries to queue messages for slow clients.
@@ -4548,25 +4535,25 @@ Most people who speak of “reliability” don’t really know what they mean. W
 
 To make a software system fully reliable against all of these possible failures is an enormously difficult and expensive job and goes beyond the scope of this book.
 
-Because the first five cases in the above list cover 99.9% of real world requirements outside large companies (according to a highly scientific study I just ran, which also told me that 78% of statistics are made up on the spot, and moreover never to trust a statistic that we didn’t falsify ourselves), that’s what we’ll examine. If you’re a large company with money to spend on the last two cases, contact my company immediately! There’s a large hole behind my beach house waiting to be converted into an executive swimming pool.
+Because the first five cases in the above list cover 99.9% of real world requirements outside large companies (according to a highly scientific study I just ran, which also told me that 78% of statistics are made up on the spot, and moreover never to trust a statistic that we didn't falsify ourselves), that's what we'll examine. If you're a large company with money to spend on the last two cases, contact my company immediately! There's a large hole behind my beach house waiting to be converted into an executive swimming pool.
 
 ### Designing Reliability
 
-So to make things brutally simple, reliability is “keeping things working properly when code freezes or crashes”, a situation we’ll shorten to “dies”. However, the things we want to keep working properly are more complex than just messages. We need to take each core ZeroMQ messaging pattern and see how to make it work (if we can) even when code dies.
+So to make things brutally simple, reliability is “keeping things working properly when code freezes or crashes”, a situation we'll shorten to “dies”. However, the things we want to keep working properly are more complex than just messages. We need to take each core ZeroMQ messaging pattern and see how to make it work (if we can) even when code dies.
 
-Let’s take them one-by-one:
+Let's take them one-by-one:
 
-- Request-reply: if the server dies (while processing a request), the client can figure that out because it won’t get an answer back. Then it can give up in a huff, wait and try again later, find another server, and so on. As for the client dying, we can brush that off as “someone else’s problem” for now.
-- Pub-sub: if the client dies (having gotten some data), the server doesn’t know about it. Pub-sub doesn’t send any information back from client to server. But the client can contact the server out-of-band, e.g., via request-reply, and ask, “please resend everything I missed”. As for the server dying, that’s out of scope for here. Subscribers can also self-verify that they’re not running too slowly, and take action (e.g., warn the operator and die) if they are.
-- Pipeline: if a worker dies (while working), the ventilator doesn’t know about it. Pipelines, like the grinding gears of time, only work in one direction. But the downstream collector can detect that one task didn’t get done, and send a message back to the ventilator saying, “hey, resend task 324!” If the ventilator or collector dies, whatever upstream client originally sent the work batch can get tired of waiting and resend the whole lot. It’s not elegant, but system code should really not die often enough to matter.
+- Request-reply: if the server dies (while processing a request), the client can figure that out because it won't get an answer back. Then it can give up in a huff, wait and try again later, find another server, and so on. As for the client dying, we can brush that off as “someone else's problem” for now.
+- Pub-sub: if the client dies (having gotten some data), the server doesn't know about it. Pub-sub doesn't send any information back from client to server. But the client can contact the server out-of-band, e.g., via request-reply, and ask, “please resend everything I missed”. As for the server dying, that's out of scope for here. Subscribers can also self-verify that they're not running too slowly, and take action (e.g., warn the operator and die) if they are.
+- Pipeline: if a worker dies (while working), the ventilator doesn't know about it. Pipelines, like the grinding gears of time, only work in one direction. But the downstream collector can detect that one task didn't get done, and send a message back to the ventilator saying, “hey, resend task 324!” If the ventilator or collector dies, whatever upstream client originally sent the work batch can get tired of waiting and resend the whole lot. It's not elegant, but system code should really not die often enough to matter.
 
-In this chapter we’ll focus just on request-reply, which is the low-hanging fruit of reliable messaging.
+In this chapter we'll focus just on request-reply, which is the low-hanging fruit of reliable messaging.
 
 The basic request-reply pattern (a REQ client socket doing a blocking send/receive to a REP server socket) scores low on handling the most common types of failure. If the server crashes while processing the request, the client just hangs forever. If the network loses the request or the reply, the client hangs forever.
 
-Request-reply is still much better than TCP, thanks to ZeroMQ’s ability to reconnect peers silently, to load balance messages, and so on. But it’s still not good enough for real work. The only case where you can really trust the basic request-reply pattern is between two threads in the same process where there’s no network or separate server process to die.
+Request-reply is still much better than TCP, thanks to ZeroMQ's ability to reconnect peers silently, to load balance messages, and so on. But it's still not good enough for real work. The only case where you can really trust the basic request-reply pattern is between two threads in the same process where there's no network or separate server process to die.
 
-However, with a little extra work, this humble pattern becomes a good basis for real work across a distributed network, and we get a set of reliable request-reply (RRR) patterns that I like to call the Pirate patterns (you’ll eventually get the joke, I hope).
+However, with a little extra work, this humble pattern becomes a good basis for real work across a distributed network, and we get a set of reliable request-reply (RRR) patterns that I like to call the Pirate patterns (you'll eventually get the joke, I hope).
 
 There are, in my experience, roughly three ways to connect clients to servers. Each needs a specific approach to reliability:
 
@@ -4574,17 +4561,17 @@ There are, in my experience, roughly three ways to connect clients to servers. E
 - Multiple clients talking to a broker proxy that distributes work to multiple workers. Use case: service-oriented transaction processing. Types of failure we aim to handle: worker crashes and restarts, worker busy looping, worker overload, queue crashes and restarts, and network disconnects.
 - Multiple clients talking to multiple servers with no intermediary proxies. Use case: distributed services such as name resolution. Types of failure we aim to handle: service crashes and restarts, service busy looping, service overload, and network disconnects.
 
-Each of these approaches has its trade-offs and often you’ll mix them. We’ll look at all three in detail.
+Each of these approaches has its trade-offs and often you'll mix them. We'll look at all three in detail.
 
 ### Client-Side Reliability (Lazy Pirate Pattern)
 
 We can get very simple reliable request-reply with some changes to the client. We call this the Lazy Pirate pattern. Rather than doing a blocking receive, we:
 
-- Poll the REQ socket and receive from it only when it’s sure a reply has arrived.
+- Poll the REQ socket and receive from it only when it's sure a reply has arrived.
 - Resend a request, if no reply has arrived within a timeout period.
 - Abandon the transaction if there is still no reply after several requests.
 
-If you try to use a REQ socket in anything other than a strict send/receive fashion, you’ll get an error (technically, the REQ socket implements a small finite-state machine to enforce the send/receive ping-pong, and so the error code is called “EFSM”). This is slightly annoying when we want to use REQ in a pirate pattern, because we may send several requests before getting a reply.
+If you try to use a REQ socket in anything other than a strict send/receive fashion, you'll get an error (technically, the REQ socket implements a small finite-state machine to enforce the send/receive ping-pong, and so the error code is called “EFSM”). This is slightly annoying when we want to use REQ in a pirate pattern, because we may send several requests before getting a reply.
 
 The pretty good brute force solution is to close and reopen the REQ socket after an error:
 
@@ -4714,7 +4701,7 @@ int main ()
 
 ![](./pics/zmq/fig47.png)
 
-To run this test case, start the client and the server in two console windows. The server will randomly misbehave after a few messages. You can check the client’s response. Here is typical output from the server:
+To run this test case, start the client and the server in two console windows. The server will randomly misbehave after a few messages. You can check the client's response. Here is typical output from the server:
 
 ```
 I: normal request (1)
@@ -4725,7 +4712,7 @@ I: normal request (4)
 I: simulating a crash
 ```
 
-And here is the client’s response:
+And here is the client's response:
 
 ```
 I: connecting to server...
@@ -4739,30 +4726,30 @@ I: connecting to server...
 E: server seems to be offline, abandoning
 ```
 
-The client sequences each message and checks that replies come back exactly in order: that no requests or replies are lost, and no replies come back more than once, or out of order. Run the test a few times until you’re convinced that this mechanism actually works. You don’t need sequence numbers in a production application; they just help us trust our design.
+The client sequences each message and checks that replies come back exactly in order: that no requests or replies are lost, and no replies come back more than once, or out of order. Run the test a few times until you're convinced that this mechanism actually works. You don't need sequence numbers in a production application; they just help us trust our design.
 
-The client uses a REQ socket, and does the brute force close/reopen because REQ sockets impose that strict send/receive cycle. You might be tempted to use a DEALER instead, but it would not be a good decision. First, it would mean emulating the secret sauce that REQ does with envelopes (if you’ve forgotten what that is, it’s a good sign you don’t want to have to do it). Second, it would mean potentially getting back replies that you didn’t expect.
+The client uses a REQ socket, and does the brute force close/reopen because REQ sockets impose that strict send/receive cycle. You might be tempted to use a DEALER instead, but it would not be a good decision. First, it would mean emulating the secret sauce that REQ does with envelopes (if you've forgotten what that is, it's a good sign you don't want to have to do it). Second, it would mean potentially getting back replies that you didn't expect.
 
-Handling failures only at the client works when we have a set of clients talking to a single server. It can handle a server crash, but only if recovery means restarting that same server. If there’s a permanent error, such as a dead power supply on the server hardware, this approach won’t work. Because the application code in servers is usually the biggest source of failures in any architecture, depending on a single server is not a great idea.
+Handling failures only at the client works when we have a set of clients talking to a single server. It can handle a server crash, but only if recovery means restarting that same server. If there's a permanent error, such as a dead power supply on the server hardware, this approach won't work. Because the application code in servers is usually the biggest source of failures in any architecture, depending on a single server is not a great idea.
 
 So, pros and cons:
 
 - Pro: simple to understand and implement.
 - Pro: works easily with existing client and server application code.
 - Pro: ZeroMQ automatically retries the actual reconnection until it works.
-- Con: doesn’t failover to backup or alternate servers.
+- Con: doesn't failover to backup or alternate servers.
 
 ### Basic Reliable Queuing (Simple Pirate Pattern)
 
-Our second approach extends the Lazy Pirate pattern with a queue proxy that lets us talk, transparently, to multiple servers, which we can more accurately call “workers”. We’ll develop this in stages, starting with a minimal working model, the Simple Pirate pattern.
+Our second approach extends the Lazy Pirate pattern with a queue proxy that lets us talk, transparently, to multiple servers, which we can more accurately call “workers”. We'll develop this in stages, starting with a minimal working model, the Simple Pirate pattern.
 
-In all these Pirate patterns, workers are stateless. If the application requires some shared state, such as a shared database, we don’t know about it as we design our messaging framework. Having a queue proxy means workers can come and go without clients knowing anything about it. If one worker dies, another takes over. This is a nice, simple topology with only one real weakness, namely the central queue itself, which can become a problem to manage, and a single point of failure.
+In all these Pirate patterns, workers are stateless. If the application requires some shared state, such as a shared database, we don't know about it as we design our messaging framework. Having a queue proxy means workers can come and go without clients knowing anything about it. If one worker dies, another takes over. This is a nice, simple topology with only one real weakness, namely the central queue itself, which can become a problem to manage, and a single point of failure.
 
 ![](./pics/zmq/fig48.png)
 
-The basis for the queue proxy is the load balancing broker from Chapter 3 - Advanced Request-Reply Patterns. What is the very minimum we need to do to handle dead or blocked workers? Turns out, it’s surprisingly little. We already have a retry mechanism in the client. So using the load balancing pattern will work pretty well. This fits with ZeroMQ’s philosophy that we can extend a peer-to-peer pattern like request-reply by plugging naive proxies in the middle.
+The basis for the queue proxy is the load balancing broker from Chapter 3 - Advanced Request-Reply Patterns. What is the very minimum we need to do to handle dead or blocked workers? Turns out, it's surprisingly little. We already have a retry mechanism in the client. So using the load balancing pattern will work pretty well. This fits with ZeroMQ's philosophy that we can extend a peer-to-peer pattern like request-reply by plugging naive proxies in the middle.
 
-We don’t need a special client; we’re still using the Lazy Pirate client. Here is the queue, which is identical to the main task of the load balancing broker:
+We don't need a special client; we're still using the Lazy Pirate client. Here is the queue, which is identical to the main task of the load balancing broker:
 
 ```c++
 //
@@ -4882,22 +4869,22 @@ int main (void)
 }
 ```
 
-To test this, start a handful of workers, a Lazy Pirate client, and the queue, in any order. You’ll see that the workers eventually all crash and burn, and the client retries and then gives up. The queue never stops, and you can restart workers and clients ad nauseam. This model works with any number of clients and workers
+To test this, start a handful of workers, a Lazy Pirate client, and the queue, in any order. You'll see that the workers eventually all crash and burn, and the client retries and then gives up. The queue never stops, and you can restart workers and clients ad nauseam. This model works with any number of clients and workers
 
 ### Robust Reliable Queuing (Paranoid Pirate Pattern)
 
 ![](./pics/zmq/fig49.png)
 
-The Simple Pirate Queue pattern works pretty well, especially because it’s just a combination of two existing patterns. Still, it does have some weaknesses:
+The Simple Pirate Queue pattern works pretty well, especially because it's just a combination of two existing patterns. Still, it does have some weaknesses:
 
-- It’s not robust in the face of a queue crash and restart. The client will recover, but the workers won’t. While ZeroMQ will reconnect workers’ sockets automatically, as far as the newly started queue is concerned, the workers haven’t signaled ready, so don’t exist. To fix this, we have to do heartbeating from queue to worker so that the worker can detect when the queue has gone away.
-- The queue does not detect worker failure, so if a worker dies while idle, the queue can’t remove it from its worker queue until the queue sends it a request. The client waits and retries for nothing. It’s not a critical problem, but it’s not nice. To make this work properly, we do heartbeating from worker to queue, so that the queue can detect a lost worker at any stage.
+- It's not robust in the face of a queue crash and restart. The client will recover, but the workers won't. While ZeroMQ will reconnect workers' sockets automatically, as far as the newly started queue is concerned, the workers haven't signaled ready, so don't exist. To fix this, we have to do heartbeating from queue to worker so that the worker can detect when the queue has gone away.
+- The queue does not detect worker failure, so if a worker dies while idle, the queue can't remove it from its worker queue until the queue sends it a request. The client waits and retries for nothing. It's not a critical problem, but it's not nice. To make this work properly, we do heartbeating from worker to queue, so that the queue can detect a lost worker at any stage.
 
-We’ll fix these in a properly pedantic Paranoid Pirate Pattern.
+We'll fix these in a properly pedantic Paranoid Pirate Pattern.
 
-We previously used a REQ socket for the worker. For the Paranoid Pirate worker, we’ll switch to a DEALER socket. This has the advantage of letting us send and receive messages at any time, rather than the lock-step send/receive that REQ imposes. The downside of DEALER is that we have to do our own envelope management (re-read Chapter 3 - Advanced Request-Reply Patterns for background on this concept).
+We previously used a REQ socket for the worker. For the Paranoid Pirate worker, we'll switch to a DEALER socket. This has the advantage of letting us send and receive messages at any time, rather than the lock-step send/receive that REQ imposes. The downside of DEALER is that we have to do our own envelope management (re-read Chapter 3 - Advanced Request-Reply Patterns for background on this concept).
 
-We’re still using the Lazy Pirate client. Here is the Paranoid Pirate queue proxy:
+We're still using the Lazy Pirate client. Here is the Paranoid Pirate queue proxy:
 
 ```c++
 //
@@ -5073,7 +5060,7 @@ int main (void)
 }
 ```
 
-The queue extends the load balancing pattern with heartbeating of workers. Heartbeating is one of those “simple” things that can be difficult to get right. I’ll explain more about that in a second.
+The queue extends the load balancing pattern with heartbeating of workers. Heartbeating is one of those “simple” things that can be difficult to get right. I'll explain more about that in a second.
 
 Here is the Paranoid Pirate worker:
 
@@ -5224,31 +5211,31 @@ You should see the workers die one-by-one as they simulate a crash, and the clie
 
 Heartbeating solves the problem of knowing whether a peer is alive or dead. This is not an issue specific to ZeroMQ. TCP has a long timeout (30 minutes or so), that means that it can be impossible to know whether a peer has died, been disconnected, or gone on a weekend to Prague with a case of vodka, a redhead, and a large expense account.
 
-It’s not easy to get heartbeating right. When writing the Paranoid Pirate examples, it took about five hours to get the heartbeating working properly. The rest of the request-reply chain took perhaps ten minutes. It is especially easy to create “false failures”, i.e., when peers decide that they are disconnected because the heartbeats aren’t sent properly.
+It's not easy to get heartbeating right. When writing the Paranoid Pirate examples, it took about five hours to get the heartbeating working properly. The rest of the request-reply chain took perhaps ten minutes. It is especially easy to create “false failures”, i.e., when peers decide that they are disconnected because the heartbeats aren't sent properly.
 
-We’ll look at the three main answers people use for heartbeating with ZeroMQ.
+We'll look at the three main answers people use for heartbeating with ZeroMQ.
 
 #### Shrugging It Off
 
 The most common approach is to do no heartbeating at all and hope for the best. Many if not most ZeroMQ applications do this. ZeroMQ encourages this by hiding peers in many cases. What problems does this approach cause?
 
 - When we use a ROUTER socket in an application that tracks peers, as peers disconnect and reconnect, the application will leak memory (resources that the application holds for each peer) and get slower and slower.
-- When we use SUB- or DEALER-based data recipients, we can’t tell the difference between good silence (there’s no data) and bad silence (the other end died). When a recipient knows the other side died, it can for example switch over to a backup route.
+- When we use SUB- or DEALER-based data recipients, we can't tell the difference between good silence (there's no data) and bad silence (the other end died). When a recipient knows the other side died, it can for example switch over to a backup route.
 - If we use a TCP connection that stays silent for a long while, it will, in some networks, just die. Sending something (technically, a “keep-alive” more than a heartbeat), will keep the network alive.
 
 #### One-Way Heartbeats
 
 A second option is to send a heartbeat message from each node to its peers every second or so. When one node hears nothing from another within some timeout (several seconds, typically), it will treat that peer as dead. Sounds good, right? Sadly, no. This works in some cases but has nasty edge cases in others.
 
-For pub-sub, this does work, and it’s the only model you can use. SUB sockets cannot talk back to PUB sockets, but PUB sockets can happily send “I’m alive” messages to their subscribers.
+For pub-sub, this does work, and it's the only model you can use. SUB sockets cannot talk back to PUB sockets, but PUB sockets can happily send “I'm alive” messages to their subscribers.
 
-As an optimization, you can send heartbeats only when there is no real data to send. Furthermore, you can send heartbeats progressively slower and slower, if network activity is an issue (e.g., on mobile networks where activity drains the battery). As long as the recipient can detect a failure (sharp stop in activity), that’s fine.
+As an optimization, you can send heartbeats only when there is no real data to send. Furthermore, you can send heartbeats progressively slower and slower, if network activity is an issue (e.g., on mobile networks where activity drains the battery). As long as the recipient can detect a failure (sharp stop in activity), that's fine.
 
 Here are the typical problems with this design:
 
 - It can be inaccurate when we send large amounts of data, as heartbeats will be delayed behind that data. If heartbeats are delayed, you can get false timeouts and disconnections due to network congestion. Thus, always treat any incoming data as a heartbeat, whether or not the sender optimizes out heartbeats.
 - While the pub-sub pattern will drop messages for disappeared recipients, PUSH and DEALER sockets will queue them. So if you send heartbeats to a dead peer and it comes back, it will get all the heartbeats you sent, which can be thousands. Whoa, whoa!
-- This design assumes that heartbeat timeouts are the same across the whole network. But that won’t be accurate. Some peers will want very aggressive heartbeating in order to detect faults rapidly. And some will want very relaxed heartbeating, in order to let sleeping networks lie and save power.
+- This design assumes that heartbeat timeouts are the same across the whole network. But that won't be accurate. Some peers will want very aggressive heartbeating in order to detect faults rapidly. And some will want very relaxed heartbeating, in order to let sleeping networks lie and save power.
 
 #### Ping-Pong Heartbeats
 
@@ -5258,24 +5245,24 @@ This works for all ROUTER-based brokers. The same optimizations we used in the s
 
 #### Heartbeating for Paranoid Pirate
 
-For Paranoid Pirate, we chose the second approach. It might not have been the simplest option: if designing this today, I’d probably try a ping-pong approach instead. However the principles are similar. The heartbeat messages flow asynchronously in both directions, and either peer can decide the other is “dead” and stop talking to it.
+For Paranoid Pirate, we chose the second approach. It might not have been the simplest option: if designing this today, I'd probably try a ping-pong approach instead. However the principles are similar. The heartbeat messages flow asynchronously in both directions, and either peer can decide the other is “dead” and stop talking to it.
 
 In the worker, this is how we handle heartbeats from the queue:
 
 - We calculate a liveness, which is how many heartbeats we can still miss before deciding the queue is dead. It starts at three and we decrement it each time we miss a heartbeat.
 - We wait, in the zmq_poll loop, for one second each time, which is our heartbeat interval.
-- If there’s any message from the queue during that time, we reset our liveness to three.
-- If there’s no message during that time, we count down our liveness.
+- If there's any message from the queue during that time, we reset our liveness to three.
+- If there's no message during that time, we count down our liveness.
 - If the liveness reaches zero, we consider the queue dead.
 - If the queue is dead, we destroy our socket, create a new one, and reconnect.
 - To avoid opening and closing too many sockets, we wait for a certain interval before reconnecting, and we double the interval each time until it reaches 32 seconds.
 
 And this is how we handle heartbeats to the queue:
 
-- We calculate when to send the next heartbeat; this is a single variable because we’re talking to one peer, the queue.
+- We calculate when to send the next heartbeat; this is a single variable because we're talking to one peer, the queue.
 - In the zmq_poll loop, whenever we pass this time, we send a heartbeat to the queue.
 
-Here’s the essential heartbeating code for the worker:
+Here's the essential heartbeating code for the worker:
 
 ```c++
 #define HEARTBEAT_LIVENESS  3       //  3-5 is reasonable
@@ -5321,7 +5308,7 @@ The queue does the same, but manages an expiration time for each worker.
 
 Here are some tips for your own heartbeating implementation:
 
-- Use zmq_poll or a reactor as the core of your application’s main task.
+- Use zmq_poll or a reactor as the core of your application's main task.
 - Start by building the heartbeating between peers, test it by simulating failures, and then build the rest of the message flow. Adding heartbeating afterwards is much trickier.
 - Use simple tracing, i.e., print to console, to get this working. To help you trace the flow of messages between peers, use a dump method such as zmsg offers, and number your messages incrementally so you can see if there are gaps.
 - In a real application, heartbeating must be configurable and usually negotiated with the peer. Some peers will want aggressive heartbeating, as low as 10 msecs. Other peers will be far away and want heartbeating as high as 30 seconds.
@@ -5330,34 +5317,34 @@ Here are some tips for your own heartbeating implementation:
 
 ### Contracts and Protocols 
 
-If you’re paying attention, you’ll realize that Paranoid Pirate is not interoperable with Simple Pirate, because of the heartbeats. But how do we define “interoperable”? To guarantee interoperability, we need a kind of contract, an agreement that lets different teams in different times and places write code that is guaranteed to work together. We call this a “protocol”.
+If you're paying attention, you'll realize that Paranoid Pirate is not interoperable with Simple Pirate, because of the heartbeats. But how do we define “interoperable”? To guarantee interoperability, we need a kind of contract, an agreement that lets different teams in different times and places write code that is guaranteed to work together. We call this a “protocol”.
 
-It’s fun to experiment without specifications, but that’s not a sensible basis for real applications. What happens if we want to write a worker in another language? Do we have to read code to see how things work? What if we want to change the protocol for some reason? Even a simple protocol will, if it’s successful, evolve and become more complex.
+It's fun to experiment without specifications, but that's not a sensible basis for real applications. What happens if we want to write a worker in another language? Do we have to read code to see how things work? What if we want to change the protocol for some reason? Even a simple protocol will, if it's successful, evolve and become more complex.
 
-Lack of contracts is a sure sign of a disposable application. So let’s write a contract for this protocol. How do we do that?
+Lack of contracts is a sure sign of a disposable application. So let's write a contract for this protocol. How do we do that?
 
-There’s a wiki at rfc.zeromq.org that we made especially as a home for public ZeroMQ contracts. To create a new specification, register on the wiki if needed, and follow the instructions. It’s fairly straightforward, though writing technical texts is not everyone’s cup of tea.
+There's a wiki at rfc.zeromq.org that we made especially as a home for public ZeroMQ contracts. To create a new specification, register on the wiki if needed, and follow the instructions. It's fairly straightforward, though writing technical texts is not everyone's cup of tea.
 
-It took me about fifteen minutes to draft the new Pirate Pattern Protocol. It’s not a big specification, but it does capture enough to act as the basis for arguments (“your queue isn’t PPP compatible; please fix it!").
+It took me about fifteen minutes to draft the new Pirate Pattern Protocol. It's not a big specification, but it does capture enough to act as the basis for arguments (“your queue isn't PPP compatible; please fix it!").
 
 Turning PPP into a real protocol would take more work:
 
-- There should be a protocol version number in the READY command so that it’s possible to distinguish between different versions of PPP.
+- There should be a protocol version number in the READY command so that it's possible to distinguish between different versions of PPP.
 - Right now, READY and HEARTBEAT are not entirely distinct from requests and replies. To make them distinct, we would need a message structure that includes a “message type” part.
 
 ### Service-Oriented Reliable Queuing (Majordomo Pattern)
 
 ![](./pics/zmq/fig50.png)
 
-The nice thing about progress is how fast it happens when lawyers and committees aren’t involved. The one-page MDP specification turns PPP into something more solid. This is how we should design complex architectures: start by writing down the contracts, and only then write software to implement them.
+The nice thing about progress is how fast it happens when lawyers and committees aren't involved. The one-page MDP specification turns PPP into something more solid. This is how we should design complex architectures: start by writing down the contracts, and only then write software to implement them.
 
 The Majordomo Protocol (MDP) extends and improves on PPP in one interesting way: it adds a “service name” to requests that the client sends, and asks workers to register for specific services. Adding service names turns our Paranoid Pirate queue into a service-oriented broker. The nice thing about MDP is that it came out of working code, a simpler ancestor protocol (PPP), and a precise set of improvements that each solved a clear problem. This made it easy to draft.
 
-To implement Majordomo, we need to write a framework for clients and workers. It’s really not sane to ask every application developer to read the spec and make it work, when they could be using a simpler API that does the work for them.
+To implement Majordomo, we need to write a framework for clients and workers. It's really not sane to ask every application developer to read the spec and make it work, when they could be using a simpler API that does the work for them.
 
-So while our first contract (MDP itself) defines how the pieces of our distributed architecture talk to each other, our second contract defines how user applications talk to the technical framework we’re going to design.
+So while our first contract (MDP itself) defines how the pieces of our distributed architecture talk to each other, our second contract defines how user applications talk to the technical framework we're going to design.
 
-Majordomo has two halves, a client side and a worker side. Because we’ll write both client and worker applications, we will need two APIs. Here is a sketch for the client API, using a simple object-oriented approach:
+Majordomo has two halves, a client side and a worker side. Because we'll write both client and worker applications, we will need two APIs. Here is a sketch for the client API, using a simple object-oriented approach:
 
 ```c++
 mdcli_t *mdcli_new     (char *broker);
@@ -5365,7 +5352,7 @@ void     mdcli_destroy (mdcli_t **self_p);
 zmsg_t  *mdcli_send    (mdcli_t *self, char *service, zmsg_t **request_p);
 ```
 
-That’s it. We open a session to the broker, send a request message, get a reply message back, and eventually close the connection. Here’s a sketch for the worker API:
+That's it. We open a session to the broker, send a request message, get a reply message back, and eventually close the connection. Here's a sketch for the worker API:
 
 ```c++
 mdwrk_t *mdwrk_new     (char *broker,char *service);
@@ -5373,9 +5360,9 @@ void     mdwrk_destroy (mdwrk_t **self_p);
 zmsg_t  *mdwrk_recv    (mdwrk_t *self, zmsg_t *reply);
 ```
 
-It’s more or less symmetrical, but the worker dialog is a little different. The first time a worker does a recv(), it passes a null reply. Thereafter, it passes the current reply, and gets a new request.
+It's more or less symmetrical, but the worker dialog is a little different. The first time a worker does a recv(), it passes a null reply. Thereafter, it passes the current reply, and gets a new request.
 
-The client and worker APIs were fairly simple to construct because they’re heavily based on the Paranoid Pirate code we already developed. Here is the client API:
+The client and worker APIs were fairly simple to construct because they're heavily based on the Paranoid Pirate code we already developed. Here is the client API:
 
 ```c++
 //  mdcliapi class - Majordomo Protocol Client API
@@ -5544,7 +5531,7 @@ mdcli_send (mdcli_t *self, char *service, zmsg_t **request_p)
 }
 ```
 
-Let’s see how the client API looks in action, with an example test program that does 100K request-reply cycles:
+Let's see how the client API looks in action, with an example test program that does 100K request-reply cycles:
 
 ```c++
 //
@@ -5813,7 +5800,7 @@ mdwrk_recv (mdwrk_t *self, zmsg_t **reply_p)
 }
 ```
 
-Let’s see how the worker API looks in action, with an example test program that implements an echo service:
+Let's see how the worker API looks in action, with an example test program that implements an echo service:
 
 ```c++
 //
@@ -5845,13 +5832,13 @@ int main (int argc, char *argv [])
 
 Here are some things to note about the worker API code:
 
-- The APIs are single-threaded. This means, for example, that the worker won’t send heartbeats in the background. Happily, this is exactly what we want: if the worker application gets stuck, heartbeats will stop and the broker will stop sending requests to the worker.
-- The worker API doesn’t do an exponential back-off; it’s not worth the extra complexity.
-- The APIs don’t do any error reporting. If something isn’t as expected, they raise an assertion (or exception depending on the language). This is ideal for a reference implementation, so any protocol errors show immediately. For real applications, the API should be robust against invalid messages.
+- The APIs are single-threaded. This means, for example, that the worker won't send heartbeats in the background. Happily, this is exactly what we want: if the worker application gets stuck, heartbeats will stop and the broker will stop sending requests to the worker.
+- The worker API doesn't do an exponential back-off; it's not worth the extra complexity.
+- The APIs don't do any error reporting. If something isn't as expected, they raise an assertion (or exception depending on the language). This is ideal for a reference implementation, so any protocol errors show immediately. For real applications, the API should be robust against invalid messages.
 
-You might wonder why the worker API is manually closing its socket and opening a new one, when ZeroMQ will automatically reconnect a socket if the peer disappears and comes back. Look back at the Simple Pirate and Paranoid Pirate workers to understand. Although ZeroMQ will automatically reconnect workers if the broker dies and comes back up, this isn’t sufficient to re-register the workers with the broker. I know of at least two solutions. The simplest, which we use here, is for the worker to monitor the connection using heartbeats, and if it decides the broker is dead, to close its socket and start afresh with a new socket. The alternative is for the broker to challenge unknown workers when it gets a heartbeat from the worker and ask them to re-register. That would require protocol support.
+You might wonder why the worker API is manually closing its socket and opening a new one, when ZeroMQ will automatically reconnect a socket if the peer disappears and comes back. Look back at the Simple Pirate and Paranoid Pirate workers to understand. Although ZeroMQ will automatically reconnect workers if the broker dies and comes back up, this isn't sufficient to re-register the workers with the broker. I know of at least two solutions. The simplest, which we use here, is for the worker to monitor the connection using heartbeats, and if it decides the broker is dead, to close its socket and start afresh with a new socket. The alternative is for the broker to challenge unknown workers when it gets a heartbeat from the worker and ask them to re-register. That would require protocol support.
 
-Now let’s design the Majordomo broker. Its core structure is a set of queues, one per service. We will create these queues as workers appear (we could delete them as workers disappear, but forget that for now because it gets complex). Additionally, we keep a queue of workers per service.
+Now let's design the Majordomo broker. Its core structure is a set of queues, one per service. We will create these queues as workers appear (we could delete them as workers disappear, but forget that for now because it gets complex). Additionally, we keep a queue of workers per service.
 
 And here is the broker:
 
@@ -6330,23 +6317,23 @@ int main (int argc, char *argv [])
 }
 ```
 
-This is by far the most complex example we’ve seen. It’s almost 500 lines of code. To write this and make it somewhat robust took two days. However, this is still a short piece of code for a full service-oriented broker.
+This is by far the most complex example we've seen. It's almost 500 lines of code. To write this and make it somewhat robust took two days. However, this is still a short piece of code for a full service-oriented broker.
 
 Here are some things to note about the broker code:
 
 - The Majordomo Protocol lets us handle both clients and workers on a single socket. This is nicer for those deploying and managing the broker: it just sits on one ZeroMQ endpoint rather than the two that most proxies need.
 - The broker implements all of MDP/0.1 properly (as far as I know), including disconnection if the broker sends invalid commands, heartbeating, and the rest.
 - It can be extended to run multiple threads, each managing one socket and one set of clients and workers. This could be interesting for segmenting large architectures. The C code is already organized around a broker class to make this trivial.
-- A primary/failover or live/live broker reliability model is easy, as the broker essentially has no state except service presence. It’s up to clients and workers to choose another broker if their first choice isn’t up and running.
+- A primary/failover or live/live broker reliability model is easy, as the broker essentially has no state except service presence. It's up to clients and workers to choose another broker if their first choice isn't up and running.
 - The examples use five-second heartbeats, mainly to reduce the amount of output when you enable tracing. Realistic values would be lower for most LAN applications. However, any retry has to be slow enough to allow for a service to restart, say 10 seconds at least.
 
 We later improved and extended the protocol and the Majordomo implementation, which now sits in its own Github project. If you want a properly usable Majordomo stack, use the GitHub project.
 
 ### Asynchronous Majordomo Pattern
 
-The Majordomo implementation in the previous section is simple and stupid. The client is just the original Simple Pirate, wrapped up in a sexy API. When I fire up a client, broker, and worker on a test box, it can process 100,000 requests in about 14 seconds. That is partially due to the code, which cheerfully copies message frames around as if CPU cycles were free. But the real problem is that we’re doing network round-trips. ZeroMQ disables Nagle’s algorithm, but round-tripping is still slow.
+The Majordomo implementation in the previous section is simple and stupid. The client is just the original Simple Pirate, wrapped up in a sexy API. When I fire up a client, broker, and worker on a test box, it can process 100,000 requests in about 14 seconds. That is partially due to the code, which cheerfully copies message frames around as if CPU cycles were free. But the real problem is that we're doing network round-trips. ZeroMQ disables Nagle's algorithm, but round-tripping is still slow.
 
-Theory is great in theory, but in practice, practice is better. Let’s measure the actual cost of round-tripping with a simple test program. This sends a bunch of messages, first waiting for a reply to each message, and second as a batch, reading all the replies back as a batch. Both approaches do the same work, but they give very different results. We mock up a client, broker, and worker:
+Theory is great in theory, but in practice, practice is better. Let's measure the actual cost of round-tripping with a simple test program. This sends a bunch of messages, first waiting for a reply to each message, and second as a batch, reading all the replies back as a batch. Both approaches do the same work, but they give very different results. We mock up a client, broker, and worker:
 
 ```c++
 //
@@ -6470,9 +6457,9 @@ Asynchronous round-trip test...
  173010 calls/second
 ```
 
-Note that the client thread does a small pause before starting. This is to get around one of the “features” of the router socket: if you send a message with the address of a peer that’s not yet connected, the message gets discarded. In this example we don’t use the load balancing mechanism, so without the sleep, if the worker thread is too slow to connect, it will lose messages, making a mess of our test.
+Note that the client thread does a small pause before starting. This is to get around one of the “features” of the router socket: if you send a message with the address of a peer that's not yet connected, the message gets discarded. In this example we don't use the load balancing mechanism, so without the sleep, if the worker thread is too slow to connect, it will lose messages, making a mess of our test.
 
-As we see, round-tripping in the simplest case is 20 times slower than the asynchronous, “shove it down the pipe as fast as it’ll go” approach. Let’s see if we can apply this to Majordomo to make it faster.
+As we see, round-tripping in the simplest case is 20 times slower than the asynchronous, “shove it down the pipe as fast as it'll go” approach. Let's see if we can apply this to Majordomo to make it faster.
 
 First, we modify the client API to send and receive in two separate methods:
 
@@ -6483,7 +6470,7 @@ int      mdcli_send    (mdcli_t *self, char *service, zmsg_t **request_p);
 zmsg_t  *mdcli_recv    (mdcli_t *self);
 ```
 
-It’s literally a few minutes’ work to refactor the synchronous client API to become asynchronous:
+It's literally a few minutes' work to refactor the synchronous client API to become asynchronous:
 
 ```c++
 //  mdcliapi2 class - Majordomo Protocol Client API
@@ -6645,12 +6632,12 @@ mdcli_recv (mdcli_t *self)
 The differences are:
 
 - We use a DEALER socket instead of REQ, so we emulate REQ with an empty delimiter frame before each request and each response.
-- We don’t retry requests; if the application needs to retry, it can do this itself.
+- We don't retry requests; if the application needs to retry, it can do this itself.
 - We break the synchronous send method into separate send and recv methods.
 - The send method is asynchronous and returns immediately after sending. The caller can thus send a number of messages before getting a response.
 - The recv method waits for (with a timeout) one response and returns that to the caller.
 
-And here’s the corresponding client test program, which sends 100,000 messages and then receives 100,000 back:
+And here's the corresponding client test program, which sends 100,000 messages and then receives 100,000 back:
 
 ```c++
 //
@@ -6686,7 +6673,7 @@ int main (int argc, char *argv [])
 }
 ```
 
-The broker and worker are unchanged because we’ve not modified the protocol at all. We see an immediate improvement in performance. Here’s the synchronous client chugging through 100K request-reply cycles:
+The broker and worker are unchanged because we've not modified the protocol at all. We see an immediate improvement in performance. Here's the synchronous client chugging through 100K request-reply cycles:
 
 ```shell
 $ time mdclient
@@ -6697,7 +6684,7 @@ user    0m1.310s
 sys     0m2.670s
 ```
 
-And here’s the asynchronous client, with a single worker:
+And here's the asynchronous client, with a single worker:
 
 ```shell
 $ time mdclient2
@@ -6708,7 +6695,7 @@ user    0m0.920s
 sys     0m1.550s
 ```
 
-Twice as fast. Not bad, but let’s fire up 10 workers and see how it handles the traffic
+Twice as fast. Not bad, but let's fire up 10 workers and see how it handles the traffic
 
 ```shell
 $ time mdclient2
@@ -6719,32 +6706,32 @@ user    0m0.730s
 sys     0m0.470s
 ```
 
-It isn’t fully asynchronous because workers get their messages on a strict last-used basis. But it will scale better with more workers. On my PC, after eight or so workers, it doesn’t get any faster. Four cores only stretches so far. But we got a 4x improvement in throughput with just a few minutes’ work. The broker is still unoptimized. It spends most of its time copying message frames around, instead of doing zero-copy, which it could. But we’re getting 25K reliable request/reply calls a second, with pretty low effort.
+It isn't fully asynchronous because workers get their messages on a strict last-used basis. But it will scale better with more workers. On my PC, after eight or so workers, it doesn't get any faster. Four cores only stretches so far. But we got a 4x improvement in throughput with just a few minutes' work. The broker is still unoptimized. It spends most of its time copying message frames around, instead of doing zero-copy, which it could. But we're getting 25K reliable request/reply calls a second, with pretty low effort.
 
-However, the asynchronous Majordomo pattern isn’t all roses. It has a fundamental weakness, namely that it cannot survive a broker crash without more work. If you look at the mdcliapi2 code you’ll see it does not attempt to reconnect after a failure. A proper reconnect would require the following:
+However, the asynchronous Majordomo pattern isn't all roses. It has a fundamental weakness, namely that it cannot survive a broker crash without more work. If you look at the mdcliapi2 code you'll see it does not attempt to reconnect after a failure. A proper reconnect would require the following:
 
 - A number on every request and a matching number on every reply, which would ideally require a change to the protocol to enforce.
 - Tracking and holding onto all outstanding requests in the client API, i.e., those for which no reply has yet been received.
 - In case of failover, for the client API to resend all outstanding requests to the broker.
   
 
-It’s not a deal breaker, but it does show that performance often means complexity. Is this worth doing for Majordomo? It depends on your use case. For a name lookup service you call once per session, no. For a web frontend serving thousands of clients, probably yes.
+It's not a deal breaker, but it does show that performance often means complexity. Is this worth doing for Majordomo? It depends on your use case. For a name lookup service you call once per session, no. For a web frontend serving thousands of clients, probably yes.
 
 ### Service Discovery
-So, we have a nice service-oriented broker, but we have no way of knowing whether a particular service is available or not. We know whether a request failed, but we don’t know why. It is useful to be able to ask the broker, “is the echo service running?” The most obvious way would be to modify our MDP/Client protocol to add commands to ask this. But MDP/Client has the great charm of being simple. Adding service discovery to it would make it as complex as the MDP/Worker protocol.
+So, we have a nice service-oriented broker, but we have no way of knowing whether a particular service is available or not. We know whether a request failed, but we don't know why. It is useful to be able to ask the broker, “is the echo service running?” The most obvious way would be to modify our MDP/Client protocol to add commands to ask this. But MDP/Client has the great charm of being simple. Adding service discovery to it would make it as complex as the MDP/Worker protocol.
 
 Another option is to do what email does, and ask that undeliverable requests be returned. This can work well in an asynchronous world, but it also adds complexity. We need ways to distinguish returned requests from replies and to handle these properly.
 
-Let’s try to use what we’ve already built, building on top of MDP instead of modifying it. Service discovery is, itself, a service. It might indeed be one of several management services, such as “disable service X”, “provide statistics”, and so on. What we want is a general, extensible solution that doesn’t affect the protocol or existing applications.
+Let's try to use what we've already built, building on top of MDP instead of modifying it. Service discovery is, itself, a service. It might indeed be one of several management services, such as “disable service X”, “provide statistics”, and so on. What we want is a general, extensible solution that doesn't affect the protocol or existing applications.
 
-So here’s a small RFC that layers this on top of MDP: the Majordomo Management Interface (MMI). We already implemented it in the broker, though unless you read the whole thing you probably missed that. I’ll explain how it works in the broker:
+So here's a small RFC that layers this on top of MDP: the Majordomo Management Interface (MMI). We already implemented it in the broker, though unless you read the whole thing you probably missed that. I'll explain how it works in the broker:
 
 - When a client requests a service that starts with mmi., instead of routing this to a worker, we handle it internally.
 - We handle just one service in this broker, which is mmi.service, the service discovery service.
 - The payload for the request is the name of an external service (a real one, provided by a worker).
 - The broker returns “200” (OK) or “404” (Not found), depending on whether there are workers registered for that service or not.
 
-Here’s how we use the service discovery in an application:
+Here's how we use the service discovery in an application:
 
 ```c++
 //  MMI echo query example
@@ -6782,10 +6769,10 @@ Try this with and without a worker running, and you should see the little progra
 
 ### Idempotent Services
 
-Idempotency is not something you take a pill for. What it means is that it’s safe to repeat an operation. Checking the clock is idempotent. Lending ones credit card to ones children is not. While many client-to-server use cases are idempotent, some are not. Examples of idempotent use cases include:
+Idempotency is not something you take a pill for. What it means is that it's safe to repeat an operation. Checking the clock is idempotent. Lending ones credit card to ones children is not. While many client-to-server use cases are idempotent, some are not. Examples of idempotent use cases include:
 
-- Stateless task distribution, i.e., a pipeline where the servers are stateless workers that compute a reply based purely on the state provided by a request. In such a case, it’s safe (though inefficient) to execute the same request many times.
-- A name service that translates logical addresses into endpoints to bind or connect to. In such a case, it’s safe to make the same lookup request many times.
+- Stateless task distribution, i.e., a pipeline where the servers are stateless workers that compute a reply based purely on the state provided by a request. In such a case, it's safe (though inefficient) to execute the same request many times.
+- A name service that translates logical addresses into endpoints to bind or connect to. In such a case, it's safe to make the same lookup request many times.
 
 And here are examples of a non-idempotent use cases:
 
@@ -6793,7 +6780,7 @@ And here are examples of a non-idempotent use cases:
 - Any service that has impact on downstream nodes, e.g., sends on information to other nodes. If that service gets the same request more than once, downstream nodes will get duplicate information.
 - Any service that modifies shared data in some non-idempotent way; e.g., a service that debits a bank account is not idempotent without extra work.
 
-When our server applications are not idempotent, we have to think more carefully about when exactly they might crash. If an application dies when it’s idle, or while it’s processing a request, that’s usually fine. We can use database transactions to make sure a debit and a credit are always done together, if at all. If the server dies while sending its reply, that’s a problem, because as far as it’s concerned, it has done its work.
+When our server applications are not idempotent, we have to think more carefully about when exactly they might crash. If an application dies when it's idle, or while it's processing a request, that's usually fine. We can use database transactions to make sure a debit and a credit are always done together, if at all. If the server dies while sending its reply, that's a problem, because as far as it's concerned, it has done its work.
 
 If the network dies just as the reply is making its way back to the client, the same problem arises. The client will think the server died and will resend the request, and the server will do the same work twice, which is not what we want.
 
@@ -6805,21 +6792,21 @@ To handle non-idempotent operations, use the fairly standard solution of detecti
 
 ### Disconnected Reliability (Titanic Pattern
 
-Once you realize that Majordomo is a “reliable” message broker, you might be tempted to add some spinning rust (that is, ferrous-based hard disk platters). After all, this works for all the enterprise messaging systems. It’s such a tempting idea that it’s a little sad to have to be negative toward it. But brutal cynicism is one of my specialties. So, some reasons you don’t want rust-based brokers sitting in the center of your architecture are:
+Once you realize that Majordomo is a “reliable” message broker, you might be tempted to add some spinning rust (that is, ferrous-based hard disk platters). After all, this works for all the enterprise messaging systems. It's such a tempting idea that it's a little sad to have to be negative toward it. But brutal cynicism is one of my specialties. So, some reasons you don't want rust-based brokers sitting in the center of your architecture are:
 
-- As you’ve seen, the Lazy Pirate client performs surprisingly well. It works across a whole range of architectures, from direct client-to-server to distributed queue proxies. It does tend to assume that workers are stateless and idempotent. But we can work around that limitation without resorting to rust.
-- Rust brings a whole set of problems, from slow performance to additional pieces that you have to manage, repair, and handle 6 a.m. panics from, as they inevitably break at the start of daily operations. The beauty of the Pirate patterns in general is their simplicity. They won’t crash. And if you’re still worried about the hardware, you can move to a peer-to-peer pattern that has no broker at all. I’ll explain later in this chapter.
+- As you've seen, the Lazy Pirate client performs surprisingly well. It works across a whole range of architectures, from direct client-to-server to distributed queue proxies. It does tend to assume that workers are stateless and idempotent. But we can work around that limitation without resorting to rust.
+- Rust brings a whole set of problems, from slow performance to additional pieces that you have to manage, repair, and handle 6 a.m. panics from, as they inevitably break at the start of daily operations. The beauty of the Pirate patterns in general is their simplicity. They won't crash. And if you're still worried about the hardware, you can move to a peer-to-peer pattern that has no broker at all. I'll explain later in this chapter.
 
-Having said this, however, there is one sane use case for rust-based reliability, which is an asynchronous disconnected network. It solves a major problem with Pirate, namely that a client has to wait for an answer in real time. If clients and workers are only sporadically connected (think of email as an analogy), we can’t use a stateless network between clients and workers. We have to put state in the middle.
+Having said this, however, there is one sane use case for rust-based reliability, which is an asynchronous disconnected network. It solves a major problem with Pirate, namely that a client has to wait for an answer in real time. If clients and workers are only sporadically connected (think of email as an analogy), we can't use a stateless network between clients and workers. We have to put state in the middle.
 
-So, here’s the Titanic pattern, in which we write messages to disk to ensure they never get lost, no matter how sporadically clients and workers are connected. As we did for service discovery, we’re going to layer Titanic on top of MDP rather than extend it. It’s wonderfully lazy because it means we can implement our fire-and-forget reliability in a specialized worker, rather than in the broker. This is excellent for several reasons:
+So, here's the Titanic pattern, in which we write messages to disk to ensure they never get lost, no matter how sporadically clients and workers are connected. As we did for service discovery, we're going to layer Titanic on top of MDP rather than extend it. It's wonderfully lazy because it means we can implement our fire-and-forget reliability in a specialized worker, rather than in the broker. This is excellent for several reasons:
 
 - It is much easier because we divide and conquer: the broker handles message routing and the worker handles reliability.
 - It lets us mix brokers written in one language with workers written in another.
 - It lets us evolve the fire-and-forget technology independently.
-The only downside is that there’s an extra network hop between broker and hard disk. The benefits are easily worth it.
+The only downside is that there's an extra network hop between broker and hard disk. The benefits are easily worth it.
 
-There are many ways to make a persistent request-reply architecture. We’ll aim for one that is simple and painless. The simplest design I could come up with, after playing with this for a few hours, is a “proxy service”. That is, Titanic doesn’t affect workers at all. If a client wants a reply immediately, it talks directly to a service and hopes the service is available. If a client is happy to wait a while, it talks to Titanic instead and asks, “hey, buddy, would you take care of this for me while I go buy my groceries?”
+There are many ways to make a persistent request-reply architecture. We'll aim for one that is simple and painless. The simplest design I could come up with, after playing with this for a few hours, is a “proxy service”. That is, Titanic doesn't affect workers at all. If a client wants a reply immediately, it talks directly to a service and hopes the service is available. If a client is happy to wait a while, it talks to Titanic instead and asks, “hey, buddy, would you take care of this for me while I go buy my groceries?”
 
 ![](./pics/zmq/fig51.png)
 
@@ -6827,7 +6814,7 @@ Titanic is thus both a worker and a client. The dialog between client and Titani
 
 - Client: Please accept this request for me. Titanic: OK, done.
 - Client: Do you have a reply for me? Titanic: Yes, here it is. Or, no, not yet.
-- Client: OK, you can wipe that request now, I’m happy. Titanic: OK, done.
+- Client: OK, you can wipe that request now, I'm happy. Titanic: OK, done.
 
 Whereas the dialog between Titanic and broker and worker goes like this:
 
@@ -6836,26 +6823,26 @@ Whereas the dialog between Titanic and broker and worker goes like this:
 - Coffee: Sure, here you are.
 - Titanic: Sweeeeet!
 
-You can work through this and the possible failure scenarios. If a worker crashes while processing a request, Titanic retries indefinitely. If a reply gets lost somewhere, Titanic will retry. If the request gets processed but the client doesn’t get the reply, it will ask again. If Titanic crashes while processing a request or a reply, the client will try again. As long as requests are fully committed to safe storage, work can’t get lost.
+You can work through this and the possible failure scenarios. If a worker crashes while processing a request, Titanic retries indefinitely. If a reply gets lost somewhere, Titanic will retry. If the request gets processed but the client doesn't get the reply, it will ask again. If Titanic crashes while processing a request or a reply, the client will try again. As long as requests are fully committed to safe storage, work can't get lost.
 
 The handshaking is pedantic, but can be pipelined, i.e., clients can use the asynchronous Majordomo pattern to do a lot of work and then get the responses later.
 
-We need some way for a client to request its replies. We’ll have many clients asking for the same services, and clients disappear and reappear with different identities. Here is a simple, reasonably secure solution:
+We need some way for a client to request its replies. We'll have many clients asking for the same services, and clients disappear and reappear with different identities. Here is a simple, reasonably secure solution:
 
 - Every request generates a universally unique ID (UUID), which Titanic returns to the client after it has queued the request.
 - When a client asks for a reply, it must specify the UUID for the original request.
 
 In a realistic case, the client would want to store its request UUIDs safely, e.g., in a local database.
 
-Before we jump off and write yet another formal specification (fun, fun!), let’s consider how the client talks to Titanic. One way is to use a single service and send it three different request types. Another way, which seems simpler, is to use three services:
+Before we jump off and write yet another formal specification (fun, fun!), let's consider how the client talks to Titanic. One way is to use a single service and send it three different request types. Another way, which seems simpler, is to use three services:
 
 - titanic.request: store a request message, and return a UUID for the request.
 - titanic.reply: fetch a reply, if available, for a given request UUID.
 - titanic.close: confirm that a reply has been stored and processed.
 
-We’ll just make a multithreaded worker, which as we’ve seen from our multithreading experience with ZeroMQ, is trivial. However, let’s first sketch what Titanic would look like in terms of ZeroMQ messages and frames. This gives us the Titanic Service Protocol (TSP).
+We'll just make a multithreaded worker, which as we've seen from our multithreading experience with ZeroMQ, is trivial. However, let's first sketch what Titanic would look like in terms of ZeroMQ messages and frames. This gives us the Titanic Service Protocol (TSP).
 
-Using TSP is clearly more work for client applications than accessing a service directly via MDP. Here’s the shortest robust “echo” client example:
+Using TSP is clearly more work for client applications than accessing a service directly via MDP. Here's the shortest robust “echo” client example:
 
 ```c++
 //  Titanic client example
@@ -6948,11 +6935,11 @@ int main (int argc, char *argv [])
 }
 ```
 
-Of course this can be, and should be, wrapped up in some kind of framework or API. It’s not healthy to ask average application developers to learn the full details of messaging: it hurts their brains, costs time, and offers too many ways to make buggy complexity. Additionally, it makes it hard to add intelligence.
+Of course this can be, and should be, wrapped up in some kind of framework or API. It's not healthy to ask average application developers to learn the full details of messaging: it hurts their brains, costs time, and offers too many ways to make buggy complexity. Additionally, it makes it hard to add intelligence.
 
-For example, this client blocks on each request whereas in a real application, we’d want to be doing useful work while tasks are executed. This requires some nontrivial plumbing to build a background thread and talk to that cleanly. It’s the kind of thing you want to wrap in a nice simple API that the average developer cannot misuse. It’s the same approach that we used for Majordomo.
+For example, this client blocks on each request whereas in a real application, we'd want to be doing useful work while tasks are executed. This requires some nontrivial plumbing to build a background thread and talk to that cleanly. It's the kind of thing you want to wrap in a nice simple API that the average developer cannot misuse. It's the same approach that we used for Majordomo.
 
-Here’s the Titanic implementation. This server handles the three services using three threads, as proposed. It does full persistence to disk using the most brutal approach possible: one file per message. It’s so simple, it’s scary. The only complex part is that it keeps a separate queue of all requests, to avoid reading the directory over and over:
+Here's the Titanic implementation. This server handles the three services using three threads, as proposed. It does full persistence to disk using the most brutal approach possible: one file per message. It's so simple, it's scary. The only complex part is that it keeps a separate queue of all requests, to avoid reading the directory over and over:
 
 ```c++
 //  Titanic service
@@ -7259,14 +7246,14 @@ To test this, start mdbroker and titanic, and then run ticlient. Now start mdwor
 Some notes about this code:
 
 - Note that some loops start by sending, others by receiving messages. This is because Titanic acts both as a client and a worker in different roles.
-- The Titanic broker uses the MMI service discovery protocol to send requests only to services that appear to be running. Since the MMI implementation in our little Majordomo broker is quite poor, this won’t work all the time.
+- The Titanic broker uses the MMI service discovery protocol to send requests only to services that appear to be running. Since the MMI implementation in our little Majordomo broker is quite poor, this won't work all the time.
 - We use an inproc connection to send new request data from the titanic.request service through to the main dispatcher. This saves the dispatcher from having to scan the disk directory, load all request files, and sort them by date/time.
 
-The important thing about this example is not performance (which, although I haven’t tested it, is surely terrible), but how well it implements the reliability contract. To try it, start the mdbroker and titanic programs. Then start the ticlient, and then start the mdworker echo service. You can run all four of these using the -v option to do verbose activity tracing. You can stop and restart any piece except the client and nothing will get lost.
+The important thing about this example is not performance (which, although I haven't tested it, is surely terrible), but how well it implements the reliability contract. To try it, start the mdbroker and titanic programs. Then start the ticlient, and then start the mdworker echo service. You can run all four of these using the -v option to do verbose activity tracing. You can stop and restart any piece except the client and nothing will get lost.
 
-If you want to use Titanic in real cases, you’ll rapidly be asking “how do we make this faster?”
+If you want to use Titanic in real cases, you'll rapidly be asking “how do we make this faster?”
 
-Here’s what I’d do, starting with the example implementation:
+Here's what I'd do, starting with the example implementation:
 
 - Use a single disk file for all data, rather than multiple files. Operating systems are usually better at handling a few large files than many smaller ones.
 - Organize that disk file as a circular buffer so that new requests can be written contiguously (with very occasional wraparound). One thread, writing full speed to a disk file, can work rapidly.
@@ -7274,11 +7261,11 @@ Here’s what I’d do, starting with the example implementation:
 - Use a solid-state drive rather than spinning iron oxide platters.
 - Pre-allocate the entire file, or allocate it in large chunks, which allows the circular buffer to grow and shrink as needed. This avoids fragmentation and ensures that most reads and writes are contiguous.
 
-And so on. What I’d not recommend is storing messages in a database, not even a “fast” key/value store, unless you really like a specific database and don’t have performance worries. You will pay a steep price for the abstraction, ten to a thousand times over a raw disk file.
+And so on. What I'd not recommend is storing messages in a database, not even a “fast” key/value store, unless you really like a specific database and don't have performance worries. You will pay a steep price for the abstraction, ten to a thousand times over a raw disk file.
 
-If you want to make Titanic even more reliable, duplicate the requests to a second server, which you’d place in a second location just far away enough to survive a nuclear attack on your primary location, yet not so far that you get too much latency.
+If you want to make Titanic even more reliable, duplicate the requests to a second server, which you'd place in a second location just far away enough to survive a nuclear attack on your primary location, yet not so far that you get too much latency.
 
-If you want to make Titanic much faster and less reliable, store requests and replies purely in memory. This will give you the functionality of a disconnected network, but requests won’t survive a crash of the Titanic server itself.
+If you want to make Titanic much faster and less reliable, store requests and replies purely in memory. This will give you the functionality of a disconnected network, but requests won't survive a crash of the Titanic server itself.
 
 ### High-Availability Pair (Binary Star Pattern)
 
@@ -7310,7 +7297,7 @@ Recovery (to using the primary server as active) is a manual operation. Painful 
 
 - Failover creates an interruption of service to applications, possibly lasting 10-30 seconds. If there is a real emergency, this is much better than total outage. But if recovery creates a further 10-30 second outage, it is better that this happens off-peak, when users have gone off the network.
 - When there is an emergency, the absolute first priority is certainty for those trying to fix things. Automatic recovery creates uncertainty for system administrators, who can no longer be sure which server is in charge without double-checking.
-- Automatic recovery can create situations where networks fail over and then recover, placing operators in the difficult position of analyzing what happened. There was an interruption of service, but the cause isn’t clear.
+- Automatic recovery can create situations where networks fail over and then recover, placing operators in the difficult position of analyzing what happened. There was an interruption of service, but the cause isn't clear.
 
 Having said this, the Binary Star pattern will fail back to the primary server if this is running (again) and the backup server fails. In fact, this is how we provoke recovery.
 
@@ -7347,13 +7334,13 @@ These are our requirements for a high-availability architecture:
 
 We make the following assumptions:
 
-- A single backup server provides enough insurance; we don’t need multiple levels of backup.
+- A single backup server provides enough insurance; we don't need multiple levels of backup.
 
 - The primary and backup servers are equally capable of carrying the application load. We do not attempt to balance load across the servers.
 
 - There is sufficient budget to cover a fully redundant backup server that does nothing almost all the time.
 
-We don’t attempt to cover the following:
+We don't attempt to cover the following:
 
 - The use of an active backup server or load balancing. In a Binary Star pair, the backup server is inactive and does no useful work until the primary server goes offline.
 
@@ -7391,7 +7378,7 @@ Know both server addresses.
 5. Recreate all of the state they require on a server.
 6. Retransmit messages lost during a failover, if messages need to be reliable.
 
-It’s not trivial work, and we’d usually wrap this in an API that hides it from real end-user applications.
+It's not trivial work, and we'd usually wrap this in an API that hides it from real end-user applications.
 
 These are the main limitations of the Binary Star pattern:
 
@@ -7715,7 +7702,7 @@ bstarsrv -b     # Start backup
 bstarcli
 ```
 
-You can then provoke failover by killing the primary server, and recovery by restarting the primary and killing the backup. Note how it’s the client vote that triggers failover, and recovery.
+You can then provoke failover by killing the primary server, and recovery by restarting the primary and killing the backup. Note how it's the client vote that triggers failover, and recovery.
 
 ![](./pics/zmq/fig54.png)
 
@@ -8122,33 +8109,33 @@ int main (int argc, char *argv [])
 
 It might seem ironic to focus so much on broker-based reliability, when we often explain ZeroMQ as “brokerless messaging”. However, in messaging, as in real life, the middleman is both a burden and a benefit. In practice, most messaging architectures benefit from a mix of distributed and brokered messaging. You get the best results when you can decide freely what trade-offs you want to make. This is why I can drive twenty minutes to a wholesaler to buy five cases of wine for a party, but I can also walk ten minutes to a corner store to buy one bottle for a dinner. Our highly context-sensitive relative valuations of time, energy, and cost are essential to the real world economy. And they are essential to an optimal message-based architecture.
 
-This is why ZeroMQ does not impose a broker-centric architecture, though it does give you the tools to build brokers, aka proxies, and we’ve built a dozen or so different ones so far, just for practice.
+This is why ZeroMQ does not impose a broker-centric architecture, though it does give you the tools to build brokers, aka proxies, and we've built a dozen or so different ones so far, just for practice.
 
-So we’ll end this chapter by deconstructing the broker-based reliability we’ve built so far, and turning it back into a distributed peer-to-peer architecture I call the Freelance pattern. Our use case will be a name resolution service. This is a common problem with ZeroMQ architectures: how do we know the endpoint to connect to? Hard-coding TCP/IP addresses in code is insanely fragile. Using configuration files creates an administration nightmare. Imagine if you had to hand-configure your web browser, on every PC or mobile phone you used, to realize that “google.com” was “74.125.230.82”.
+So we'll end this chapter by deconstructing the broker-based reliability we've built so far, and turning it back into a distributed peer-to-peer architecture I call the Freelance pattern. Our use case will be a name resolution service. This is a common problem with ZeroMQ architectures: how do we know the endpoint to connect to? Hard-coding TCP/IP addresses in code is insanely fragile. Using configuration files creates an administration nightmare. Imagine if you had to hand-configure your web browser, on every PC or mobile phone you used, to realize that “google.com” was “74.125.230.82”.
 
-A ZeroMQ name service (and we’ll make a simple implementation) must do the following:
+A ZeroMQ name service (and we'll make a simple implementation) must do the following:
 
 - Resolve a logical name into at least a bind endpoint, and a connect endpoint. A realistic name service would provide multiple bind endpoints, and possibly multiple connect endpoints as well.
 - Allow us to manage multiple parallel environments, e.g., “test” versus “production”, without modifying code.
-- Be reliable, because if it is unavailable, applications won’t be able to connect to the network.
+- Be reliable, because if it is unavailable, applications won't be able to connect to the network.
 
-Putting a name service behind a service-oriented Majordomo broker is clever from some points of view. However, it’s simpler and much less surprising to just expose the name service as a server to which clients can connect directly. If we do this right, the name service becomes the only global network endpoint we need to hard-code in our code or configuration files.
+Putting a name service behind a service-oriented Majordomo broker is clever from some points of view. However, it's simpler and much less surprising to just expose the name service as a server to which clients can connect directly. If we do this right, the name service becomes the only global network endpoint we need to hard-code in our code or configuration files.
 
 ![](./pics/zmq/fig55.png)
 
-The types of failure we aim to handle are server crashes and restarts, server busy looping, server overload, and network issues. To get reliability, we’ll create a pool of name servers so if one crashes or goes away, clients can connect to another, and so on. In practice, two would be enough. But for the example, we’ll assume the pool can be any size.
+The types of failure we aim to handle are server crashes and restarts, server busy looping, server overload, and network issues. To get reliability, we'll create a pool of name servers so if one crashes or goes away, clients can connect to another, and so on. In practice, two would be enough. But for the example, we'll assume the pool can be any size.
 
-In this architecture, a large set of clients connect to a small set of servers directly. The servers bind to their respective addresses. It’s fundamentally different from a broker-based approach like Majordomo, where workers connect to the broker. Clients have a couple of options:
+In this architecture, a large set of clients connect to a small set of servers directly. The servers bind to their respective addresses. It's fundamentally different from a broker-based approach like Majordomo, where workers connect to the broker. Clients have a couple of options:
 
-- Use REQ sockets and the Lazy Pirate pattern. Easy, but would need some additional intelligence so clients don’t stupidly try to reconnect to dead servers over and over.
+- Use REQ sockets and the Lazy Pirate pattern. Easy, but would need some additional intelligence so clients don't stupidly try to reconnect to dead servers over and over.
 - Use DEALER sockets and blast out requests (which will be load balanced to all connected servers) until they get a reply. Effective, but not elegant.
 - Use ROUTER sockets so clients can address specific servers. But how does the client know the identity of the server sockets? Either the server has to ping the client first (complex), or the server has to use a hard-coded, fixed identity known to the client (nasty).
 
-We’ll develop each of these in the following subsections.
+We'll develop each of these in the following subsections.
 
 #### Model One: Simple Retry and Failover
 
-So our menu appears to offer: simple, brutal, complex, or nasty. Let’s start with simple and then work out the kinks. We take Lazy Pirate and rewrite it to work with multiple server endpoints.
+So our menu appears to offer: simple, brutal, complex, or nasty. Let's start with simple and then work out the kinks. We take Lazy Pirate and rewrite it to work with multiple server endpoints.
 
 Start one or several servers first, specifying a bind endpoint as the argument:
 
@@ -8273,15 +8260,15 @@ flclient1 tcp://localhost:5555 tcp://localhost:5556
 Although the basic approach is Lazy Pirate, the client aims to just get one successful reply. It has two techniques, depending on whether you are running a single server or multiple servers:
 
 - With a single server, the client will retry several times, exactly as for Lazy Pirate.
-- With multiple servers, the client will try each server at most once until it’s received a reply or has tried all servers.
+- With multiple servers, the client will try each server at most once until it's received a reply or has tried all servers.
 
 This solves the main weakness of Lazy Pirate, namely that it could not fail over to backup or alternate servers.
 
-However, this design won’t work well in a real application. If we’re connecting many sockets and our primary name server is down, we’re going to experience this painful timeout each time.
+However, this design won't work well in a real application. If we're connecting many sockets and our primary name server is down, we're going to experience this painful timeout each time.
 
 #### Model Two: Brutal Shotgun Massacre
 
-Let’s switch our client to using a DEALER socket. Our goal here is to make sure we get a reply back within the shortest possible time, no matter whether a particular server is up or down. Our client takes this approach:
+Let's switch our client to using a DEALER socket. Our goal here is to make sure we get a reply back within the shortest possible time, no matter whether a particular server is up or down. Our client takes this approach:
 
 - We set things up, connecting to all servers.
 - When we have a request, we blast it out as many times as we have servers.
@@ -8290,9 +8277,9 @@ Let’s switch our client to using a DEALER socket. Our goal here is to make sur
 
 What will happen in practice is that when all servers are running, ZeroMQ will distribute the requests so that each server gets one request and sends one reply. When any server is offline and disconnected, ZeroMQ will distribute the requests to the remaining servers. So a server may in some cases get the same request more than once.
 
-What’s more annoying for the client is that we’ll get multiple replies back, but there’s no guarantee we’ll get a precise number of replies. Requests and replies can get lost (e.g., if the server crashes while processing a request).
+What's more annoying for the client is that we'll get multiple replies back, but there's no guarantee we'll get a precise number of replies. Requests and replies can get lost (e.g., if the server crashes while processing a request).
 
-So we have to number requests and ignore any replies that don’t match the request number. Our Model One server will work because it’s an echo server, but coincidence is not a great basis for understanding. So we’ll make a Model Two server that chews up the message and returns a correctly numbered reply with the content “OK”. We’ll use messages consisting of two parts: a sequence number and a body.
+So we have to number requests and ignore any replies that don't match the request number. Our Model One server will work because it's an echo server, but coincidence is not a great basis for understanding. So we'll make a Model Two server that chews up the message and returns a correctly numbered reply with the content “OK”. We'll use messages consisting of two parts: a sequence number and a body.
 
 Start one or more servers, specifying a bind endpoint each time:
 
@@ -8500,7 +8487,7 @@ flclient_request (flclient_t *self, zmsg_t **request_p)
 Here are some things to note about the client implementation:
 
 - The client is structured as a nice little class-based API that hides the dirty work of creating ZeroMQ contexts and sockets and talking to the server. That is, if a shotgun blast to the midriff can be called “talking”.
-- The client will abandon the chase if it can’t find any responsive server within a few seconds.
+- The client will abandon the chase if it can't find any responsive server within a few seconds.
 - The client has to create a valid REP envelope, i.e., add an empty message frame to the front of the message.
 
 The client performs 10,000 name resolution requests (fake ones, as our server does essentially nothing) and measures the average cost. On my test box, talking to one server, this requires about 60 microseconds. Talking to three servers, it takes about 80 microseconds.
@@ -8510,30 +8497,30 @@ The pros and cons of our shotgun approach are:
 - Pro: it is simple, easy to make and easy to understand.
 - Pro: it does the job of failover, and works rapidly, so long as there is at least one server running.
 - Con: it creates redundant network traffic.
-- Con: we can’t prioritize our servers, i.e., Primary, then Secondary.
+- Con: we can't prioritize our servers, i.e., Primary, then Secondary.
 - Con: the server can do at most one request at a time, period.
 
 #### Model Three: Complex and Nasty
 
-The shotgun approach seems too good to be true. Let’s be scientific and work through all the alternatives. We’re going to explore the complex/nasty option, even if it’s only to finally realize that we preferred brutal. Ah, the story of my life.
+The shotgun approach seems too good to be true. Let's be scientific and work through all the alternatives. We're going to explore the complex/nasty option, even if it's only to finally realize that we preferred brutal. Ah, the story of my life.
 
 We can solve the main problems of the client by switching to a ROUTER socket. That lets us send requests to specific servers, avoid servers we know are dead, and in general be as smart as we want to be. We can also solve the main problem of the server (single-threadedness) by switching to a ROUTER socket.
 
-But doing ROUTER to ROUTER between two anonymous sockets (which haven’t set an identity) is not possible. Both sides generate an identity (for the other peer) only when they receive a first message, and thus neither can talk to the other until it has first received a message. The only way out of this conundrum is to cheat, and use hard-coded identities in one direction. The proper way to cheat, in a client/server case, is to let the client “know” the identity of the server. Doing it the other way around would be insane, on top of complex and nasty, because any number of clients should be able to arise independently. Insane, complex, and nasty are great attributes for a genocidal dictator, but terrible ones for software.
+But doing ROUTER to ROUTER between two anonymous sockets (which haven't set an identity) is not possible. Both sides generate an identity (for the other peer) only when they receive a first message, and thus neither can talk to the other until it has first received a message. The only way out of this conundrum is to cheat, and use hard-coded identities in one direction. The proper way to cheat, in a client/server case, is to let the client “know” the identity of the server. Doing it the other way around would be insane, on top of complex and nasty, because any number of clients should be able to arise independently. Insane, complex, and nasty are great attributes for a genocidal dictator, but terrible ones for software.
 
-Rather than invent yet another concept to manage, we’ll use the connection endpoint as identity. This is a unique string on which both sides can agree without more prior knowledge than they already have for the shotgun model. It’s a sneaky and effective way to connect two ROUTER sockets.
+Rather than invent yet another concept to manage, we'll use the connection endpoint as identity. This is a unique string on which both sides can agree without more prior knowledge than they already have for the shotgun model. It's a sneaky and effective way to connect two ROUTER sockets.
 
-Remember how ZeroMQ identities work. The server ROUTER socket sets an identity before it binds its socket. When a client connects, they do a little handshake to exchange identities, before either side sends a real message. The client ROUTER socket, having not set an identity, sends a null identity to the server. The server generates a random UUID to designate the client for its own use. The server sends its identity (which we’ve agreed is going to be an endpoint string) to the client.
+Remember how ZeroMQ identities work. The server ROUTER socket sets an identity before it binds its socket. When a client connects, they do a little handshake to exchange identities, before either side sends a real message. The client ROUTER socket, having not set an identity, sends a null identity to the server. The server generates a random UUID to designate the client for its own use. The server sends its identity (which we've agreed is going to be an endpoint string) to the client.
 
-This means that our client can route a message to the server (i.e., send on its ROUTER socket, specifying the server endpoint as identity) as soon as the connection is established. That’s not immediately after doing a zmq_connect(), but some random time thereafter. Herein lies one problem: we don’t know when the server will actually be available and complete its connection handshake. If the server is online, it could be after a few milliseconds. If the server is down and the sysadmin is out to lunch, it could be an hour from now.
+This means that our client can route a message to the server (i.e., send on its ROUTER socket, specifying the server endpoint as identity) as soon as the connection is established. That's not immediately after doing a zmq_connect(), but some random time thereafter. Herein lies one problem: we don't know when the server will actually be available and complete its connection handshake. If the server is online, it could be after a few milliseconds. If the server is down and the sysadmin is out to lunch, it could be an hour from now.
 
-There’s a small paradox here. We need to know when servers become connected and available for work. In the Freelance pattern, unlike the broker-based patterns we saw earlier in this chapter, servers are silent until spoken to. Thus we can’t talk to a server until it’s told us it’s online, which it can’t do until we’ve asked it.
+There's a small paradox here. We need to know when servers become connected and available for work. In the Freelance pattern, unlike the broker-based patterns we saw earlier in this chapter, servers are silent until spoken to. Thus we can't talk to a server until it's told us it's online, which it can't do until we've asked it.
 
-My solution is to mix in a little of the shotgun approach from model 2, meaning we’ll fire (harmless) shots at anything we can, and if anything moves, we know it’s alive. We’re not going to fire real requests, but rather a kind of ping-pong heartbeat.
+My solution is to mix in a little of the shotgun approach from model 2, meaning we'll fire (harmless) shots at anything we can, and if anything moves, we know it's alive. We're not going to fire real requests, but rather a kind of ping-pong heartbeat.
 
-This brings us to the realm of protocols again, so here’s a short spec that defines how a Freelance client and server exchange ping-pong commands and request-reply commands.
+This brings us to the realm of protocols again, so here's a short spec that defines how a Freelance client and server exchange ping-pong commands and request-reply commands.
 
-It is short and sweet to implement as a server. Here’s our echo server, Model Three, now speaking FLP:
+It is short and sweet to implement as a server. Here's our echo server, Model Three, now speaking FLP:
 
 ```c++
 //  Freelance server - Model 3
@@ -8589,7 +8576,7 @@ int main (int argc, char *argv [])
 }
 ```
 
-The Freelance client, however, has gotten large. For clarity, it’s split into an example application and a class that does the hard work. Here’s the top-level application:
+The Freelance client, however, has gotten large. For clarity, it's split into an example application and a class that does the hard work. Here's the top-level application:
 
 ```c++
 //  Freelance client - Model 3
@@ -8984,19 +8971,19 @@ flcliapi_agent (void *args, zctx_t *ctx, void *pipe)
 }
 ```
 
-This API implementation is fairly sophisticated and uses a couple of techniques that we’ve not seen before.
+This API implementation is fairly sophisticated and uses a couple of techniques that we've not seen before.
 
 - Multithreaded API: the client API consists of two parts, a synchronous flcliapi class that runs in the application thread, and an asynchronous agent class that runs as a background thread. Remember how ZeroMQ makes it easy to create multithreaded apps. The flcliapi and agent classes talk to each other with messages over an inproc socket. All ZeroMQ aspects (such as creating and destroying a context) are hidden in the API. The agent in effect acts like a mini-broker, talking to servers in the background, so that when we make a request, it can make a best effort to reach a server it believes is available.
-- Tickless poll timer: in previous poll loops we always used a fixed tick interval, e.g., 1 second, which is simple enough but not excellent on power-sensitive clients (such as notebooks or mobile phones), where waking the CPU costs power. For fun, and to help save the planet, the agent uses a tickless timer, which calculates the poll delay based on the next timeout we’re expecting. A proper implementation would keep an ordered list of timeouts. We just check all timeouts and calculate the poll delay until the next one.
+- Tickless poll timer: in previous poll loops we always used a fixed tick interval, e.g., 1 second, which is simple enough but not excellent on power-sensitive clients (such as notebooks or mobile phones), where waking the CPU costs power. For fun, and to help save the planet, the agent uses a tickless timer, which calculates the poll delay based on the next timeout we're expecting. A proper implementation would keep an ordered list of timeouts. We just check all timeouts and calculate the poll delay until the next one.
 
 #### Conclusion
-In this chapter, we’ve seen a variety of reliable request-reply mechanisms, each with certain costs and benefits. The example code is largely ready for real use, though it is not optimized. Of all the different patterns, the two that stand out for production use are the Majordomo pattern, for broker-based reliability, and the Freelance pattern, for brokerless reliability.
+In this chapter, we've seen a variety of reliable request-reply mechanisms, each with certain costs and benefits. The example code is largely ready for real use, though it is not optimized. Of all the different patterns, the two that stand out for production use are the Majordomo pattern, for broker-based reliability, and the Freelance pattern, for brokerless reliability.
 
 ## Advanced Pub-Sub Patterns
 
-In Chapter 3 - Advanced Request-Reply Patterns and Chapter 4 - Reliable Request-Reply Patterns we looked at advanced use of ZeroMQ’s request-reply pattern. If you managed to digest all that, congratulations. In this chapter we’ll focus on publish-subscribe and extend ZeroMQ’s core pub-sub pattern with higher-level patterns for performance, reliability, state distribution, and monitoring.
+In Chapter 3 - Advanced Request-Reply Patterns and Chapter 4 - Reliable Request-Reply Patterns we looked at advanced use of ZeroMQ's request-reply pattern. If you managed to digest all that, congratulations. In this chapter we'll focus on publish-subscribe and extend ZeroMQ's core pub-sub pattern with higher-level patterns for performance, reliability, state distribution, and monitoring.
 
-We’ll cover:
+We'll cover:
 
 When to use publish-subscribe
 How to handle too-slow subscribers (the Suicidal Snail pattern)
@@ -9008,31 +8995,31 @@ How to use the Binary Star pattern to add failover to a server
 
 ### Pros and Cons of Pub-Sub
 
-ZeroMQ’s low-level patterns have their different characters. Pub-sub addresses an old messaging problem, which is multicast or group messaging. It has that unique mix of meticulous simplicity and brutal indifference that characterizes ZeroMQ. It’s worth understanding the trade-offs that pub-sub makes, how these benefit us, and how we can work around them if needed.
+ZeroMQ's low-level patterns have their different characters. Pub-sub addresses an old messaging problem, which is multicast or group messaging. It has that unique mix of meticulous simplicity and brutal indifference that characterizes ZeroMQ. It's worth understanding the trade-offs that pub-sub makes, how these benefit us, and how we can work around them if needed.
 
 First, PUB sends each message to “all of many”, whereas PUSH and DEALER rotate messages to “one of many”. You cannot simply replace PUSH with PUB or vice versa and hope that things will work. This bears repeating because people seem to quite often suggest doing this.
 
-More profoundly, pub-sub is aimed at scalability. This means large volumes of data, sent rapidly to many recipients. If you need millions of messages per second sent to thousands of points, you’ll appreciate pub-sub a lot more than if you need a few messages a second sent to a handful of recipients.
+More profoundly, pub-sub is aimed at scalability. This means large volumes of data, sent rapidly to many recipients. If you need millions of messages per second sent to thousands of points, you'll appreciate pub-sub a lot more than if you need a few messages a second sent to a handful of recipients.
 
-To get scalability, pub-sub uses the same trick as push-pull, which is to get rid of back-chatter. This means that recipients don’t talk back to senders. There are some exceptions, e.g., SUB sockets will send subscriptions to PUB sockets, but it’s anonymous and infrequent.
+To get scalability, pub-sub uses the same trick as push-pull, which is to get rid of back-chatter. This means that recipients don't talk back to senders. There are some exceptions, e.g., SUB sockets will send subscriptions to PUB sockets, but it's anonymous and infrequent.
 
-Killing back-chatter is essential to real scalability. With pub-sub, it’s how the pattern can map cleanly to the PGM multicast protocol, which is handled by the network switch. In other words, subscribers don’t connect to the publisher at all, they connect to a multicast group on the switch, to which the publisher sends its messages.
+Killing back-chatter is essential to real scalability. With pub-sub, it's how the pattern can map cleanly to the PGM multicast protocol, which is handled by the network switch. In other words, subscribers don't connect to the publisher at all, they connect to a multicast group on the switch, to which the publisher sends its messages.
 
 When we remove back-chatter, our overall message flow becomes much simpler, which lets us make simpler APIs, simpler protocols, and in general reach many more people. But we also remove any possibility to coordinate senders and receivers. What this means is:
 
-Publishers can’t tell when subscribers are successfully connected, both on initial connections, and on reconnections after network failures.
+Publishers can't tell when subscribers are successfully connected, both on initial connections, and on reconnections after network failures.
 
-Subscribers can’t tell publishers anything that would allow publishers to control the rate of messages they send. Publishers only have one setting, which is full-speed, and subscribers must either keep up or lose messages.
+Subscribers can't tell publishers anything that would allow publishers to control the rate of messages they send. Publishers only have one setting, which is full-speed, and subscribers must either keep up or lose messages.
 
-Publishers can’t tell when subscribers have disappeared due to processes crashing, networks breaking, and so on.
+Publishers can't tell when subscribers have disappeared due to processes crashing, networks breaking, and so on.
 
-The downside is that we actually need all of these if we want to do reliable multicast. The ZeroMQ pub-sub pattern will lose messages arbitrarily when a subscriber is connecting, when a network failure occurs, or just if the subscriber or network can’t keep up with the publisher.
+The downside is that we actually need all of these if we want to do reliable multicast. The ZeroMQ pub-sub pattern will lose messages arbitrarily when a subscriber is connecting, when a network failure occurs, or just if the subscriber or network can't keep up with the publisher.
 
-The upside is that there are many use cases where almost reliable multicast is just fine. When we need this back-chatter, we can either switch to using ROUTER-DEALER (which I tend to do for most normal volume cases), or we can add a separate channel for synchronization (we’ll see an example of this later in this chapter).
+The upside is that there are many use cases where almost reliable multicast is just fine. When we need this back-chatter, we can either switch to using ROUTER-DEALER (which I tend to do for most normal volume cases), or we can add a separate channel for synchronization (we'll see an example of this later in this chapter).
 
 Pub-sub is like a radio broadcast; you miss everything before you join, and then how much information you get depends on the quality of your reception. Surprisingly, this model is useful and widespread because it maps perfectly to real world distribution of information. Think of Facebook and Twitter, the BBC World Service, and the sports results.
 
-As we did for request-reply, let’s define reliability in terms of what can go wrong. Here are the classic failure cases for pub-sub:
+As we did for request-reply, let's define reliability in terms of what can go wrong. Here are the classic failure cases for pub-sub:
 
 Subscribers join late, so they miss messages the server already sent.
 Subscribers can fetch messages too slowly, so queues build up and then overflow.
@@ -9042,11 +9029,11 @@ Networks can become overloaded and drop data (specifically, for PGM).
 Networks can become too slow, so publisher-side queues overflow and publishers crash.
 A lot more can go wrong but these are the typical failures we see in a realistic system. Since v3.x, ZeroMQ forces default limits on its internal buffers (the so-called high-water mark or HWM), so publisher crashes are rarer unless you deliberately set the HWM to infinite.
 
-All of these failure cases have answers, though not always simple ones. Reliability requires complexity that most of us don’t need, most of the time, which is why ZeroMQ doesn’t attempt to provide it out of the box (even if there was one global design for reliability, which there isn’t).
+All of these failure cases have answers, though not always simple ones. Reliability requires complexity that most of us don't need, most of the time, which is why ZeroMQ doesn't attempt to provide it out of the box (even if there was one global design for reliability, which there isn't).
 
 ### Pub-Sub Tracing (Espresso Pattern)
 
-Let’s start this chapter by looking at a way to trace pub-sub networks. In Chapter 2 - Sockets and Patterns we saw a simple proxy that used these to do transport bridging. The zmq_proxy() method has three arguments: a frontend and backend socket that it bridges together, and a capture socket to which it will send all messages.
+Let's start this chapter by looking at a way to trace pub-sub networks. In Chapter 2 - Sockets and Patterns we saw a simple proxy that used these to do transport bridging. The zmq_proxy() method has three arguments: a frontend and backend socket that it bridges together, and a capture socket to which it will send all messages.
 
 The code is deceptively simple:
 
@@ -9140,7 +9127,7 @@ int main (void)
 }
 ```
 
-Espresso works by creating a listener thread that reads a PAIR socket and prints anything it gets. That PAIR socket is one end of a pipe; the other end (another PAIR) is the socket we pass to zmq_proxy(). In practice, you’d filter interesting messages to get the essence of what you want to track (hence the name of the pattern).
+Espresso works by creating a listener thread that reads a PAIR socket and prints anything it gets. That PAIR socket is one end of a pipe; the other end (another PAIR) is the socket we pass to zmq_proxy(). In practice, you'd filter interesting messages to get the essence of what you want to track (hence the name of the pattern).
 
 The subscriber thread subscribes to “A” and “B”, receives five messages, and then destroys its socket. When you run the example, the listener prints two subscription messages, five data messages, two unsubscribe messages, and then silence:
 
@@ -9160,19 +9147,19 @@ This shows neatly how the publisher socket stops sending data when there are no 
 
 ### Last Value Caching
 
-If you’ve used commercial pub-sub systems, you may be used to some features that are missing in the fast and cheerful ZeroMQ pub-sub model. One of these is last value caching (LVC). This solves the problem of how a new subscriber catches up when it joins the network. The theory is that publishers get notified when a new subscriber joins and subscribes to some specific topics. The publisher can then rebroadcast the last message for those topics.
+If you've used commercial pub-sub systems, you may be used to some features that are missing in the fast and cheerful ZeroMQ pub-sub model. One of these is last value caching (LVC). This solves the problem of how a new subscriber catches up when it joins the network. The theory is that publishers get notified when a new subscriber joins and subscribes to some specific topics. The publisher can then rebroadcast the last message for those topics.
 
-I’ve already explained why publishers don’t get notified when there are new subscribers, because in large pub-sub systems, the volumes of data make it pretty much impossible. To make really large-scale pub-sub networks, you need a protocol like PGM that exploits an upscale Ethernet switch’s ability to multicast data to thousands of subscribers. Trying to do a TCP unicast from the publisher to each of thousands of subscribers just doesn’t scale. You get weird spikes, unfair distribution (some subscribers getting the message before others), network congestion, and general unhappiness.
+I've already explained why publishers don't get notified when there are new subscribers, because in large pub-sub systems, the volumes of data make it pretty much impossible. To make really large-scale pub-sub networks, you need a protocol like PGM that exploits an upscale Ethernet switch's ability to multicast data to thousands of subscribers. Trying to do a TCP unicast from the publisher to each of thousands of subscribers just doesn't scale. You get weird spikes, unfair distribution (some subscribers getting the message before others), network congestion, and general unhappiness.
 
-PGM is a one-way protocol: the publisher sends a message to a multicast address at the switch, which then rebroadcasts that to all interested subscribers. The publisher never sees when subscribers join or leave: this all happens in the switch, which we don’t really want to start reprogramming.
+PGM is a one-way protocol: the publisher sends a message to a multicast address at the switch, which then rebroadcasts that to all interested subscribers. The publisher never sees when subscribers join or leave: this all happens in the switch, which we don't really want to start reprogramming.
 
 However, in a lower-volume network with a few dozen subscribers and a limited number of topics, we can use TCP and then the XSUB and XPUB sockets do talk to each other as we just saw in the Espresso pattern.
 
 Can we make an LVC using ZeroMQ? The answer is yes, if we make a proxy that sits between the publisher and subscribers; an analog for the PGM switch, but one we can program ourselves.
 
-I’ll start by making a publisher and subscriber that highlight the worst case scenario. This publisher is pathological. It starts by immediately sending messages to each of a thousand topics, and then it sends one update a second to a random topic. A subscriber connects, and subscribes to a topic. Without LVC, a subscriber would have to wait an average of 500 seconds to get any data. To add some drama, let’s pretend there’s an escaped convict called Gregor threatening to rip the head off Roger the toy bunny if we can’t fix that 8.3 minutes’ delay.
+I'll start by making a publisher and subscriber that highlight the worst case scenario. This publisher is pathological. It starts by immediately sending messages to each of a thousand topics, and then it sends one update a second to a random topic. A subscriber connects, and subscribes to a topic. Without LVC, a subscriber would have to wait an average of 500 seconds to get any data. To add some drama, let's pretend there's an escaped convict called Gregor threatening to rip the head off Roger the toy bunny if we can't fix that 8.3 minutes' delay.
 
-Here’s the publisher code. Note that it has the command line option to connect to some address, but otherwise binds to an endpoint. We’ll use this later to connect to our last value cache:
+Here's the publisher code. Note that it has the command line option to connect to some address, but otherwise binds to an endpoint. We'll use this later to connect to our last value cache:
 
 ```c++
 //  Pathological publisher
@@ -9222,7 +9209,7 @@ int main (int argc, char *argv [])
 }
 ```
 
-And here’s the subscriber:
+And here's the subscriber:
 
 ```c++
 //  Pathological subscriber
@@ -9260,14 +9247,14 @@ int main (int argc, char *argv [])
 }
 ```
 
-Try building and running these: first the subscriber, then the publisher. You’ll see the subscriber reports getting “Save Roger” as you’d expect:
+Try building and running these: first the subscriber, then the publisher. You'll see the subscriber reports getting “Save Roger” as you'd expect:
 
 ```
 ./pathosub &
 ./pathopub
 ```
 
-It’s when you run a second subscriber that you understand Roger’s predicament. You have to leave it an awful long time before it reports getting any data. So, here’s our last value cache. As I promised, it’s a proxy that binds to two sockets and then handles messages on both:
+It's when you run a second subscriber that you understand Roger's predicament. You have to leave it an awful long time before it reports getting any data. So, here's our last value cache. As I promised, it's a proxy that binds to two sockets and then handles messages on both:
 
 ```c++
 //  Last value cache
@@ -9362,28 +9349,28 @@ And now run as many instances of the subscriber as you want to try, each time co
 
 Each subscriber happily reports “Save Roger”, and Gregor the Escaped Convict slinks back to his seat for dinner and a nice cup of hot milk, which is all he really wanted in the first place.
 
-One note: by default, the XPUB socket does not report duplicate subscriptions, which is what you want when you’re naively connecting an XPUB to an XSUB. Our example sneakily gets around this by using random topics so the chance of it not working is one in a million. In a real LVC proxy, you’ll want to use the ZMQ_XPUB_VERBOSE option that we implement in Chapter 6 - The ZeroMQ Community as an exercise.
+One note: by default, the XPUB socket does not report duplicate subscriptions, which is what you want when you're naively connecting an XPUB to an XSUB. Our example sneakily gets around this by using random topics so the chance of it not working is one in a million. In a real LVC proxy, you'll want to use the ZMQ_XPUB_VERBOSE option that we implement in Chapter 6 - The ZeroMQ Community as an exercise.
 
 ### Slow Subscriber Detection (Suicidal Snail Pattern)
 
-A common problem you will hit when using the pub-sub pattern in real life is the slow subscriber. In an ideal world, we stream data at full speed from publishers to subscribers. In reality, subscriber applications are often written in interpreted languages, or just do a lot of work, or are just badly written, to the extent that they can’t keep up with publishers.
+A common problem you will hit when using the pub-sub pattern in real life is the slow subscriber. In an ideal world, we stream data at full speed from publishers to subscribers. In reality, subscriber applications are often written in interpreted languages, or just do a lot of work, or are just badly written, to the extent that they can't keep up with publishers.
 
 How do we handle a slow subscriber? The ideal fix is to make the subscriber faster, but that might take work and time. Some of the classic strategies for handling a slow subscriber are:
 
-- Queue messages on the publisher. This is what Gmail does when I don’t read my email for a couple of hours. But in high-volume messaging, pushing queues upstream has the thrilling but unprofitable result of making publishers run out of memory and crash–especially if there are lots of subscribers and it’s not possible to flush to disk for performance reasons.
-- Queue messages on the subscriber. This is much better, and it’s what ZeroMQ does by default if the network can keep up with things. If anyone’s going to run out of memory and crash, it’ll be the subscriber rather than the publisher, which is fair. This is perfect for “peaky” streams where a subscriber can’t keep up for a while, but can catch up when the stream slows down. However, it’s no answer to a subscriber that’s simply too slow in general.
-- Stop queuing new messages after a while. This is what Gmail does when my mailbox overflows its precious gigabytes of space. New messages just get rejected or dropped. This is a great strategy from the perspective of the publisher, and it’s what ZeroMQ does when the publisher sets a HWM. However, it still doesn’t help us fix the slow subscriber. Now we just get gaps in our message stream.
-- Punish slow subscribers with disconnect. This is what Hotmail (remember that?) did when I didn’t log in for two weeks, which is why I was on my fifteenth Hotmail account when it hit me that there was perhaps a better way. It’s a nice brutal strategy that forces subscribers to sit up and pay attention and would be ideal, but ZeroMQ doesn’t do this, and there’s no way to layer it on top because subscribers are invisible to publisher applications.
+- Queue messages on the publisher. This is what Gmail does when I don't read my email for a couple of hours. But in high-volume messaging, pushing queues upstream has the thrilling but unprofitable result of making publishers run out of memory and crash–especially if there are lots of subscribers and it's not possible to flush to disk for performance reasons.
+- Queue messages on the subscriber. This is much better, and it's what ZeroMQ does by default if the network can keep up with things. If anyone's going to run out of memory and crash, it'll be the subscriber rather than the publisher, which is fair. This is perfect for “peaky” streams where a subscriber can't keep up for a while, but can catch up when the stream slows down. However, it's no answer to a subscriber that's simply too slow in general.
+- Stop queuing new messages after a while. This is what Gmail does when my mailbox overflows its precious gigabytes of space. New messages just get rejected or dropped. This is a great strategy from the perspective of the publisher, and it's what ZeroMQ does when the publisher sets a HWM. However, it still doesn't help us fix the slow subscriber. Now we just get gaps in our message stream.
+- Punish slow subscribers with disconnect. This is what Hotmail (remember that?) did when I didn't log in for two weeks, which is why I was on my fifteenth Hotmail account when it hit me that there was perhaps a better way. It's a nice brutal strategy that forces subscribers to sit up and pay attention and would be ideal, but ZeroMQ doesn't do this, and there's no way to layer it on top because subscribers are invisible to publisher applications.
 
-None of these classic strategies fit, so we need to get creative. Rather than disconnect the publisher, let’s convince the subscriber to kill itself. This is the Suicidal Snail pattern. When a subscriber detects that it’s running too slowly (where “too slowly” is presumably a configured option that really means “so slowly that if you ever get here, shout really loudly because I need to know, so I can fix this!"), it croaks and dies.
+None of these classic strategies fit, so we need to get creative. Rather than disconnect the publisher, let's convince the subscriber to kill itself. This is the Suicidal Snail pattern. When a subscriber detects that it's running too slowly (where “too slowly” is presumably a configured option that really means “so slowly that if you ever get here, shout really loudly because I need to know, so I can fix this!"), it croaks and dies.
 
-How can a subscriber detect this? One way would be to sequence messages (number them in order) and use a HWM at the publisher. Now, if the subscriber detects a gap (i.e., the numbering isn’t consecutive), it knows something is wrong. We then tune the HWM to the “croak and die if you hit this” level.
+How can a subscriber detect this? One way would be to sequence messages (number them in order) and use a HWM at the publisher. Now, if the subscriber detects a gap (i.e., the numbering isn't consecutive), it knows something is wrong. We then tune the HWM to the “croak and die if you hit this” level.
 
 There are two problems with this solution. One, if we have many publishers, how do we sequence messages? The solution is to give each publisher a unique ID and add that to the sequencing. Second, if subscribers use ZMQ_SUBSCRIBE filters, they will get gaps by definition. Our precious sequencing will be for nothing.
 
-Some use cases won’t use filters, and sequencing will work for them. But a more general solution is that the publisher timestamps each message. When a subscriber gets a message, it checks the time, and if the difference is more than, say, one second, it does the “croak and die” thing, possibly firing off a squawk to some operator console first.
+Some use cases won't use filters, and sequencing will work for them. But a more general solution is that the publisher timestamps each message. When a subscriber gets a message, it checks the time, and if the difference is more than, say, one second, it does the “croak and die” thing, possibly firing off a squawk to some operator console first.
 
-The Suicide Snail pattern works especially when subscribers have their own clients and service-level agreements and need to guarantee certain maximum latencies. Aborting a subscriber may not seem like a constructive way to guarantee a maximum latency, but it’s the assertion model. Abort today, and the problem will be fixed. Allow late data to flow downstream, and the problem may cause wider damage and take longer to appear on the radar.
+The Suicide Snail pattern works especially when subscribers have their own clients and service-level agreements and need to guarantee certain maximum latencies. Aborting a subscriber may not seem like a constructive way to guarantee a maximum latency, but it's the assertion model. Abort today, and the problem will be fixed. Allow late data to flow downstream, and the problem may cause wider damage and take longer to appear on the radar.
 
 Here is a minimal example of a Suicidal Snail:
 
@@ -9475,25 +9462,25 @@ int main (void)
 
 Here are some things to note about the Suicidal Snail example:
 
-- The message here consists simply of the current system clock as a number of milliseconds. In a realistic application, you’d have at least a message header with the timestamp and a message body with data.
+- The message here consists simply of the current system clock as a number of milliseconds. In a realistic application, you'd have at least a message header with the timestamp and a message body with data.
 - The example has subscriber and publisher in a single process as two threads. In reality, they would be separate processes. Using threads is just convenient for the demonstration.
 
 ### High-Speed Subscribers (Black Box Pattern)
 
-Now lets look at one way to make our subscribers faster. A common use case for pub-sub is distributing large data streams like market data coming from stock exchanges. A typical setup would have a publisher connected to a stock exchange, taking price quotes, and sending them out to a number of subscribers. If there are a handful of subscribers, we could use TCP. If we have a larger number of subscribers, we’d probably use reliable multicast, i.e., PGM.
+Now lets look at one way to make our subscribers faster. A common use case for pub-sub is distributing large data streams like market data coming from stock exchanges. A typical setup would have a publisher connected to a stock exchange, taking price quotes, and sending them out to a number of subscribers. If there are a handful of subscribers, we could use TCP. If we have a larger number of subscribers, we'd probably use reliable multicast, i.e., PGM.
 
 ![](./pics/zmq/fig56.png)
 
-Let’s imagine our feed has an average of 100,000 100-byte messages a second. That’s a typical rate, after filtering market data we don’t need to send on to subscribers. Now we decide to record a day’s data (maybe 250 GB in 8 hours), and then replay it to a simulation network, i.e., a small group of subscribers. While 100K messages a second is easy for a ZeroMQ application, we want to replay it much faster.
+Let's imagine our feed has an average of 100,000 100-byte messages a second. That's a typical rate, after filtering market data we don't need to send on to subscribers. Now we decide to record a day's data (maybe 250 GB in 8 hours), and then replay it to a simulation network, i.e., a small group of subscribers. While 100K messages a second is easy for a ZeroMQ application, we want to replay it much faster.
 
 So we set up our architecture with a bunch of boxes–one for the publisher and one for each subscriber. These are well-specified boxes–eight cores, twelve for the publisher.
 
 And as we pump data into our subscribers, we notice two things:
 
-1. When we do even the slightest amount of work with a message, it slows down our subscriber to the point where it can’t catch up with the publisher again.
-2. We’re hitting a ceiling, at both publisher and subscriber, to around 6M messages a second, even after careful optimization and TCP tuning.
+1. When we do even the slightest amount of work with a message, it slows down our subscriber to the point where it can't catch up with the publisher again.
+2. We're hitting a ceiling, at both publisher and subscriber, to around 6M messages a second, even after careful optimization and TCP tuning.
 
-The first thing we have to do is break our subscriber into a multithreaded design so that we can do work with messages in one set of threads, while reading messages in another. Typically, we don’t want to process every message the same way. Rather, the subscriber will filter some messages, perhaps by prefix key. When a message matches some criteria, the subscriber will call a worker to deal with it. In ZeroMQ terms, this means sending the message to a worker thread.
+The first thing we have to do is break our subscriber into a multithreaded design so that we can do work with messages in one set of threads, while reading messages in another. Typically, we don't want to process every message the same way. Rather, the subscriber will filter some messages, perhaps by prefix key. When a message matches some criteria, the subscriber will call a worker to deal with it. In ZeroMQ terms, this means sending the message to a worker thread.
 
 So the subscriber looks something like a queue device. We could use various sockets to connect the subscriber and workers. If we assume one-way traffic and workers that are all identical, we can use PUSH and PULL and delegate all the routing work to ZeroMQ. This is the simplest and fastest approach.
 
@@ -9503,7 +9490,7 @@ The subscriber talks to the publisher over TCP or PGM. The subscriber talks to i
 
 Now to break that ceiling. The subscriber thread hits 100% of CPU and because it is one thread, it cannot use more than one core. A single thread will always hit a ceiling, be it at 2M, 6M, or more messages per second. We want to split the work across multiple threads that can run in parallel.
 
-The approach used by many high-performance products, which works here, is sharding. Using sharding, we split the work into parallel and independent streams, such as half of the topic keys in one stream, and half in another. We could use many streams, but performance won’t scale unless we have free cores. So let’s see how to shard into two streams.
+The approach used by many high-performance products, which works here, is sharding. Using sharding, we split the work into parallel and independent streams, such as half of the topic keys in one stream, and half in another. We could use many streams, but performance won't scale unless we have free cores. So let's see how to shard into two streams.
 
 With two streams, working at full speed, we would configure ZeroMQ as follows:
 
@@ -9519,14 +9506,14 @@ Ideally, we want to match the number of fully-loaded threads in our architecture
 
 ### Reliable Pub-Sub (Clone Pattern)
 
-As a larger worked example, we’ll take the problem of making a reliable pub-sub architecture. We’ll develop this in stages. The goal is to allow a set of applications to share some common state. Here are our technical challenges:
+As a larger worked example, we'll take the problem of making a reliable pub-sub architecture. We'll develop this in stages. The goal is to allow a set of applications to share some common state. Here are our technical challenges:
 
 - We have a large set of client applications, say thousands or tens of thousands.
 - They will join and leave the network arbitrarily.
 - These applications must share a single eventually-consistent state.
   
 Any application can update the state at any point in time.
-Let’s say that updates are reasonably low-volume. We don’t have real time goals. The whole state can fit into memory. Some plausible use cases are:
+Let's say that updates are reasonably low-volume. We don't have real time goals. The whole state can fit into memory. Some plausible use cases are:
 
 - A configuration that is shared by a group of cloud servers.
 - Some game state shared by a group of players.
@@ -9539,17 +9526,17 @@ A first decision we have to make is whether we work with a central server or not
 - Conceptually, a central server is simpler to understand because networks are not naturally symmetrical. With a central server, we avoid all questions of discovery, bind versus connect, and so on.
 - Generally, a fully-distributed architecture is technically more challenging but ends up with simpler protocols. That is, each node must act as server and client in the right way, which is delicate. When done right, the results are simpler than using a central server. We saw this in the Freelance pattern in Chapter 4 - Reliable Request-Reply Patterns.
 - A central server will become a bottleneck in high-volume use cases. If handling scale in the order of millions of messages a second is required, we should aim for decentralization right away.
-- Ironically, a centralized architecture will scale to more nodes more easily than a decentralized one. That is, it’s easier to connect 10,000 nodes to one server than to each other.
+- Ironically, a centralized architecture will scale to more nodes more easily than a decentralized one. That is, it's easier to connect 10,000 nodes to one server than to each other.
 
-So, for the Clone pattern we’ll work with a server that publishes state updates and a set of clients that represent applications.
+So, for the Clone pattern we'll work with a server that publishes state updates and a set of clients that represent applications.
 
 #### Representing State as Key-Value Pairs
 
-We’ll develop Clone in stages, solving one problem at a time. First, let’s look at how to update a shared state across a set of clients. We need to decide how to represent our state, as well as the updates. The simplest plausible format is a key-value store, where one key-value pair represents an atomic unit of change in the shared state.
+We'll develop Clone in stages, solving one problem at a time. First, let's look at how to update a shared state across a set of clients. We need to decide how to represent our state, as well as the updates. The simplest plausible format is a key-value store, where one key-value pair represents an atomic unit of change in the shared state.
 
-We have a simple pub-sub example in Chapter 1 - Basics, the weather server and client. Let’s change the server to send key-value pairs, and the client to store these in a hash table. This lets us send updates from one server to a set of clients using the classic pub-sub model.
+We have a simple pub-sub example in Chapter 1 - Basics, the weather server and client. Let's change the server to send key-value pairs, and the client to store these in a hash table. This lets us send updates from one server to a set of clients using the classic pub-sub model.
 
-An update is either a new key-value pair, a modified value for an existing key, or a deleted key. We can assume for now that the whole store fits in memory and that applications access it by key, such as by using a hash table or dictionary. For larger stores and some kind of persistence we’d probably store the state in a database, but that’s not relevant here.
+An update is either a new key-value pair, a modified value for an existing key, or a deleted key. We can assume for now that the whole store fits in memory and that applications access it by key, such as by using a hash table or dictionary. For larger stores and some kind of persistence we'd probably store the state in a database, but that's not relevant here.
 
 This is the server:
 
@@ -9623,9 +9610,9 @@ Here are some things to note about this first model:
 
 - All the hard work is done in a kvmsg class. This class works with key-value message objects, which are multipart ZeroMQ messages structured as three frames: a key (a ZeroMQ string), a sequence number (64-bit value, in network byte order), and a binary body (holds everything else).
 - The server generates messages with a randomized 4-digit key, which lets us simulate a large but not enormous hash table (10K entries).
-- We don’t implement deletions in this version: all messages are inserts or updates.
-- The server does a 200 millisecond pause after binding its socket. This is to prevent slow joiner syndrome, where the subscriber loses messages as it connects to the server’s socket. We’ll remove that in later versions of the Clone code.
-- We’ll use the terms publisher and subscriber in the code to refer to sockets. This will help later when we have multiple sockets doing different things.
+- We don't implement deletions in this version: all messages are inserts or updates.
+- The server does a 200 millisecond pause after binding its socket. This is to prevent slow joiner syndrome, where the subscriber loses messages as it connects to the server's socket. We'll remove that in later versions of the Clone code.
+- We'll use the terms publisher and subscriber in the code to refer to sockets. This will help later when we have multiple sockets doing different things.
 
 Here is the kvmsg class, in the simplest form that works for now:
 
@@ -9995,17 +9982,17 @@ kvmsg_test (int verbose)
 }
 ```
 
-Later, we’ll make a more sophisticated kvmsg class that will work in real applications.
+Later, we'll make a more sophisticated kvmsg class that will work in real applications.
 
-Both the server and client maintain hash tables, but this first model only works properly if we start all clients before the server and the clients never crash. That’s very artificial.
+Both the server and client maintain hash tables, but this first model only works properly if we start all clients before the server and the clients never crash. That's very artificial.
 
 #### Getting an Out-of-Band Snapshot
 
 So now we have our second problem: how to deal with late-joining clients or clients that crash and then restart.
 
-In order to allow a late (or recovering) client to catch up with a server, it has to get a snapshot of the server’s state. Just as we’ve reduced “message” to mean “a sequenced key-value pair”, we can reduce “state” to mean “a hash table”. To get the server state, a client opens a DEALER socket and asks for it explicitly.
+In order to allow a late (or recovering) client to catch up with a server, it has to get a snapshot of the server's state. Just as we've reduced “message” to mean “a sequenced key-value pair”, we can reduce “state” to mean “a hash table”. To get the server state, a client opens a DEALER socket and asks for it explicitly.
 
-To make this work, we have to solve a problem of timing. Getting a state snapshot will take a certain time, possibly fairly long if the snapshot is large. We need to correctly apply updates to the snapshot. But the server won’t know when to start sending us updates. One way would be to start subscribing, get a first update, and then ask for “state for update N”. This would require the server storing one snapshot for each update, which isn’t practical.
+To make this work, we have to solve a problem of timing. Getting a state snapshot will take a certain time, possibly fairly long if the snapshot is large. We need to correctly apply updates to the snapshot. But the server won't know when to start sending us updates. One way would be to start subscribing, get a first update, and then ask for “state for update N”. This would require the server storing one snapshot for each update, which isn't practical.
 
 ![](./pics/zmq/fig59.png)
 
@@ -10017,7 +10004,7 @@ So we will do the synchronization in the client, as follows:
 
 The client then applies updates to its own state snapshot.
 
-It’s a simple model that exploits ZeroMQ’s own internal queues. Here’s the server:
+It's a simple model that exploits ZeroMQ's own internal queues. Here's the server:
 
 ```c++
 //  Clone server - Model Two
@@ -10198,29 +10185,29 @@ Here are some things to note about these two programs:
 
 - The server uses two tasks. One thread produces the updates (randomly) and sends these to the main PUB socket, while the other thread handles state requests on the ROUTER socket. The two communicate across PAIR sockets over an inproc:@<//>@ connection.
 - The client is really simple. In C, it consists of about fifty lines of code. A lot of the heavy lifting is done in the kvmsg class. Even so, the basic Clone pattern is easier to implement than it seemed at first.
-- We don’t use anything fancy for serializing the state. The hash table holds a set of kvmsg objects, and the server sends these, as a batch of messages, to the client requesting state. If multiple clients request state at once, each will get a different snapshot.
+- We don't use anything fancy for serializing the state. The hash table holds a set of kvmsg objects, and the server sends these, as a batch of messages, to the client requesting state. If multiple clients request state at once, each will get a different snapshot.
 - We assume that the client has exactly one server to talk to. The server must be running; we do not try to solve the question of what happens if the server crashes.
 
-Right now, these two programs don’t do anything real, but they correctly synchronize state. It’s a neat example of how to mix different patterns: PAIR-PAIR, PUB-SUB, and ROUTER-DEALER.
+Right now, these two programs don't do anything real, but they correctly synchronize state. It's a neat example of how to mix different patterns: PAIR-PAIR, PUB-SUB, and ROUTER-DEALER.
 
 #### Republishing Updates from Clients
 
 In our second model, changes to the key-value store came from the server itself. This is a centralized model that is useful, for example if we have a central configuration file we want to distribute, with local caching on each node. A more interesting model takes updates from clients, not the server. The server thus becomes a stateless broker. This gives us some benefits:
 
-- We’re less worried about the reliability of the server. If it crashes, we can start a new instance and feed it new values.
+- We're less worried about the reliability of the server. If it crashes, we can start a new instance and feed it new values.
 - We can use the key-value store to share knowledge between active peers.
 
 To send updates from clients back to the server, we could use a variety of socket patterns. The simplest plausible solution is a PUSH-PULL combination.
 
-Why don’t we allow clients to publish updates directly to each other? While this would reduce latency, it would remove the guarantee of consistency. You can’t get consistent shared state if you allow the order of updates to change depending on who receives them. Say we have two clients, changing different keys. This will work fine. But if the two clients try to change the same key at roughly the same time, they’ll end up with different notions of its value.
+Why don't we allow clients to publish updates directly to each other? While this would reduce latency, it would remove the guarantee of consistency. You can't get consistent shared state if you allow the order of updates to change depending on who receives them. Say we have two clients, changing different keys. This will work fine. But if the two clients try to change the same key at roughly the same time, they'll end up with different notions of its value.
 
-There are a few strategies for obtaining consistency when changes happen in multiple places at once. We’ll use the approach of centralizing all change. No matter the precise timing of the changes that clients make, they are all pushed through the server, which enforces a single sequence according to the order in which it gets updates.
+There are a few strategies for obtaining consistency when changes happen in multiple places at once. We'll use the approach of centralizing all change. No matter the precise timing of the changes that clients make, they are all pushed through the server, which enforces a single sequence according to the order in which it gets updates.
 
 ![](./pics/zmq/fig60.png)
 
-By mediating all changes, the server can also add a unique sequence number to all updates. With unique sequencing, clients can detect the nastier failures, including network congestion and queue overflow. If a client discovers that its incoming message stream has a hole, it can take action. It seems sensible that the client contact the server and ask for the missing messages, but in practice that isn’t useful. If there are holes, they’re caused by network stress, and adding more stress to the network will make things worse. All the client can do is warn its users that it is “unable to continue”, stop, and not restart until someone has manually checked the cause of the problem.
+By mediating all changes, the server can also add a unique sequence number to all updates. With unique sequencing, clients can detect the nastier failures, including network congestion and queue overflow. If a client discovers that its incoming message stream has a hole, it can take action. It seems sensible that the client contact the server and ask for the missing messages, but in practice that isn't useful. If there are holes, they're caused by network stress, and adding more stress to the network will make things worse. All the client can do is warn its users that it is “unable to continue”, stop, and not restart until someone has manually checked the cause of the problem.
 
-We’ll now generate state updates in the client. Here’s the server:
+We'll now generate state updates in the client. Here's the server:
 
 ```c++
 //  Clone server - Model Three
@@ -10421,9 +10408,9 @@ There are a couple of common syntaxes for trees. One is the path hierarchy, and 
 - Path hierarchy: /some/list/of/paths
 - Topic tree: some.list.of.topics
 
-We’ll use the path hierarchy, and extend our client and server so that a client can work with a single subtree. Once you see how to work with a single subtree you’ll be able to extend this yourself to handle multiple subtrees, if your use case demands it.
+We'll use the path hierarchy, and extend our client and server so that a client can work with a single subtree. Once you see how to work with a single subtree you'll be able to extend this yourself to handle multiple subtrees, if your use case demands it.
 
-Here’s the server implementing subtrees, a small variation on Model Three:
+Here's the server implementing subtrees, a small variation on Model Three:
 
 ```c++
 //  Clone server - Model Four
@@ -10635,15 +10622,15 @@ int main (void)
 
 An ephemeral value is one that expires automatically unless regularly refreshed. If you think of Clone being used for a registration service, then ephemeral values would let you do dynamic values. A node joins the network, publishes its address, and refreshes this regularly. If the node dies, its address eventually gets removed.
 
-The usual abstraction for ephemeral values is to attach them to a session, and delete them when the session ends. In Clone, sessions would be defined by clients, and would end if the client died. A simpler alternative is to attach a time to live (TTL) to ephemeral values, which the server uses to expire values that haven’t been refreshed in time.
+The usual abstraction for ephemeral values is to attach them to a session, and delete them when the session ends. In Clone, sessions would be defined by clients, and would end if the client died. A simpler alternative is to attach a time to live (TTL) to ephemeral values, which the server uses to expire values that haven't been refreshed in time.
 
-A good design principle that I use whenever possible is to not invent concepts that are not absolutely essential. If we have very large numbers of ephemeral values, sessions will offer better performance. If we use a handful of ephemeral values, it’s fine to set a TTL on each one. If we use masses of ephemeral values, it’s more efficient to attach them to sessions and expire them in bulk. This isn’t a problem we face at this stage, and may never face, so sessions go out the window.
+A good design principle that I use whenever possible is to not invent concepts that are not absolutely essential. If we have very large numbers of ephemeral values, sessions will offer better performance. If we use a handful of ephemeral values, it's fine to set a TTL on each one. If we use masses of ephemeral values, it's more efficient to attach them to sessions and expire them in bulk. This isn't a problem we face at this stage, and may never face, so sessions go out the window.
 
-Now we will implement ephemeral values. First, we need a way to encode the TTL in the key-value message. We could add a frame. The problem with using ZeroMQ frames for properties is that each time we want to add a new property, we have to change the message structure. It breaks compatibility. So let’s add a properties frame to the message, and write the code to let us get and put property values.
+Now we will implement ephemeral values. First, we need a way to encode the TTL in the key-value message. We could add a frame. The problem with using ZeroMQ frames for properties is that each time we want to add a new property, we have to change the message structure. It breaks compatibility. So let's add a properties frame to the message, and write the code to let us get and put property values.
 
-Next, we need a way to say, “delete this value”. Up until now, servers and clients have always blindly inserted or updated new values into their hash table. We’ll say that if the value is empty, that means “delete this key”.
+Next, we need a way to say, “delete this value”. Up until now, servers and clients have always blindly inserted or updated new values into their hash table. We'll say that if the value is empty, that means “delete this key”.
 
-Here’s a more complete version of the kvmsg class, which implements the properties frame (and adds a UUID frame, which we’ll need later on). It also handles empty values by deleting the key from the hash, if necessary:
+Here's a more complete version of the kvmsg class, which implements the properties frame (and adds a UUID frame, which we'll need later on). It also handles empty values by deleting the key from the hash, if necessary:
 
 ```c++
 //  kvmsg class - key-value message class for example applications
@@ -11234,9 +11221,9 @@ kvmsg_set_prop (kvmsg, "ttl", "%d", randof (30));
 
 #### Using a Reactor
 
-Until now, we have used a poll loop in the server. In this next model of the server, we switch to using a reactor. In C, we use CZMQ’s zloop class. Using a reactor makes the code more verbose, but easier to understand and build out because each piece of the server is handled by a separate reactor handler.
+Until now, we have used a poll loop in the server. In this next model of the server, we switch to using a reactor. In C, we use CZMQ's zloop class. Using a reactor makes the code more verbose, but easier to understand and build out because each piece of the server is handled by a separate reactor handler.
 
-We use a single thread and pass a server object around to the reactor handlers. We could have organized the server as multiple threads, each handling one socket or timer, but that works better when threads don’t have to share data. In this case all work is centered around the server’s hashmap, so one thread is simpler.
+We use a single thread and pass a server object around to the reactor handlers. We could have organized the server as multiple threads, each handling one socket or timer, but that works better when threads don't have to share data. In this case all work is centered around the server's hashmap, so one thread is simpler.
 
 There are three reactor handlers:
 
@@ -11430,9 +11417,9 @@ s_flush_ttl (zloop_t *loop, int timer_id, void *args)
 
 #### Adding the Binary Star Pattern for Reliability
 
-The Clone models we’ve explored up to now have been relatively simple. Now we’re going to get into unpleasantly complex territory, which has me getting up for another espresso. You should appreciate that making “reliable” messaging is complex enough that you always need to ask, “Do we actually need this?” before jumping into it. If you can get away with unreliable or with “good enough” reliability, you can make a huge win in terms of cost and complexity. Sure, you may lose some data now and then. It is often a good trade-off. Having said, that, and… sips… because the espresso is really good, let’s jump in.
+The Clone models we've explored up to now have been relatively simple. Now we're going to get into unpleasantly complex territory, which has me getting up for another espresso. You should appreciate that making “reliable” messaging is complex enough that you always need to ask, “Do we actually need this?” before jumping into it. If you can get away with unreliable or with “good enough” reliability, you can make a huge win in terms of cost and complexity. Sure, you may lose some data now and then. It is often a good trade-off. Having said, that, and… sips… because the espresso is really good, let's jump in.
 
-As you play with the last model, you’ll stop and restart the server. It might look like it recovers, but of course it’s applying updates to an empty state instead of the proper current state. Any new client joining the network will only get the latest updates instead of the full historical record.
+As you play with the last model, you'll stop and restart the server. It might look like it recovers, but of course it's applying updates to an empty state instead of the proper current state. Any new client joining the network will only get the latest updates instead of the full historical record.
 
 What we want is a way for the server to recover from being killed, or crashing. We also need to provide backup in case the server is out of commission for any length of time. When someone asks for “reliability”, ask them to list the failures they want to handle. In our case, these are:
 
@@ -11440,27 +11427,27 @@ What we want is a way for the server to recover from being killed, or crashing. 
 - The server machine dies and is offline for a significant time. Clients have to switch to an alternate server somewhere.
 - The server process or machine gets disconnected from the network, e.g., a switch dies or a datacenter gets knocked out. It may come back at some point, but in the meantime clients need an alternate server.
 
-Our first step is to add a second server. We can use the Binary Star pattern from Chapter 4 - Reliable Request-Reply Patterns to organize these into primary and backup. Binary Star is a reactor, so it’s useful that we already refactored the last server model into a reactor style.
+Our first step is to add a second server. We can use the Binary Star pattern from Chapter 4 - Reliable Request-Reply Patterns to organize these into primary and backup. Binary Star is a reactor, so it's useful that we already refactored the last server model into a reactor style.
 
-We need to ensure that updates are not lost if the primary server crashes. The simplest technique is to send them to both servers. The backup server can then act as a client, and keep its state synchronized by receiving updates as all clients do. It’ll also get new updates from clients. It can’t yet store these in its hash table, but it can hold onto them for a while.
+We need to ensure that updates are not lost if the primary server crashes. The simplest technique is to send them to both servers. The backup server can then act as a client, and keep its state synchronized by receiving updates as all clients do. It'll also get new updates from clients. It can't yet store these in its hash table, but it can hold onto them for a while.
 
 So, Model Six introduces the following changes over Model Five:
 
-- We use a pub-sub flow instead of a push-pull flow for client updates sent to the servers. This takes care of fanning out the updates to both servers. Otherwise we’d have to use two DEALER sockets.
+- We use a pub-sub flow instead of a push-pull flow for client updates sent to the servers. This takes care of fanning out the updates to both servers. Otherwise we'd have to use two DEALER sockets.
 - We add heartbeats to server updates (to clients), so that a client can detect when the primary server has died. It can then switch over to the backup server.
-- We connect the two servers using the Binary Star bstar reactor class. Binary Star relies on the clients to vote by making an explicit request to the server they consider active. We’ll use snapshot requests as the voting mechanism.
+- We connect the two servers using the Binary Star bstar reactor class. Binary Star relies on the clients to vote by making an explicit request to the server they consider active. We'll use snapshot requests as the voting mechanism.
 - We make all update messages uniquely identifiable by adding a UUID field. The client generates this, and the server propagates it back on republished updates.
-- The passive server keeps a “pending list” of updates that it has received from clients, but not yet from the active server; or updates it’s received from the active server, but not yet from the clients. The list is ordered from oldest to newest, so that it is easy to remove updates off the head.
+- The passive server keeps a “pending list” of updates that it has received from clients, but not yet from the active server; or updates it's received from the active server, but not yet from the clients. The list is ordered from oldest to newest, so that it is easy to remove updates off the head.
 
 ![](./pics/zmq/fig61.png)
 
-It’s useful to design the client logic as a finite state machine. The client cycles through three states:
+It's useful to design the client logic as a finite state machine. The client cycles through three states:
 
 - The client opens and connects its sockets, and then requests a snapshot from the first server. To avoid request storms, it will ask any given server only twice. One request might get lost, which would be bad luck. Two getting lost would be carelessness.
 - The client waits for a reply (snapshot data) from the current server, and if it gets it, it stores it. If there is no reply within some timeout, it fails over to the next server.
-- When the client has gotten its snapshot, it waits for and processes updates. Again, if it doesn’t hear anything from the server within some timeout, it fails over to the next server.
+- When the client has gotten its snapshot, it waits for and processes updates. Again, if it doesn't hear anything from the server within some timeout, it fails over to the next server.
 
-The client loops forever. It’s quite likely during startup or failover that some clients may be trying to talk to the primary server while others are trying to talk to the backup server. The Binary Star state machine handles this, hopefully accurately. It’s hard to prove software correct; instead we hammer it until we can’t prove it wrong.
+The client loops forever. It's quite likely during startup or failover that some clients may be trying to talk to the primary server while others are trying to talk to the backup server. The Binary Star state machine handles this, hopefully accurately. It's hard to prove software correct; instead we hammer it until we can't prove it wrong.
 
 Failover happens as follows:
 
@@ -11475,7 +11462,7 @@ When the primary server comes back online, it will:
 
 We make a few assumptions:
 
-- At least one server will keep running. If both servers crash, we lose all server state and there’s no way to recover it.
+- At least one server will keep running. If both servers crash, we lose all server state and there's no way to recover it.
 - Multiple clients do not update the same hash keys at the same time. Client updates will arrive at the two servers in a different order. Therefore, the backup server may apply updates from its pending list in a different order than the primary server would or did. Updates from one client will always arrive in the same order on both servers, so that is safe.
 
 Thus the architecture for our high-availability server pair using the Binary Star pattern has two servers and a set of clients that talk to both servers.
@@ -11893,23 +11880,23 @@ s_subscriber (zloop_t *loop, zmq_pollitem_t *poller, void *args)
 }
 ```
 
-This model is only a few hundred lines of code, but it took quite a while to get working. To be accurate, building Model Six took about a full week of “Sweet god, this is just too complex for an example” hacking. We’ve assembled pretty much everything and the kitchen sink into this small application. We have failover, ephemeral values, subtrees, and so on. What surprised me was that the up-front design was pretty accurate. Still the details of writing and debugging so many socket flows is quite challenging.
+This model is only a few hundred lines of code, but it took quite a while to get working. To be accurate, building Model Six took about a full week of “Sweet god, this is just too complex for an example” hacking. We've assembled pretty much everything and the kitchen sink into this small application. We have failover, ephemeral values, subtrees, and so on. What surprised me was that the up-front design was pretty accurate. Still the details of writing and debugging so many socket flows is quite challenging.
 
-The reactor-based design removes a lot of the grunt work from the code, and what remains is simpler and easier to understand. We reuse the bstar reactor from Chapter 4 - Reliable Request-Reply Patterns. The whole server runs as one thread, so there’s no inter-thread weirdness going on–just a structure pointer (self) passed around to all handlers, which can do their thing happily. One nice side effect of using reactors is that the code, being less tightly integrated into a poll loop, is much easier to reuse. Large chunks of Model Six are taken from Model Five.
+The reactor-based design removes a lot of the grunt work from the code, and what remains is simpler and easier to understand. We reuse the bstar reactor from Chapter 4 - Reliable Request-Reply Patterns. The whole server runs as one thread, so there's no inter-thread weirdness going on–just a structure pointer (self) passed around to all handlers, which can do their thing happily. One nice side effect of using reactors is that the code, being less tightly integrated into a poll loop, is much easier to reuse. Large chunks of Model Six are taken from Model Five.
 
-I built it piece by piece, and got each piece working properly before going onto the next one. Because there are four or five main socket flows, that meant quite a lot of debugging and testing. I debugged just by dumping messages to the console. Don’t use classic debuggers to step through ZeroMQ applications; you need to see the message flows to make any sense of what is going on.
+I built it piece by piece, and got each piece working properly before going onto the next one. Because there are four or five main socket flows, that meant quite a lot of debugging and testing. I debugged just by dumping messages to the console. Don't use classic debuggers to step through ZeroMQ applications; you need to see the message flows to make any sense of what is going on.
 
-For testing, I always try to use Valgrind, which catches memory leaks and invalid memory accesses. In C, this is a major concern, as you can’t delegate to a garbage collector. Using proper and consistent abstractions like kvmsg and CZMQ helps enormously.
+For testing, I always try to use Valgrind, which catches memory leaks and invalid memory accesses. In C, this is a major concern, as you can't delegate to a garbage collector. Using proper and consistent abstractions like kvmsg and CZMQ helps enormously.
 
 #### The Clustered Hashmap Protocol
 
-While the server is pretty much a mashup of the previous model plus the Binary Star pattern, the client is quite a lot more complex. But before we get to that, let’s look at the final protocol. I’ve written this up as a specification on the ZeroMQ RFC website as the Clustered Hashmap Protocol.
+While the server is pretty much a mashup of the previous model plus the Binary Star pattern, the client is quite a lot more complex. But before we get to that, let's look at the final protocol. I've written this up as a specification on the ZeroMQ RFC website as the Clustered Hashmap Protocol.
 
 Roughly, there are two ways to design a complex protocol such as this one. One way is to separate each flow into its own set of sockets. This is the approach we used here. The advantage is that each flow is simple and clean. The disadvantage is that managing multiple socket flows at once can be quite complex. Using a reactor makes it simpler, but still, it makes a lot of moving pieces that have to fit together correctly.
 
-The second way to make such a protocol is to use a single socket pair for everything. In this case, I’d have used ROUTER for the server and DEALER for the clients, and then done everything over that connection. It makes for a more complex protocol but at least the complexity is all in one place. In Chapter 7 - Advanced Architecture using ZeroMQ we’ll look at an example of a protocol done over a ROUTER-DEALER combination.
+The second way to make such a protocol is to use a single socket pair for everything. In this case, I'd have used ROUTER for the server and DEALER for the clients, and then done everything over that connection. It makes for a more complex protocol but at least the complexity is all in one place. In Chapter 7 - Advanced Architecture using ZeroMQ we'll look at an example of a protocol done over a ROUTER-DEALER combination.
 
-Let’s take a look at the CHP specification. Note that “SHOULD”, “MUST” and “MAY” are key words we use in protocol specifications to indicate requirement levels.
+Let's take a look at the CHP specification. Note that “SHOULD”, “MUST” and “MAY” are key words we use in protocol specifications to indicate requirement levels.
 
 ##### Goals
 
@@ -12055,11 +12042,11 @@ CHP does not implement any authentication, access control, or encryption mechani
 
 #### Building a Multithreaded Stack and API
 
-The client stack we’ve used so far isn’t smart enough to handle this protocol properly. As soon as we start doing heartbeats, we need a client stack that can run in a background thread. In the Freelance pattern at the end of Chapter 4 - Reliable Request-Reply Patterns we used a multithreaded API but didn’t explain it in detail. It turns out that multithreaded APIs are quite useful when you start to make more complex ZeroMQ protocols like CHP.
+The client stack we've used so far isn't smart enough to handle this protocol properly. As soon as we start doing heartbeats, we need a client stack that can run in a background thread. In the Freelance pattern at the end of Chapter 4 - Reliable Request-Reply Patterns we used a multithreaded API but didn't explain it in detail. It turns out that multithreaded APIs are quite useful when you start to make more complex ZeroMQ protocols like CHP.
 
 ![](./pics/zmq/fig63.png)
 
-If you make a nontrivial protocol and you expect applications to implement it properly, most developers will get it wrong most of the time. You’re going to be left with a lot of unhappy people complaining that your protocol is too complex, too fragile, and too hard to use. Whereas if you give them a simple API to call, you have some chance of them buying in.
+If you make a nontrivial protocol and you expect applications to implement it properly, most developers will get it wrong most of the time. You're going to be left with a lot of unhappy people complaining that your protocol is too complex, too fragile, and too hard to use. Whereas if you give them a simple API to call, you have some chance of them buying in.
 
 Our multithreaded API consists of a frontend object and a background agent, connected by two PAIR sockets. Connecting two PAIR sockets like this is so useful that your high-level binding should probably do what CZMQ does, which is package a “create new thread with a pipe that I can use to send messages to it” method.
 
@@ -12150,7 +12137,7 @@ int main (void)
 }
 ```
 
-Note the connect method, which specifies one server endpoint. Under the hood, we’re in fact talking to three ports. However, as the CHP protocol says, the three ports are on consecutive port numbers:
+Note the connect method, which specifies one server endpoint. Under the hood, we're in fact talking to three ports. However, as the CHP protocol says, the three ports are on consecutive port numbers:
 
 - The server state router (ROUTER) is at port P.
 - The server updates publisher (PUB) is at port P + 1.
@@ -12158,15 +12145,15 @@ Note the connect method, which specifies one server endpoint. Under the hood, we
 
 So we can fold the three connections into one logical operation (which we implement as three separate ZeroMQ connect calls).
 
-Let’s end with the source code for the clone stack. This is a complex piece of code, but easier to understand when you break it into the frontend object class and the backend agent. The frontend sends string commands (“SUBTREE”, “CONNECT”, “SET”, “GET”) to the agent, which handles these commands as well as talking to the server(s). Here is the agent’s logic:
+Let's end with the source code for the clone stack. This is a complex piece of code, but easier to understand when you break it into the frontend object class and the backend agent. The frontend sends string commands (“SUBTREE”, “CONNECT”, “SET”, “GET”) to the agent, which handles these commands as well as talking to the server(s). Here is the agent's logic:
 
 1. Start up by getting a snapshot from the first server
 2. When we get a snapshot switch to reading from the subscriber socket.
-3. If we don’t get a snapshot then fail over to the second server.
+3. If we don't get a snapshot then fail over to the second server.
 4. Poll on the pipe and the subscriber socket.
 5. If we got input on the pipe, handle the control message from the frontend object.
 6. If we got input on the subscriber, store or apply the update.
-7. If we didn’t get anything from the server within a certain time, fail over.
+7. If we didn't get anything from the server within a certain time, fail over.
 8. Repeat until the process is interrupted by Ctrl-C.
 
 And here is the actual clone class implementation:
