@@ -179,7 +179,7 @@ ZeroMQ uses C as its reference language and this is the main language we'll use 
 #else
 #include <windows.h>
 
-#define sleep(n)	Sleep(n)
+#define sleep(n)    Sleep(n)
 #endif
 
 int main () {
@@ -196,7 +196,7 @@ int main () {
         std::cout << "Received Hello" << std::endl;
 
         //  Do some 'work'
-      	sleep(1);
+          sleep(1);
 
         //  Send reply back to client
         zmq::message_t reply (5);
@@ -334,7 +334,7 @@ int main () {
     zmq::context_t context (1);
     zmq::socket_t publisher (context, ZMQ_PUB); /// ZMQ_PUB
     publisher.bind("tcp://*:5556");
-    publisher.bind("ipc://weather.ipc");				// Not usable on Windows.
+    publisher.bind("ipc://weather.ipc");                // Not usable on Windows.
 
     //  Initialize random number generator
     srandom ((unsigned) time (NULL));
@@ -350,7 +350,7 @@ int main () {
         //  Send message to all subscribers
         zmq::message_t message(20);
         snprintf ((char *) message.data(), 20 ,
-        	"%05d %d %d", zipcode, temperature, relhumidity);
+            "%05d %d %d", zipcode, temperature, relhumidity);
         publisher.send(message);
 
     }
@@ -398,13 +398,13 @@ int main (int argc, char *argv[])
         subscriber.recv(&update);
 
         std::istringstream iss(static_cast<char*>(update.data()));
-	    iss >> zipcode >> temperature >> relhumidity ;
+        iss >> zipcode >> temperature >> relhumidity ;
 
-	    total_temp += temperature;
+        total_temp += temperature;
     }
-    std::cout 	<< "Average temperature for zipcode '"<< filter
-    			<< "' was "<<(int) (total_temp / update_nbr) << "F"
-    			<< std::endl;
+    std::cout     << "Average temperature for zipcode '"<< filter
+                << "' was "<<(int) (total_temp / update_nbr) << "F"
+                << std::endl;
     return 0;
 }
 ```
@@ -1045,11 +1045,11 @@ int main (int argc, char *argv[])
     //  Process messages from both sockets
     //  We prioritize traffic from the task ventilator
     while (1) {
-    	
+        
         //  Process any waiting tasks
         bool rc;
         do {
-        	zmq::message_t task;
+            zmq::message_t task;
           if ((rc = receiver.recv(&task, ZMQ_DONTWAIT)) == true) {
               //  process task
           }
@@ -1096,7 +1096,7 @@ int main (int argc, char *argv[])
 
     //  Connect to weather server
     zmq::socket_t subscriber(context, ZMQ_SUB);
-  	subscriber.connect("tcp://localhost:5556");
+      subscriber.connect("tcp://localhost:5556");
     subscriber.setsockopt(ZMQ_SUBSCRIBE, "10001 ", 6);
 
     //  Initialize poll set
@@ -1224,7 +1224,7 @@ But our broker has to be nonblocking. Obviously, we can use `zmq_poll()` to wait
 
 ![](./pics/zmq/fig16.png)
 
-Luckily, there are two sockets called DEALER and ROUTER that let you do nonblocking request-response. You'll see in *Chapter 3 - Advanced Request-Reply Patterns* how DEALER and ROUTER sockets let you build all kinds of asynchronous request-reply flows. For now, we're just going to see how DEALER and ROUTER let us extend REQ-REP across an intermediary, that is, our little broker. [req和rep的特点是一对一,并且必须recv/send交替工作;router可以对应多个req,dealer可以对应多个rep,从而实现一对多和多对一.]
+Luckily, there are two sockets called DEALER and ROUTER that let you do nonblocking request-response. You'll see in *Chapter 3 - Advanced Request-Reply Patterns* how DEALER and ROUTER sockets let you build all kinds of asynchronous request-reply flows. For now, we're just going to see how DEALER and ROUTER let us extend REQ-REP across an intermediary, that is, our little broker. [req和rep的特点是一对一,并且必须recv/send交替工作;router可以对应多个req,dealer可以对应多个rep,从而实现一对多和多对一.再细看上面那个图,route/dealer是很强大的,因为它能够把某一个req的消息发给某一个rep,而rep回复的时候还可以准确地送回到发送的那个req.]
 
 *In this simple extended request-reply pattern, REQ talks to ROUTER and DEALER talks to REP.* In between the DEALER and ROUTER, we have to have code (like our broker) that pulls messages off the one socket and shoves them onto the other.
 
@@ -1241,15 +1241,15 @@ The request-reply broker binds to two endpoints, one for clients to connect to (
 int main (int argc, char *argv[])
 {
     zmq::context_t context(1);
-	zmq::socket_t requester(context, ZMQ_REQ);
-	requester.connect("tcp://localhost:5559");
+    zmq::socket_t requester(context, ZMQ_REQ);
+    requester.connect("tcp://localhost:5559");
  
-	for( int request = 0 ; request < 10 ; request++) {
-	    s_send (requester, "Hello");
+    for( int request = 0 ; request < 10 ; request++) {
+        s_send (requester, "Hello");
         std::string string = s_recv (requester);
-    	std::cout << "Received reply " << request 
-			  << " [" << string << "]" << std::endl;
-	}
+        std::cout << "Received reply " << request 
+              << " [" << string << "]" << std::endl;
+    }
 }
 ```
 
@@ -1268,19 +1268,19 @@ Here is the worker:
 int main (int argc, char *argv[])
 {
     zmq::context_t context(1);
-	zmq::socket_t responder(context, ZMQ_REP);
-	responder.connect("tcp://localhost:5560");
+    zmq::socket_t responder(context, ZMQ_REP);
+    responder.connect("tcp://localhost:5560");
 
-	while(1)
-	{
-		//  Wait for next request from client
-		std::string string = s_recv (responder);
-		std::cout << "Received request: " << string << std::endl;
-		// Do some 'work'
+    while(1)
+    {
+        //  Wait for next request from client
+        std::string string = s_recv (responder);
+        std::cout << "Received request: " << string << std::endl;
+        // Do some 'work'
         sleep (1);
         //  Send reply back to client
-		s_send (responder, "World");
-	}
+        s_send (responder, "World");
+    }
 }
 ```
 
@@ -1556,7 +1556,7 @@ int main (int argc, char *argv[])
         }
         //  Any waiting controller command acts as 'KILL'
         if (items [1].revents & ZMQ_POLLIN) {
-        	std::cout << std::endl;
+            std::cout << std::endl;
             break;                      //  Exit loop
         }
     }
@@ -1876,26 +1876,26 @@ Let's make three threads that signal each other when they are ready. In this exa
 //  Step 1 pushes one message to step 2
 
 void *step1 (void *arg) {
-	
-	zmq::context_t * context = static_cast<zmq::context_t*>(arg);
-	
-	//  Signal downstream to step 2
-	zmq::socket_t sender (*context, ZMQ_PAIR);
-	sender.connect("inproc://step2");
+    
+    zmq::context_t * context = static_cast<zmq::context_t*>(arg);
+    
+    //  Signal downstream to step 2
+    zmq::socket_t sender (*context, ZMQ_PAIR);
+    sender.connect("inproc://step2");
 
-	s_send (sender, "");
+    s_send (sender, "");
 
-	return (NULL);
+    return (NULL);
 }
 
 //  Step 2 relays the signal to step 3
 
 void *step2 (void *arg) {
 
-	zmq::context_t * context = static_cast<zmq::context_t*>(arg);
-	
+    zmq::context_t * context = static_cast<zmq::context_t*>(arg);
+    
     //  Bind to inproc: endpoint, then start upstream thread
-	zmq::socket_t receiver (*context, ZMQ_PAIR);
+    zmq::socket_t receiver (*context, ZMQ_PAIR);
     receiver.bind("inproc://step2");
 
     pthread_t thread;
@@ -1915,8 +1915,8 @@ void *step2 (void *arg) {
 //  Main program starts steps 1 and 2 and acts as step 3
 
 int main () {
-	
-	zmq::context_t context(1);
+    
+    zmq::context_t context(1);
 
     //  Bind to inproc: endpoint, then start upstream thread
     zmq::socket_t receiver (context, ZMQ_PAIR);
@@ -1979,7 +1979,7 @@ In this case, we'll use a REQ-REP socket flow to synchronize subscribers and pub
 #define SUBSCRIBERS_EXPECTED  10
 
 int main () {
-	zmq::context_t context(1);
+    zmq::context_t context(1);
 
     //  Socket to talk to clients
     zmq::socket_t publisher (context, ZMQ_PUB);
@@ -1997,11 +1997,11 @@ int main () {
     int subscribers = 0;
     while (subscribers < SUBSCRIBERS_EXPECTED) {
         
-		//  - wait for synchronization request
-		s_recv (syncservice);
+        //  - wait for synchronization request
+        s_recv (syncservice);
        
-		//  - send synchronization reply
-		s_send (syncservice, "");
+        //  - send synchronization reply
+        s_send (syncservice, "");
 
 
         subscribers++;
@@ -2009,10 +2009,10 @@ int main () {
     
     //  Now broadcast exactly 1M updates followed by END
     int update_nbr;
-    for (update_nbr = 0; update_nbr < 1000000; update_nbr++) {	
-		s_send (publisher, "Rhubarb");
-	}
-	
+    for (update_nbr = 0; update_nbr < 1000000; update_nbr++) {    
+        s_send (publisher, "Rhubarb");
+    }
+    
     s_send (publisher, "END");
 
     sleep (1);              //  Give 0MQ time to flush output
@@ -2172,12 +2172,10 @@ int main () {
     subscriber.setsockopt( ZMQ_SUBSCRIBE, "B", 1);
 
     while (1) {
- 
-		//  Read envelope with address
-		std::string address = s_recv (subscriber);
-		//  Read message contents
-		std::string contents = s_recv (subscriber);
-		
+        //  Read envelope with address
+        std::string address = s_recv (subscriber);
+        //  Read message contents
+        std::string contents = s_recv (subscriber);
         std::cout << "[" << address << "] " << contents << std::endl;
     }
     return 0;
@@ -2237,7 +2235,7 @@ Here's a summary of what the graphic says:
 
 ## Advanced Request-Reply Patterns
 
-In Chapter 2 - Sockets and Patterns we worked through the basics of using ZeroMQ by developing a series of small applications, each time exploring new aspects of ZeroMQ. We'll continue this approach in this chapter as we explore advanced patterns built on top of ZeroMQ's core request-reply pattern.
+In *Chapter 2 - Sockets and Patterns* we worked through the basics of using ZeroMQ by developing a series of small applications, each time exploring new aspects of ZeroMQ. We'll continue this approach in this chapter as we explore advanced patterns built on top of ZeroMQ's core request-reply pattern.
 
 We'll cover:
 
@@ -2252,11 +2250,11 @@ We'll cover:
 
 ### The Request-Reply Mechanisms
 
-We already looked briefly at multipart messages. Let's now look at a major use case, which is reply message envelopes. An envelope is a way of safely packaging up data with an address, without touching the data itself. By separating reply addresses into an envelope we make it possible to write general purpose intermediaries such as APIs and proxies that create, read, and remove addresses no matter what the message payload or structure is.
+We already looked briefly at multipart messages. Let's now look at a major use case, which is reply message envelopes. *An envelope is a way of safely packaging up data with an address, without touching the data itself. By separating reply addresses into an envelope we make it possible to write general purpose intermediaries such as APIs and proxies that create, read, and remove addresses no matter what the message payload or structure is.*
 
 In the request-reply pattern, the envelope holds the return address for replies. It is how a ZeroMQ network with no state can create round-trip request-reply dialogs.
 
-When you use REQ and REP sockets you don't even see envelopes; these sockets deal with them automatically. But for most of the interesting request-reply patterns, you'll want to understand envelopes and particularly ROUTER sockets. We'll work through this step-by-step.
+*When you use REQ and REP sockets you don't even see envelopes; these sockets deal with them automatically. But for most of the interesting request-reply patterns, you'll want to understand envelopes and particularly ROUTER sockets.* We'll work through this step-by-step.
 
 #### The Simple Reply Envelope
 
@@ -2268,12 +2266,13 @@ We'll start by sending "Hello" through a REQ socket. The REQ socket creates the 
 
 ![](./pics/zmq/fig26.png)
 
-The REP socket does the matching work: it strips off the envelope, up to and including the delimiter frame, saves the whole envelope, and passes the "Hello" string up the application. Thus our original Hello World example used request-reply envelopes internally, but the application never saw them.
+The REP socket does the matching work: it strips off the envelope, up to and including the delimiter frame, saves the whole envelope, and passes the "Hello" string up the application. Thus our original Hello World example used request-reply envelopes internally, but the application never saw them. [req发的时候实际上有2个frame,一个空frame和一个hello frame;rep收到的时候也是收到2个frame,但只把hello frame传递给应用程序.req-rep模式比较简单,看不出这个envelope有什么具体用处].
 
-If you spy on the network data flowing between hwclient and hwserver, this is what you'll see: every request and every reply is in fact two frames, an empty frame and then the body. It doesn't seem to make much sense for a simple REQ-REP dialog. However you'll see the reason when we explore how ROUTER and DEALER handle envelopes.
+If you spy on the network data flowing between hwclient and hwserver, this is what you'll see: *every request and every reply is in fact two frames, an empty frame and then the body*. It doesn't seem to make much sense for a simple REQ-REP dialog. However you'll see the reason when we explore how ROUTER and DEALER handle envelopes.
 
 #### The Extended Reply Envelope
-Now let's extend the REQ-REP pair with a ROUTER-DEALER proxy in the middle and see how this affects the reply envelope. This is the extended request-reply pattern we already saw in Chapter 2 - Sockets and Patterns. We can, in fact, insert any number of proxy steps. The mechanics are the same.
+
+Now let's extend the REQ-REP pair with a ROUTER-DEALER proxy in the middle and see how this affects the reply envelope. This is the extended request-reply pattern we already saw in *Chapter 2 - Sockets and Patterns*. We can, in fact, insert any number of proxy steps. The mechanics are the same.
 
 ![](./pics/zmq/fig27.png)
 
@@ -2291,15 +2290,19 @@ while true:
         send to frontend
 ```
 
-The ROUTER socket, unlike other sockets, tracks every connection it has, and tells the caller about these. The way it tells the caller is to stick the connection identity in front of each message received. An identity, sometimes called an address, is just a binary string with no meaning except "this is a unique handle to the connection". Then, when you send a message via a ROUTER socket, you first send an identity frame.
+The ROUTER socket, unlike other sockets, tracks every connection it has, and tells the caller about these. The way it tells the caller is to stick the connection identity in front of each message received. An identity, sometimes called an address, is just a binary string with no meaning except "this is a unique handle to the connection".  Then, when you send a message via a ROUTER socket, you first send an identity frame.[router在收到每个消息的时候,都会在消息头部加一个地址ID]
 
-The zmq_socket() man page describes it thus:
+The `zmq_socket()` man page describes it thus:
 
-- When receiving messages a ZMQ_ROUTER socket shall prepend a message part containing the identity of the originating peer to the message before passing it to the application. Messages received are fair-queued from among all connected peers. When sending messages a ZMQ_ROUTER socket shall remove the first part of the message and use it to determine the identity of the peer the message shall be routed to.
+> When receiving messages a ZMQ_ROUTER socket shall prepend a message part containing the identity of the originating peer to the message before passing it to the application. Messages received are fair-queued from among all connected peers. *When sending messages a ZMQ_ROUTER socket shall remove the first part of the message and use it to determine the identity of the peer the message shall be routed to.*
 
 As a historical note, ZeroMQ v2.2 and earlier use UUIDs as identities. ZeroMQ v3.0 and later generate a 5 byte identity by default (0 + a random 32bit integer). There's some impact on network performance, but only when you use multiple proxy hops, which is rare. Mostly the change was to simplify building libzmq by removing the dependency on a UUID library.
 
 Identities are a difficult concept to understand, but it's essential if you want to become a ZeroMQ expert. The ROUTER socket invents a random identity for each connection with which it works. If there are three REQ sockets connected to a ROUTER socket, it will invent three random identities, one for each REQ socket.
+
+[其实这里应该再把这张图放回来的]
+
+![](./pics/zmq/fig16.png)
 
 So if we continue our worked example, let's say the REQ socket has a 3-byte identity ABC. Internally, this means the ROUTER socket keeps a hash table where it can search for ABC and find the TCP connection for the REQ socket.
 
@@ -2307,9 +2310,9 @@ When we receive the message off the ROUTER socket, we get three frames.
 
 ![](./pics/zmq/fig28.png)
 
-The core of the proxy loop is "read from one socket, write to the other", so we literally send these three frames out on the DEALER socket. If you now sniffed the network traffic, you would see these three frames flying from the DEALER socket to the REP socket. The REP socket does as before, strips off the whole envelope including the new reply address, and once again delivers the "Hello" to the caller.
+The core of the proxy loop is "read from one socket, write to the other", so we literally send these three frames out on the DEALER socket. [消息从dealer离开的时候就已经带了地址ID了.] If you now sniffed the network traffic, you would see these three frames flying from the DEALER socket to the REP socket. The REP socket does as before, strips off the whole envelope including the new reply address, and once again delivers the "Hello" to the caller. [rep本来就具有拆封的功能,会把空frame以及之前的frame丢掉,取出payload给应用程序,但rep在发送的时候又会把之前丢掉的frame原样加回去.就是这里一个很重要的点是,rep必须严格遵循recv/send模式:recv的消息带了地址ID,那么这个消息的send就也带有地址ID,它就是回复这个recv消息的rep,而不是其他消息的rep.]
 
-Incidentally the REP socket can only deal with one request-reply exchange at a time, which is why if you try to read multiple requests or send multiple replies without sticking to a strict recv-send cycle, it gives an error.
+Incidentally the REP socket can only deal with one request-reply exchange at a time, which is why if you try to read multiple requests or send multiple replies without sticking to a strict recv-send cycle, it gives an error.[这里就说了这个问题,rep只能一次处理一个连接,不能一下子读多个人req然后发送多个rep而不遵循严格的recv-send循环.]
 
 You should now be able to visualize the return path. When hwserver sends "World" back, the REP socket wraps that with the envelope it saved, and sends a three-frame reply message across the wire to the DEALER socket.
 
@@ -2323,7 +2326,7 @@ The REQ socket picks this message up, and checks that the first frame is the emp
 
 #### What's This Good For?
 
-To be honest, the use cases for strict request-reply or extended request-reply are somewhat limited. For one thing, there's no easy way to recover from common failures like the server crashing due to buggy application code. We'll see more about this in Chapter 4 - Reliable Request-Reply Patterns. However once you grasp the way these four sockets deal with envelopes, and how they talk to each other, you can do very useful things. We saw how ROUTER uses the reply envelope to decide which client REQ socket to route a reply back to. Now let's express this another way:
+To be honest, the use cases for strict request-reply or extended request-reply are somewhat limited. For one thing, there's no easy way to recover from common failures like the server crashing due to buggy application code. We'll see more about this in *Chapter 4 - Reliable Request-Reply Patterns*. However once you grasp the way these four sockets deal with envelopes, and how they talk to each other, you can do very useful things. We saw how ROUTER uses the reply envelope to decide which client REQ socket to route a reply back to. Now let's express this another way:
 
 - Each time ROUTER gives you a message, it tells you what peer that came from, as an identity.
 - You can use this with a hash table (with the identity as key) to track new peers as they arrive.
@@ -2336,8 +2339,8 @@ ROUTER sockets don't care about the whole envelope. They don't know anything abo
 
 Let's recap this:
 
-- The REQ socket sends, to the network, an empty delimiter frame in front of the message data. REQ sockets are synchronous. REQ sockets always send one request and then wait for one reply. REQ sockets talk to one peer at a time. If you connect a REQ socket to multiple peers, requests are distributed to and replies expected from each peer one turn at a time.
-- The REP socket reads and saves all identity frames up to and including the empty delimiter, then passes the following frame or frames to the caller. REP sockets are synchronous and talk to one peer at a time. If you connect a REP socket to multiple peers, requests are read from peers in fair fashion, and replies are always sent to the same peer that made the last request.
+- The REQ socket sends, to the network, an empty delimiter frame in front of the message data. REQ sockets are synchronous. *REQ sockets always send one request and then wait for one reply. REQ sockets talk to one peer at a time. If you connect a REQ socket to multiple peers, requests are distributed to and replies expected from each peer one turn at a time.*[在整体结构上req连接到了多个rep,实际上它一次只跟一个rep执行严格个send-recv模式.一个send-recv结束之后,才可以跟另一个rep进行send-recv模式通信.这种req-dealer-router-rep模式的另一个特点是,所有的rep提供的服务是完全一样的.对于req来说它的请求被均匀地分布给多个rep.dealer可能每收到一个请求就轮流地发给某一个rep.]
+- The REP socket reads and saves all identity frames up to and including the empty delimiter, then passes the following frame or frames to the caller. REP sockets are synchronous and talk to one peer at a time. If you connect a REP socket to multiple peers, requests are read from peers in fair fashion, and replies are always sent to the same peer that made the last request. [rep是一个一个地处理来自多个req的请求,并且每次发送的reply都是最近一次request的那个req.]
 - The DEALER socket is oblivious to the reply envelope and handles this like any multipart message. DEALER sockets are asynchronous and like PUSH and PULL combined. They distribute sent messages among all connections, and fair-queue received messages from all connections.
 - The ROUTER socket is oblivious to the reply envelope, like DEALER. It creates identities for its connections, and passes these identities to the caller as a first frame in any received message. Conversely, when the caller sends a message, it uses the first message frame as an identity to look up the connection to send to. ROUTERS are asynchronous.
 
@@ -2368,7 +2371,7 @@ Think of REQ and DEALER sockets as "clients" and REP and ROUTER sockets as "serv
 
 #### The REQ to REP Combination
 
-We've already covered a REQ client talking to a REP server but let's take one aspect: the REQ client must initiate the message flow. A REP server cannot talk to a REQ client that hasn't first sent it a request. Technically, it's not even possible, and the API also returns an EFSM error if you try it.
+We've already covered a REQ client talking to a REP server but let's take one aspect: the REQ client must initiate the message flow. *A REP server cannot talk to a REQ client that hasn't first sent it a request.* Technically, it's not even possible, and the API also returns an EFSM error if you try it.
 
 #### The DEALER to REP Combination
 
@@ -2386,7 +2389,7 @@ And when we receive a message, we:
 
 #### The REQ to ROUTER Combination
 
-In the same way that we can replace REQ with DEALER, we can replace REP with ROUTER. This gives us an asynchronous server that can talk to multiple REQ clients at the same time. If we rewrote the "Hello World" server using ROUTER, we'd be able to process any number of "Hello" requests in parallel. We saw this in the Chapter 2 - Sockets and Patterns mtserver example.
+In the same way that we can replace REQ with DEALER, we can replace REP with ROUTER. This gives us an asynchronous server that can talk to multiple REQ clients at the same time. If we rewrote the "Hello World" server using ROUTER, we'd be able to process any number of "Hello" requests in parallel. We saw this in the *Chapter 2 - Sockets and Patterns* mtserver example.
 
 We can use ROUTER in two distinct ways:
 
@@ -3068,25 +3071,25 @@ Here is the load balancing broker rewritten to use a higher-level API (CZMQ for 
 static void *
 client_task(void *args)
 {
-	zctx_t *ctx = zctx_new();
-	void *client = zsocket_new(ctx, ZMQ_REQ);
+    zctx_t *ctx = zctx_new();
+    void *client = zsocket_new(ctx, ZMQ_REQ);
 
 #if (defined (WIN32))
-	zsocket_connect(client, "tcp://localhost:5672"); // frontend
+    zsocket_connect(client, "tcp://localhost:5672"); // frontend
 #else
-	zsocket_connect(client, "ipc://frontend.ipc");
+    zsocket_connect(client, "ipc://frontend.ipc");
 #endif
 
-	//  Send request, get reply
-	zstr_send(client, "HELLO");
-	char *reply = zstr_recv(client);
-	if (reply) {
-		std::cout << "Client: " << reply << std::endl;
-		free(reply);
-	}
+    //  Send request, get reply
+    zstr_send(client, "HELLO");
+    char *reply = zstr_recv(client);
+    if (reply) {
+        std::cout << "Client: " << reply << std::endl;
+        free(reply);
+    }
 
-	zctx_destroy(&ctx);
-	return NULL;
+    zctx_destroy(&ctx);
+    return NULL;
 }
 
 //  Worker using REQ socket to do load-balancing
@@ -3094,30 +3097,30 @@ client_task(void *args)
 static void *
 worker_task(void *args)
 {
-	zctx_t *ctx = zctx_new();
-	void *worker = zsocket_new(ctx, ZMQ_REQ);
+    zctx_t *ctx = zctx_new();
+    void *worker = zsocket_new(ctx, ZMQ_REQ);
 
 #if (defined (WIN32))
-	zsocket_connect(worker, "tcp://localhost:5673"); // backend
+    zsocket_connect(worker, "tcp://localhost:5673"); // backend
 #else
-	zsocket_connect(worker, "ipc://backend.ipc");
+    zsocket_connect(worker, "ipc://backend.ipc");
 #endif
 
-	//  Tell broker we're ready for work
-	zframe_t *frame = zframe_new(WORKER_READY, strlen(WORKER_READY));
-	zframe_send(&frame, worker, 0);
+    //  Tell broker we're ready for work
+    zframe_t *frame = zframe_new(WORKER_READY, strlen(WORKER_READY));
+    zframe_send(&frame, worker, 0);
 
-	//  Process messages as they arrive
-	while (1) {
-		zmsg_t *msg = zmsg_recv(worker);
-		if (!msg)
-			break;              //  Interrupted
-		zframe_print(zmsg_last(msg), "Worker: ");
-		zframe_reset(zmsg_last(msg), "OK", 2);
-		zmsg_send(&msg, worker);
-	}
-	zctx_destroy(&ctx);
-	return NULL;
+    //  Process messages as they arrive
+    while (1) {
+        zmsg_t *msg = zmsg_recv(worker);
+        if (!msg)
+            break;              //  Interrupted
+        zframe_print(zmsg_last(msg), "Worker: ");
+        zframe_reset(zmsg_last(msg), "OK", 2);
+        zmsg_send(&msg, worker);
+    }
+    zctx_destroy(&ctx);
+    return NULL;
 }
 
 //  .split main task
@@ -3127,95 +3130,95 @@ worker_task(void *args)
 
 int main(void)
 {
-	zctx_t *ctx = zctx_new();
-	void *frontend = zsocket_new(ctx, ZMQ_ROUTER);
-	void *backend = zsocket_new(ctx, ZMQ_ROUTER);
+    zctx_t *ctx = zctx_new();
+    void *frontend = zsocket_new(ctx, ZMQ_ROUTER);
+    void *backend = zsocket_new(ctx, ZMQ_ROUTER);
 
-	// IPC doesn't yet work on MS Windows.
+    // IPC doesn't yet work on MS Windows.
 #if (defined (WIN32))
-	zsocket_bind(frontend, "tcp://*:5672");
-	zsocket_bind(backend, "tcp://*:5673");
+    zsocket_bind(frontend, "tcp://*:5672");
+    zsocket_bind(backend, "tcp://*:5673");
 #else
-	zsocket_bind(frontend, "ipc://frontend.ipc");
-	zsocket_bind(backend, "ipc://backend.ipc");
+    zsocket_bind(frontend, "ipc://frontend.ipc");
+    zsocket_bind(backend, "ipc://backend.ipc");
 #endif
 
-	int client_nbr;
-	for (client_nbr = 0; client_nbr < NBR_CLIENTS; client_nbr++)
-		zthread_new(client_task, NULL);
-	int worker_nbr;
-	for (worker_nbr = 0; worker_nbr < NBR_WORKERS; worker_nbr++)
-		zthread_new(worker_task, NULL);
+    int client_nbr;
+    for (client_nbr = 0; client_nbr < NBR_CLIENTS; client_nbr++)
+        zthread_new(client_task, NULL);
+    int worker_nbr;
+    for (worker_nbr = 0; worker_nbr < NBR_WORKERS; worker_nbr++)
+        zthread_new(worker_task, NULL);
 
-	//  Queue of available workers
-	zlist_t *workers = zlist_new();
+    //  Queue of available workers
+    zlist_t *workers = zlist_new();
 
-	//  .split main load-balancer loop
-	//  Here is the main loop for the load balancer. It works the same way
-	//  as the previous example, but is a lot shorter because CZMQ gives
-	//  us an API that does more with fewer calls:
-	while (1) {
-		zmq_pollitem_t items[] = {
-				{ backend, 0, ZMQ_POLLIN, 0 },
-				{ frontend, 0, ZMQ_POLLIN, 0 }
-		};
-		//  Poll frontend only if we have available workers
-		int rc = zmq_poll(items, zlist_size(workers) ? 2 : 1, -1);
-		if (rc == -1)
-			break;              //  Interrupted
+    //  .split main load-balancer loop
+    //  Here is the main loop for the load balancer. It works the same way
+    //  as the previous example, but is a lot shorter because CZMQ gives
+    //  us an API that does more with fewer calls:
+    while (1) {
+        zmq_pollitem_t items[] = {
+                { backend, 0, ZMQ_POLLIN, 0 },
+                { frontend, 0, ZMQ_POLLIN, 0 }
+        };
+        //  Poll frontend only if we have available workers
+        int rc = zmq_poll(items, zlist_size(workers) ? 2 : 1, -1);
+        if (rc == -1)
+            break;              //  Interrupted
 
-		//  Handle worker activity on backend
-		if (items[0].revents & ZMQ_POLLIN) {
-			//  Use worker identity for load-balancing
-			zmsg_t *msg = zmsg_recv(backend);
-			if (!msg)
-				break;          //  Interrupted
+        //  Handle worker activity on backend
+        if (items[0].revents & ZMQ_POLLIN) {
+            //  Use worker identity for load-balancing
+            zmsg_t *msg = zmsg_recv(backend);
+            if (!msg)
+                break;          //  Interrupted
 
 #if 0
-			// zmsg_unwrap is DEPRECATED as over-engineered, poor style
-			zframe_t *identity = zmsg_unwrap(msg);
+            // zmsg_unwrap is DEPRECATED as over-engineered, poor style
+            zframe_t *identity = zmsg_unwrap(msg);
 #else
-			zframe_t *identity = zmsg_pop(msg);
-			zframe_t *delimiter = zmsg_pop(msg);
-			zframe_destroy(&delimiter); 
+            zframe_t *identity = zmsg_pop(msg);
+            zframe_t *delimiter = zmsg_pop(msg);
+            zframe_destroy(&delimiter); 
 #endif
 
-			zlist_append(workers, identity);
+            zlist_append(workers, identity);
 
-			//  Forward message to client if it's not a READY
-			zframe_t *frame = zmsg_first(msg);
-			if (memcmp(zframe_data(frame), WORKER_READY, strlen(WORKER_READY)) == 0) {
-				zmsg_destroy(&msg);
-			} else {
-				zmsg_send(&msg, frontend);
-				if (--client_nbr == 0)
-					break; // Exit after N messages
-			}
-		}
-		if (items[1].revents & ZMQ_POLLIN) {
-			//  Get client request, route to first available worker
-			zmsg_t *msg = zmsg_recv(frontend);
-			if (msg) {
+            //  Forward message to client if it's not a READY
+            zframe_t *frame = zmsg_first(msg);
+            if (memcmp(zframe_data(frame), WORKER_READY, strlen(WORKER_READY)) == 0) {
+                zmsg_destroy(&msg);
+            } else {
+                zmsg_send(&msg, frontend);
+                if (--client_nbr == 0)
+                    break; // Exit after N messages
+            }
+        }
+        if (items[1].revents & ZMQ_POLLIN) {
+            //  Get client request, route to first available worker
+            zmsg_t *msg = zmsg_recv(frontend);
+            if (msg) {
 #if 0
-				// zmsg_wrap is DEPRECATED as unsafe
-				zmsg_wrap(msg, (zframe_t *)zlist_pop(workers));
+                // zmsg_wrap is DEPRECATED as unsafe
+                zmsg_wrap(msg, (zframe_t *)zlist_pop(workers));
 #else
-				zmsg_pushmem(msg, NULL, 0); // delimiter
-				zmsg_push(msg, (zframe_t *)zlist_pop(workers));
+                zmsg_pushmem(msg, NULL, 0); // delimiter
+                zmsg_push(msg, (zframe_t *)zlist_pop(workers));
 #endif
 
-				zmsg_send(&msg, backend);
-			}
-		}
-	}
-	//  When we're done, clean up properly
-	while (zlist_size(workers)) {
-		zframe_t *frame = (zframe_t *)zlist_pop(workers);
-		zframe_destroy(&frame);
-	}
-	zlist_destroy(&workers);
-	zctx_destroy(&ctx);
-	return 0;
+                zmsg_send(&msg, backend);
+            }
+        }
+    }
+    //  When we're done, clean up properly
+    while (zlist_size(workers)) {
+        zframe_t *frame = (zframe_t *)zlist_pop(workers);
+        zframe_destroy(&frame);
+    }
+    zlist_destroy(&workers);
+    zctx_destroy(&ctx);
+    return 0;
 }
 ```
 
@@ -5930,7 +5933,7 @@ public:
        m_socket->bind(m_endpoint.c_str());
        s_console ("I: MDP broker/0.1.1 is active at %s", endpoint.c_str());
    }
-	
+    
 private:
 
    //  ---------------------------------------------------------------------
@@ -5945,9 +5948,9 @@ private:
        {
            if ((*wrk)->m_expiry <= now)
                toCull.push_back(*wrk);
-	   }
+       }
        for (std::deque<worker*>::iterator wrk = toCull.begin(); wrk != toCull.end(); ++wrk)
-	   {
+       {
            if (m_verbose) {
                s_console ("I: deleting expired worker: %s",
                      (*wrk)->m_identity.c_str());
@@ -5999,7 +6002,7 @@ private:
               if ((*next)->m_expiry > (*wrk)->m_expiry)
                  wrk = next;
            }
-		   
+           
            zmsg *msg = srv->m_requests.front();
            srv->m_requests.pop_front();
            worker_send (*wrk, (char*)MDPW_REQUEST, "", msg);
@@ -6213,7 +6216,7 @@ private:
            service_dispatch (srv, msg);
        }
    }
-	
+    
 public:
 
    //  Get and process messages forever or until interrupted
@@ -9223,8 +9226,8 @@ int main (int argc, char *argv [])
     subscriber.setsockopt( ZMQ_SUBSCRIBE, ss.str().c_str(), ss.str().size());
 
     while (1) {
-		std::string topic = s_recv (subscriber);
-		std::string data = s_recv (subscriber);
+        std::string topic = s_recv (subscriber);
+        std::string data = s_recv (subscriber);
         if (topic != ss.str())
             break;
         std::cout << data << std::endl;
@@ -9498,6 +9501,7 @@ As a larger worked example, we'll take the problem of making a reliable pub-sub 
 - They will join and leave the network arbitrarily.
 - These applications must share a single eventually-consistent state.
   
+
 Any application can update the state at any point in time.
 Let's say that updates are reasonably low-volume. We don't have real time goals. The whole state can fit into memory. Some plausible use cases are:
 
@@ -11905,10 +11909,12 @@ The client SHOULD open at least two connections:
 - A SNAPSHOT connection (ZeroMQ DEALER socket) to port number P.
 - A SUBSCRIBER connection (ZeroMQ SUB socket) to port number P + 1.
   
+
 The client MAY open a third connection, if it wants to update the hashmap:
 
 - A PUBLISHER connection (ZeroMQ PUB socket) to port number P + 2.
   
+
 This extra frame is not shown in the commands explained below.
 
 ##### State Synchronization
