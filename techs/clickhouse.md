@@ -1,47 +1,1196 @@
 # The Application and Performance of Clickhouse
 - [The Application and Performance of Clickhouse](#the-application-and-performance-of-clickhouse)
   - [Introduction](#introduction)
-    - [Distinctive Featires of ClickHouse](#distinctive-featires-of-clickhouse)
-  - [Table Engines](#table-engines)
-    - [MergeTree](#mergetree)
-      - [Main Features](#main-features)
+    - [Overview](#overview)
+      - [What Is ClickHouse?](#what-is-clickhouse)
+      - [Key Properties of OLAP Scenario](#key-properties-of-olap-scenario)
+      - [Why Column-Oriented Databases Work Better in the OLAP Scenario](#why-column-oriented-databases-work-better-in-the-olap-scenario)
+        - [Input/output](#inputoutput)
+        - [CPU](#cpu)
+    - [Distinctive Features of ClickHouse](#distinctive-features-of-clickhouse)
+      - [True Column-Oriented Database Management System](#true-column-oriented-database-management-system)
+      - [Data Compression](#data-compression)
+      - [Disk Storage of Data](#disk-storage-of-data)
+      - [Parallel Processing on Multiple Cores](#parallel-processing-on-multiple-cores)
+      - [Distributed Processing on Multiple Servers](#distributed-processing-on-multiple-servers)
+      - [SQL Support](#sql-support)
+      - [Vector Computation Engine](#vector-computation-engine)
+      - [Real-time Data Updates](#real-time-data-updates)
+      - [Primary Index](#primary-index)
+      - [Secondary Indexes](#secondary-indexes)
+      - [Suitable for Online Queries](#suitable-for-online-queries)
+      - [Support for Approximated Calculations](#support-for-approximated-calculations)
+      - [Adaptive Join Algorithm](#adaptive-join-algorithm)
+      - [Data Replication and Data Integrity Support](#data-replication-and-data-integrity-support)
+      - [Role-Based Access Control](#role-based-access-control)
+      - [Features that Can Be Considered Disadvantages](#features-that-can-be-considered-disadvantages)
+    - [Performance](#performance)
+      - [Throughput for a Single Large Query](#throughput-for-a-single-large-query)
+      - [Latency When Processing Short Queries](#latency-when-processing-short-queries)
+      - [Throughput When Processing a Large Quantity of Short Queries](#throughput-when-processing-a-large-quantity-of-short-queries)
+      - [Performance When Inserting Data](#performance-when-inserting-data)
+  - [Getting Started](#getting-started)
+    - [Example Datasets](#example-datasets)
+    - [Installation](#installation)
+      - [System Requirements](#system-requirements)
+      - [Available Installation Options](#available-installation-options)
+        - [From DEB Packages](#from-deb-packages)
+        - [Launch](#launch)
+    - [Tutorial](#tutorial)
+      - [What to Expect from This Tutorial?](#what-to-expect-from-this-tutorial)
+      - [Single Node Setup](#single-node-setup)
+      - [Import Sample Dataset](#import-sample-dataset)
+        - [Download and Extract Table Data](#download-and-extract-table-data)
+        - [Create Tables](#create-tables)
+        - [Import Data](#import-data)
+  - [Interfaces](#interfaces)
+    - [Command-line Client](#command-line-client)
+      - [Usage](#usage)
+        - [Queries with Parameters](#queries-with-parameters)
+        - [Query Syntax](#query-syntax)
+        - [Example](#example)
+        - [Configuring](#configuring)
+        - [Configuration Files](#configuration-files)
+    - [Native Interface (TCP)](#native-interface-tcp)
+    - [HTTP Interface](#http-interface)
+  - [Engines](#engines)
+    - [Table Engines](#table-engines)
+      - [Engine Families](#engine-families)
+        - [MergeTree](#mergetree)
+        - [Log](#log)
+        - [Integration Engines](#integration-engines)
+        - [Special Engines](#special-engines)
+        - [Virtual Columns](#virtual-columns)
+    - [MergeTree Engine Family](#mergetree-engine-family)
+    - [MergeTree](#mergetree-1)
       - [Creating a Table](#creating-a-table)
+        - [Query Clauses](#query-clauses)
+      - [Example of Sections Setting](#example-of-sections-setting)
       - [Data Storage](#data-storage)
       - [Primary Keys and Indexes in Queries](#primary-keys-and-indexes-in-queries)
       - [Selecting the Primary Key](#selecting-the-primary-key)
       - [Choosing a Primary Key that Differs from the Sorting Key](#choosing-a-primary-key-that-differs-from-the-sorting-key)
+      - [Use of Indexes and Partitions in Queries](#use-of-indexes-and-partitions-in-queries)
+      - [Use of Index for Partially-monotonic Primary Keys](#use-of-index-for-partially-monotonic-primary-keys)
+      - [Data Skipping Indexes](#data-skipping-indexes)
+        - [Available Types of Indices](#available-types-of-indices)
+        - [Functions Support](#functions-support)
+      - [Concurrent Data Access](#concurrent-data-access)
+      - [TTL for Columns and Tables](#ttl-for-columns-and-tables)
+      - [Column TTL](#column-ttl)
+      - [Table TTL](#table-ttl)
+        - [Removing Data](#removing-data)
       - [Using Multiple Block Devices for Data Storage](#using-multiple-block-devices-for-data-storage)
-      - [Custom Partitioning Key](#custom-partitioning-key)
-
+        - [Introduction](#introduction-1)
+        - [Terms](#terms)
+        - [Configuration](#configuration)
+        - [Details](#details)
+        - [Using S3 for Data Storage](#using-s3-for-data-storage)
+    - [Data Replication](#data-replication)
+      - [Creating Replicated Tables](#creating-replicated-tables)
+      - [Recovery After Failures](#recovery-after-failures)
+      - [Recovery After Complete Data Loss](#recovery-after-complete-data-loss)
+      - [Converting from MergeTree to ReplicatedMergeTree](#converting-from-mergetree-to-replicatedmergetree)
+      - [Converting from ReplicatedMergeTree to MergeTree](#converting-from-replicatedmergetree-to-mergetree)
+      - [Recovery When Metadata in the Zookeeper Cluster Is Lost or Damaged](#recovery-when-metadata-in-the-zookeeper-cluster-is-lost-or-damaged)
+    - [Custom Partitioning Key](#custom-partitioning-key)
+    - [ReplacingMergeTree](#replacingmergetree)
+      - [Creating a Table](#creating-a-table-1)
+    - [SummingMergeTree](#summingmergetree)
+      - [Creating a Table](#creating-a-table-2)
+      - [Usage Example](#usage-example)
+      - [Data Processing](#data-processing)
+        - [Common Rules for Summation](#common-rules-for-summation)
+        - [The Summation in the Aggregatefunction Columns](#the-summation-in-the-aggregatefunction-columns)
+        - [Nested Structures](#nested-structures)
+    - [Aggregatingmergetree](#aggregatingmergetree)
+      - [Creating a Table](#creating-a-table-3)
+      - [SELECT and INSERT](#select-and-insert)
+      - [Example of an Aggregated Materialized View](#example-of-an-aggregated-materialized-view)
+    - [CollapsingMergeTree](#collapsingmergetree)
+      - [Creating a Table](#creating-a-table-4)
+      - [Collapsing](#collapsing)
+        - [Data](#data)
+        - [Algorithm](#algorithm)
+      - [Example of Use](#example-of-use)
+      - [Example of Another Approach](#example-of-another-approach)
+    - [VersionedCollapsingMergeTree](#versionedcollapsingmergetree)
+      - [Creating a Table](#creating-a-table-5)
+      - [Collapsing](#collapsing-1)
+        - [Data](#data-1)
+        - [Algorithm](#algorithm-1)
+      - [Selecting Data](#selecting-data)
+        - [Example of Use](#example-of-use-1)
+    - [GraphiteMergeTree](#graphitemergetree)
+      - [Creating a Table](#creating-a-table-6)
+      - [Rollup Configuration](#rollup-configuration)
+        - [Required Columns](#required-columns)
+        - [Patterns](#patterns)
+        - [Configuration Example](#configuration-example)
 
 ## Introduction
 
-ClickHouse is a column-oriented database management system (DBMS) for online analytical processing of queries (OLAP). In a column-oriented DMBS, the values from different columns are stored separately, and data from the same column is stored together.
+### Overview
+
+#### What Is ClickHouse?
+
+ClickHouse® is a column-oriented database management system (DBMS) for online analytical processing of queries (OLAP).
+
+In a "normal" row-oriented DBMS, data is stored in this order:
+
+![](./pics/clickhouse/row_DBMS.png)
+
+In other words, all the values related to a row are physically stored next to each other.
+
+Examples of a row-oriented DBMS are MySQL, Postgres, and MS SQL Server.
+
+In a column-oriented DBMS, data is stored like this:
+
+![](./pics/clickhouse/column_DBMS.png)
+
+These examples only show the order that data is arranged in. The values from different columns are stored separately, and data from the same column is stored together.
+
+Examples of a column-oriented DBMS: Vertica, Paraccel (Actian Matrix and Amazon Redshift), Sybase IQ, Exasol, Infobright, InfiniDB, MonetDB (VectorWise and Actian Vector), LucidDB, SAP HANA, Google Dremel, Google PowerDrill, Druid, and kdb+.
+
+Different orders for storing data are better suited to different scenarios. The data access scenario refers to what queries are made, how often, and in what proportion; how much data is read for each type of query – rows, columns, and bytes; the relationship between reading and updating data; the working size of the data and how locally it is used; whether transactions are used, and how isolated they are; requirements for data replication and logical integrity; requirements for latency and throughput for each type of query, and so on.
+
+*The higher the load on the system, the more important it is to customize the system set up to match the requirements of the usage scenario, and the more fine grained this customization becomes. There is no system that is equally well-suited to significantly different scenarios. If a system is adaptable to a wide set of scenarios, under a high load, the system will handle all the scenarios equally poorly, or will work well for just one or few of possible scenarios.*
+
+#### Key Properties of OLAP Scenario
+
+- The vast majority of requests are for read access.
+- Data is updated in fairly large batches (> 1000 rows), not by single rows; or it is not updated at all.
+- Data is added to the DB but is not modified.
+- For reads, quite a large number of rows are extracted from the DB, but only a small subset of columns.
+- Tables are "wide," meaning they contain a large number of columns.
+- Queries are relatively rare (usually hundreds of queries per server or less per second).
+- For simple queries, latencies around 50 ms are allowed.
+- Column values are fairly small: numbers and short strings (for example, 60 bytes per URL).
+- Requires high throughput when processing a single query (up to billions of rows per second per server).
+- Transactions are not necessary.
+- Low requirements for data consistency.
+- There is one large table per query. All tables are small, except for one.
+- A query result is significantly smaller than the source data. In other words, data is filtered or aggregated, so the result fits in a single server's RAM.
+
+It is easy to see that the OLAP scenario is very different from other popular scenarios (such as OLTP or Key-Value access). So it doesn't make sense to try to use OLTP or a Key-Value DB for processing analytical queries if you want to get decent performance. For example, if you try to use MongoDB or Redis for analytics, you will get very poor performance compared to OLAP databases.
+
+#### Why Column-Oriented Databases Work Better in the OLAP Scenario
+
+Column-oriented databases are better suited to OLAP scenarios: they are at least 100 times faster in processing most queries. 
+
+##### Input/output
+
+- For an analytical query, only a small number of table columns need to be read. In a column-oriented database, you can read just the data you need. For example, if you need 5 columns out of 100, you can expect a 20-fold reduction in I/O.
+- Since data is read in packets, it is easier to compress. Data in columns is also easier to compress. This further reduces the I/O volume.
+- Due to the reduced I/O, more data fits in the system cache.
+
+For example, the query "count the number of records for each advertising platform" requires reading one "advertising platform ID" column, which takes up 1 byte uncompressed. If most of the traffic was not from advertising platforms, you can expect at least 10-fold compression of this column. When using a quick compression algorithm, data decompression is possible at a speed of at least several gigabytes of uncompressed data per second. In other words, this query can be processed at a speed of approximately several billion rows per second on a single server. This speed is actually achieved in practice.
+
+##### CPU
+
+Since executing a query requires processing a large number of rows, it helps to dispatch all operations for entire vectors instead of for separate rows, or to implement the query engine so that there is almost no dispatching cost. If you don't do this, with any half-decent disk subsystem, the query interpreter inevitably stalls the CPU. It makes sense to both store data in columns and process it, when possible, by columns.
+
+There are two ways to do this:
+
+- A vector engine. All operations are written for vectors, instead of for separate values. This means you don't need to call operations very often, and dispatching costs are negligible. Operation code contains an optimized internal cycle.
+- Code generation. The code generated for the query has all the indirect calls in it.
+
+This is not done in "normal" databases, because it doesn't make sense when running simple queries. However, there are exceptions. For example, MemSQL uses code generation to reduce latency when processing SQL queries. (For comparison, analytical DBMSs require optimization of throughput, not latency.)
+
+Note that for CPU efficiency, the query language must be declarative (SQL or MDX), or at least a vector (J, K). The query should only contain implicit loops, allowing for optimization.
+
+> I didn't understand the whole CPU section.
 
 ### Distinctive Features of ClickHouse
 
-- True Column-Oriented Database Management System. In such DBMS, no extra data is stored with the values. Among other things, this means that constant-length values must be supported, to avoid storing their length "number" next to the values. (定长数据结构). 
-- Data Compression. Data compression does play a key role in achieving excellent performance. In addition to efficient general-purpose compression codecs with different trade-offs between disk space and CPU consumption, ClickHouse provides specialized codecs for specific kinds of data.
-- Disk Storage of Data. Keeping data physically sorted by primary key makes it possible to extract data for its specific values or value ranges with low latency, less than a few dozen milliseconds. ClickHouse is designed to work on regular hard drives.
-- Parallel Processing on Multiple Cores. Large queries are parallelized naturally, taking all the necessary resources available on the current server.
-- Vector Computation Engine. Data is not only stored by columns but is processed by vectors (parts of columns), which allows achieving high CPU efficiency.
+#### True Column-Oriented Database Management System
 
-## Table Engines
+In a real column-oriented DBMS, no extra data is stored with the values. Among other things, this means that constant-length values must be supported, to avoid storing their length "number" next to the values. For example, a billion UInt8-type values should consume around 1 GB uncompressed, or this strongly affects the CPU use. It is essential to store data compactly (without any "garbage") even when uncompressed since the speed of decompression (CPU usage) depends mainly on the volume of uncompressed data.
 
-The table engine determines:
-- How and where data is stored, where to write it to, and where to read it from
-- Concurrent data access
-- Use of indexes
-- Whether multithreaded request execution is possible
+It is worth noting because there are systems that can store values of different columns separately, *but that can't effectively process analytical queries due to their optimization for other scenarios*. Examples are HBase, BigTable, Cassandra, and HyperTable. You would get throughput around a hundred thousand rows per second in these systems, but not hundreds of millions of rows per second.
 
-### MergeTree
+> But analytical queries are not necessary for financial data?
 
-The `MergeTree` engine and other engines of this family are the most robust ClickHouse table engines. They are designed for inserting a very large amount of data into a table. The data is quickly written to the table part by part, the rules are applied for merging the parts in the background. This method is much more efficient than continually rewriting the data in storage during insert.
+It's also worth noting that ClickHouse is a database management system, not a single database. ClickHouse allows creating tables and databases in runtime, loading data, and running queries without reconfiguring and restarting the server.
 
-#### Main Features
+#### Data Compression 
+
+Some column-oriented DBMSs do not use data compression. However, data compression does play a key role in achieving excellent performance.
+
+In addition to efficient general-purpose compression codecs with different trade-offs between disk space and CPU consumption, ClickHouse provides *specialized codecs* for specific kinds of data, which allow ClickHouse to compete with and outperform more niche databases, like time-series ones.
+
+#### Disk Storage of Data
+
+Keeping data physically sorted by primary key makes it possible to extract data for its specific values or value ranges with low latency, less than a few dozen milliseconds. Some column-oriented DBMSs (such as SAP HANA and Google PowerDrill) can only work in RAM. This approach encourages the allocation of a larger hardware budget than is necessary for real-time analysis.
+
+ClickHouse is designed to work on regular hard drives, which means the cost per GB of data storage is low, but SSD and additional RAM are also fully used if available.
+
+#### Parallel Processing on Multiple Cores
+
+Large queries are parallelized naturally, taking all the necessary resources available on the current server.
+
+> What does this mean?
+
+#### Distributed Processing on Multiple Servers
+
+Almost none of the columnar DBMSs mentioned above have support for distributed query processing.
+
+In ClickHouse, data can reside on different shards. Each shard can be a group of replicas used for fault tolerance. All shards are used to run a query in parallel, transparently for the user.
+
+#### SQL Support 
+
+ClickHouse supports a declarative query language based on SQL that is identical to the ANSI SQL standard in many cases.
+
+Supported queries include `GROUP BY`, `ORDER BY`, subqueries in `FROM`, `JOIN` clause, `IN` operator, and scalar subqueries.
+
+Correlated (dependent) subqueries and window functions are not supported at the time of writing but might become available in the future.
+
+#### Vector Computation Engine 
+
+Data is not only stored by columns but is processed by vectors (parts of columns), which allows achieving high CPU efficiency.
+
+#### Real-time Data Updates 
+
+ClickHouse supports tables with a primary key. To quickly perform queries on the range of the primary key, the data is sorted incrementally using the merge tree. Due to this, data can continually be added to the table. No locks are taken when new data is ingested.
+
+#### Primary Index 
+
+Having a data physically sorted by primary key makes it possible to extract data for its specific values or value ranges with low latency, less than a few dozen milliseconds.
+
+#### Secondary Indexes 
+
+Unlike other database management systems, secondary indexes in ClickHouse does not point to specific rows or row ranges. Instead, they allow the database to know in advance that all rows in some data parts wouldn't match the query filtering conditions and do not read them at all, thus they are called data skipping indexes.
+
+#### Suitable for Online Queries 
+
+Most OLAP database management systems don't aim for online queries with sub-second latencies. In alternative systems, report building time of tens of seconds or even minutes is often considered acceptable. Sometimes it takes even more which forces to prepare reports offline (in advance or by responding with "come back later").
+
+In ClickHouse low latency means that queries can be processed without delay and without trying to prepare an answer in advance, right at the same moment while the user interface page is loading. In other words, online.
+
+#### Support for Approximated Calculations 
+
+ClickHouse provides various ways to trade accuracy for performance:
+
+- Aggregate functions for approximated calculation of the number of distinct values, medians, and quantiles.
+- Running a query based on a part (sample) of data and getting an approximated result. In this case, proportionally less data is retrieved from the disk.
+- Running an aggregation for a limited number of random keys, instead of for all keys. Under certain conditions for key distribution in the data, this provides a reasonably accurate result while using fewer resources.
+
+#### Adaptive Join Algorithm 
+
+ClickHouse adaptively chooses how to `JOIN` multiple tables, by preferring hash-join algorithm and falling back to the merge-join algorithm if there's more than one large table.
+
+#### Data Replication and Data Integrity Support 
+
+ClickHouse uses asynchronous multi-master replication. After being written to any available replica, all the remaining replicas retrieve their copy in the background. The system maintains identical data on different replicas. Recovery after most failures is performed automatically, or semi-automatically in complex cases.
+
+For more information, see the section Data replication.
+
+#### Role-Based Access Control 
+
+ClickHouse implements user account management using SQL queries and allows for role-based access control configuration similar to what can be found in ANSI SQL standard and popular relational database management systems.
+
+#### Features that Can Be Considered Disadvantages 
+
+- No full-fledged transactions.
+- Lack of ability to modify or delete already inserted data with a high rate and low latency. There are batch deletes and updates available to clean up or modify data, for example, to comply with GDPR.
+- The sparse index makes ClickHouse not so efficient for point queries retrieving single rows by their keys.
+
+### Performance
+
+According to internal testing results at Yandex, ClickHouse shows the best performance (both the highest throughput for long queries and the lowest latency on short queries) for comparable operating scenarios among systems of its class that were available for testing. You can view the test results on a separate page.
+
+Numerous independent benchmarks came to similar conclusions. They are not difficult to find using an internet search, or you can see our small collection of related links.
+
+#### Throughput for a Single Large Query
+
+Throughput can be measured in rows per second or megabytes per second. If the data is placed in the page cache, a query that is not too complex is processed on modern hardware at a speed of approximately 2-10 GB/s of uncompressed data on a single server (for the most straightforward cases, the speed may reach 30 GB/s). If data is not placed in the page cache, the speed depends on the disk subsystem and the data compression rate. For example, if the disk subsystem allows reading data at 400 MB/s, and the data compression rate is 3, the speed is expected to be around 1.2 GB/s. To get the speed in rows per second, divide the speed in bytes per second by the total size of the columns used in the query. For example, if 10 bytes of columns are extracted, the speed is expected to be around 100-200 million rows per second.
+
+> Network latency is not counted in.
+
+The processing speed increases almost linearly for distributed processing, but only if the number of rows resulting from aggregation or sorting is not too large.
+
+#### Latency When Processing Short Queries 
+
+If a query uses a primary key and does not select too many columns and rows to process (hundreds of thousands), you can expect less than 50 milliseconds of latency (single digits of milliseconds in the best case) if data is placed in the page cache. Otherwise, latency is mostly dominated by the number of seeks. If you use rotating disk drives, for a system that is not overloaded, the latency can be estimated with this formula: seek time (10 ms) * count of columns queried * count of data parts.
+
+#### Throughput When Processing a Large Quantity of Short Queries 
+
+Under the same conditions, ClickHouse can handle several hundred queries per second on a single server (up to several thousand in the best case). Since this scenario is not typical for analytical DBMSs, we recommend expecting a maximum of 100 queries per second.
+
+#### Performance When Inserting Data 
+
+*We recommend inserting data in packets of at least 1000 rows, or no more than a single request per second.* When inserting to a MergeTree table from a tab-separated dump, the insertion speed can be from 50 to 200 MB/s. If the inserted rows are around 1 KB in size, the speed will be from 50,000 to 200,000 rows per second. If the rows are small, the performance can be higher in rows per second (on Banner System data -> 500,000 rows per second; on Graphite data -> 1,000,000 rows per second). To improve performance, you can make multiple INSERT queries in parallel, which scales linearly.
+
+## Getting Started
+
+### Example Datasets
+
+### Installation
+
+#### System Requirements
+
+ClickHouse can run on any Linux, FreeBSD, or Mac OS X with x86_64, AArch64, or PowerPC64LE CPU architecture.
+
+Official pre-built binaries are typically compiled for x86_64 and leverage SSE 4.2 instruction set, so unless otherwise stated usage of CPU that supports it becomes an additional system requirement. Here's the command to check if current CPU has support for SSE 4.2:
+
+```shell
+$ grep -q sse4_2 /proc/cpuinfo && echo "SSE 4.2 supported" || echo "SSE 4.2 not supported"
+```
+
+To run ClickHouse on processors that do not support SSE 4.2 or have AArch64 or PowerPC64LE architecture, you should build ClickHouse from sources with proper configuration adjustments.
+
+#### Available Installation Options
+
+##### From DEB Packages 
+
+It is recommended to use official pre-compiled deb packages for Debian or Ubuntu. Run these commands to install packages:
+
+```shell
+sudo apt-get install apt-transport-https ca-certificates dirmngr
+sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv E0C56BD4
+
+echo "deb https://repo.clickhouse.tech/deb/stable/ main/" | sudo tee \
+    /etc/apt/sources.list.d/clickhouse.list
+sudo apt-get update
+
+sudo apt-get install -y clickhouse-server clickhouse-client
+
+sudo service clickhouse-server start
+clickhouse-client
+```
+
+If you want to use the most recent version, replace stable with testing (this is recommended for your testing environments).
+
+You can also download and install packages manually from here.
+
+Packages 
+- clickhouse-common-static — Installs ClickHouse compiled binary files.
+- clickhouse-server — Creates a symbolic link for clickhouse-server and installs the default server configuration.
+- clickhouse-client — Creates a symbolic link for clickhouse-client and other client-related tools. and installs client configuration files.
+- clickhouse-common-static-dbg — Installs ClickHouse compiled binary files with debug info.
+
+##### Launch
+
+To start the server as a daemon, run:
+
+```shell
+$ sudo service clickhouse-server start
+```
+
+If you don't have service command, run as
+
+```shell
+$ sudo /etc/init.d/clickhouse-server start
+```
+
+See the logs in the `/var/log/clickhouse-server/` directory.
+
+If the server doesn't start, check the configurations in the file /etc/clickhouse-server/config.xml.
+
+You can also manually launch the server from the console:
+
+```shell
+$ clickhouse-server --config-file=/etc/clickhouse-server/config.xml
+```
+
+In this case, the log will be printed to the console, which is convenient during development.
+
+If the configuration file is in the current directory, you don't need to specify the `--config-file` parameter. By default, it uses `./config`.xml.
+
+ClickHouse supports access restriction settings. They are located in the users.xml file (next to config.xml).
+
+By default, access is allowed from anywhere for the default user, without a password. See `user/default/networks`.
+
+For more information, see the section "Configuration Files".
+
+After launching server, you can use the command-line client to connect to it:
+
+```shell
+$ clickhouse-client
+```
+
+By default, it connects to `localhost:9000` on behalf of the user default without a password. It can also be used to connect to a remote server using `--host` argument.
+
+The terminal must use UTF-8 encoding.
+For more information, see the section "Command-line client".
+
+Example:
+
+```
+$ ./clickhouse-client
+ClickHouse client version 0.0.18749.
+Connecting to localhost:9000.
+Connected to ClickHouse server version 0.0.18749.
+
+:) SELECT 1
+
+SELECT 1
+
+┌─1─┐
+│ 1 │
+└───┘
+
+1 rows in set. Elapsed: 0.003 sec.
+
+:)
+```
+
+### Tutorial
+
+#### What to Expect from This Tutorial?
+
+By going through this tutorial, you'll learn how to set up a simple ClickHouse cluster. It'll be small, but fault-tolerant and scalable. Then we will use one of the example datasets to fill it with data and execute some demo queries.
+
+#### Single Node Setup
+
+To postpone the complexities of a distributed environment, we'll start with deploying ClickHouse on a single server or virtual machine. ClickHouse is usually installed from deb or rpm packages, but there are alternatives for the operating systems that do not support them.
+
+For example, you have chosen deb packages and executed:
+
+```shell
+sudo apt-get install apt-transport-https ca-certificates dirmngr
+sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv E0C56BD4
+
+echo "deb https://repo.clickhouse.tech/deb/stable/ main/" | sudo tee \
+    /etc/apt/sources.list.d/clickhouse.list
+sudo apt-get update
+
+sudo apt-get install -y clickhouse-server clickhouse-client
+
+sudo service clickhouse-server start
+clickhouse-client
+```
+
+What do we have in the packages that got installed:
+
+- clickhouse-client package contains clickhouse-client application, interactive ClickHouse console client.
+- clickhouse-common package contains a ClickHouse executable file.
+- clickhouse-server package contains configuration files to run ClickHouse as a server.
+
+Server config files are located in `/etc/clickhouse-server/`. Before going further, please notice the `<path>` element in `config.xml`. *Path determines the location for data storage, so it should be located on volume with large disk capacity*; the default value is `/var/lib/clickhouse/`. If you want to adjust the configuration, it's not handy to directly edit `config.xml` file, considering it might get rewritten on future package updates. The recommended way to override the config elements is to create files in `config.d` directory which serve as "patches" to `config.xml`.
+
+As you might have noticed, *clickhouse-server is not launched automatically after package installation*. It won't be automatically restarted after updates, either. The way you start the server depends on your init system, usually, it is:
+
+```shell
+sudo service clickhouse-server start
+```
+
+or
+
+```shell
+sudo /etc/init.d/clickhouse-server start
+```
+
+The default location for server logs is `/var/log/clickhouse-server/`. The server is ready to handle client connections once it logs the Ready for connections message.
+
+Once the clickhouse-server is up and running, we can use clickhouse-client to connect to the server and run some test queries like `SELECT "Hello, world!";`.
+
+#### Import Sample Dataset
+
+Now it's time to fill our ClickHouse server with some sample data. In this tutorial, we'll use the anonymized data of Yandex.Metrica, the first service that runs ClickHouse in production way before it became open-source (more on that in history section). There are multiple ways to import Yandex.Metrica dataset, and for the sake of the tutorial, we'll go with the most realistic one.
+
+##### Download and Extract Table Data
+
+```shell
+curl https://datasets.clickhouse.tech/hits/tsv/hits_v1.tsv.xz | unxz --threads=`nproc` > hits_v1.tsv
+curl https://datasets.clickhouse.tech/visits/tsv/visits_v1.tsv.xz | unxz --threads=`nproc` > visits_v1.tsv
+```
+
+The extracted files are about 10GB in size.
+
+##### Create Tables 
+
+As in most databases management systems, ClickHouse logically groups tables into "databases". There's a default database, but we'll create a new one named `tutorial`:
+
+```shell
+clickhouse-client --query "CREATE DATABASE IF NOT EXISTS tutorial"
+```
+
+Syntax for creating tables is way more complicated compared to databases. In general `CREATE TABLE` statement has to specify three key things:
+
+1. Name of table to create.
+2. Table schema, i.e. list of columns and their data types.
+3. Table engine and its settings, which determines all the details on how queries to this table will be physically executed.
+
+Yandex.Metrica is a web analytics service, and sample dataset doesn't cover its full functionality, so there are only two tables to create:
+
+- `hits` is a table with each action done by all users on all websites covered by the service.
+- `visits` is a table that contains pre-built sessions instead of individual actions.
+
+Let's see and execute the real create table queries for these tables:
+
+```sql
+CREATE TABLE tutorial.hits_v1
+(
+    `WatchID` UInt64,
+    `JavaEnable` UInt8,
+    `Title` String,
+    `GoodEvent` Int16,
+    `EventTime` DateTime,
+    `EventDate` Date,
+    `CounterID` UInt32,
+    `ClientIP` UInt32,
+    `ClientIP6` FixedString(16),
+    `RegionID` UInt32,
+    `UserID` UInt64,
+    `CounterClass` Int8,
+    `OS` UInt8,
+    `UserAgent` UInt8,
+    `URL` String,
+    `Referer` String,
+    `URLDomain` String,
+    `RefererDomain` String,
+    `Refresh` UInt8,
+    `IsRobot` UInt8,
+    `RefererCategories` Array(UInt16),
+    `URLCategories` Array(UInt16),
+    `URLRegions` Array(UInt32),
+    `RefererRegions` Array(UInt32),
+    `ResolutionWidth` UInt16,
+    `ResolutionHeight` UInt16,
+    `ResolutionDepth` UInt8,
+    `FlashMajor` UInt8,
+    `FlashMinor` UInt8,
+    `FlashMinor2` String,
+    `NetMajor` UInt8,
+    `NetMinor` UInt8,
+    `UserAgentMajor` UInt16,
+    `UserAgentMinor` FixedString(2),
+    `CookieEnable` UInt8,
+    `JavascriptEnable` UInt8,
+    `IsMobile` UInt8,
+    `MobilePhone` UInt8,
+    `MobilePhoneModel` String,
+    `Params` String,
+    `IPNetworkID` UInt32,
+    `TraficSourceID` Int8,
+    `SearchEngineID` UInt16,
+    `SearchPhrase` String,
+    `AdvEngineID` UInt8,
+    `IsArtifical` UInt8,
+    `WindowClientWidth` UInt16,
+    `WindowClientHeight` UInt16,
+    `ClientTimeZone` Int16,
+    `ClientEventTime` DateTime,
+    `SilverlightVersion1` UInt8,
+    `SilverlightVersion2` UInt8,
+    `SilverlightVersion3` UInt32,
+    `SilverlightVersion4` UInt16,
+    `PageCharset` String,
+    `CodeVersion` UInt32,
+    `IsLink` UInt8,
+    `IsDownload` UInt8,
+    `IsNotBounce` UInt8,
+    `FUniqID` UInt64,
+    `HID` UInt32,
+    `IsOldCounter` UInt8,
+    `IsEvent` UInt8,
+    `IsParameter` UInt8,
+    `DontCountHits` UInt8,
+    `WithHash` UInt8,
+    `HitColor` FixedString(1),
+    `UTCEventTime` DateTime,
+    `Age` UInt8,
+    `Sex` UInt8,
+    `Income` UInt8,
+    `Interests` UInt16,
+    `Robotness` UInt8,
+    `GeneralInterests` Array(UInt16),
+    `RemoteIP` UInt32,
+    `RemoteIP6` FixedString(16),
+    `WindowName` Int32,
+    `OpenerName` Int32,
+    `HistoryLength` Int16,
+    `BrowserLanguage` FixedString(2),
+    `BrowserCountry` FixedString(2),
+    `SocialNetwork` String,
+    `SocialAction` String,
+    `HTTPError` UInt16,
+    `SendTiming` Int32,
+    `DNSTiming` Int32,
+    `ConnectTiming` Int32,
+    `ResponseStartTiming` Int32,
+    `ResponseEndTiming` Int32,
+    `FetchTiming` Int32,
+    `RedirectTiming` Int32,
+    `DOMInteractiveTiming` Int32,
+    `DOMContentLoadedTiming` Int32,
+    `DOMCompleteTiming` Int32,
+    `LoadEventStartTiming` Int32,
+    `LoadEventEndTiming` Int32,
+    `NSToDOMContentLoadedTiming` Int32,
+    `FirstPaintTiming` Int32,
+    `RedirectCount` Int8,
+    `SocialSourceNetworkID` UInt8,
+    `SocialSourcePage` String,
+    `ParamPrice` Int64,
+    `ParamOrderID` String,
+    `ParamCurrency` FixedString(3),
+    `ParamCurrencyID` UInt16,
+    `GoalsReached` Array(UInt32),
+    `OpenstatServiceName` String,
+    `OpenstatCampaignID` String,
+    `OpenstatAdID` String,
+    `OpenstatSourceID` String,
+    `UTMSource` String,
+    `UTMMedium` String,
+    `UTMCampaign` String,
+    `UTMContent` String,
+    `UTMTerm` String,
+    `FromTag` String,
+    `HasGCLID` UInt8,
+    `RefererHash` UInt64,
+    `URLHash` UInt64,
+    `CLID` UInt32,
+    `YCLID` UInt64,
+    `ShareService` String,
+    `ShareURL` String,
+    `ShareTitle` String,
+    `ParsedParams` Nested(
+        Key1 String,
+        Key2 String,
+        Key3 String,
+        Key4 String,
+        Key5 String,
+        ValueDouble Float64),
+    `IslandID` FixedString(16),
+    `RequestNum` UInt32,
+    `RequestTry` UInt8
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMM(EventDate)
+ORDER BY (CounterID, EventDate, intHash32(UserID))
+SAMPLE BY intHash32(UserID)
+```
+
+> Here intHash32(UserID) is used for ordering key (primary key). How to avoid hash collision?
+
+```sql
+CREATE TABLE tutorial.visits_v1
+(
+    `CounterID` UInt32,
+    `StartDate` Date,
+    `Sign` Int8,
+    `IsNew` UInt8,
+    `VisitID` UInt64,
+    `UserID` UInt64,
+    `StartTime` DateTime,
+    `Duration` UInt32,
+    `UTCStartTime` DateTime,
+    `PageViews` Int32,
+    `Hits` Int32,
+    `IsBounce` UInt8,
+    `Referer` String,
+    `StartURL` String,
+    `RefererDomain` String,
+    `StartURLDomain` String,
+    `EndURL` String,
+    `LinkURL` String,
+    `IsDownload` UInt8,
+    `TraficSourceID` Int8,
+    `SearchEngineID` UInt16,
+    `SearchPhrase` String,
+    `AdvEngineID` UInt8,
+    `PlaceID` Int32,
+    `RefererCategories` Array(UInt16),
+    `URLCategories` Array(UInt16),
+    `URLRegions` Array(UInt32),
+    `RefererRegions` Array(UInt32),
+    `IsYandex` UInt8,
+    `GoalReachesDepth` Int32,
+    `GoalReachesURL` Int32,
+    `GoalReachesAny` Int32,
+    `SocialSourceNetworkID` UInt8,
+    `SocialSourcePage` String,
+    `MobilePhoneModel` String,
+    `ClientEventTime` DateTime,
+    `RegionID` UInt32,
+    `ClientIP` UInt32,
+    `ClientIP6` FixedString(16),
+    `RemoteIP` UInt32,
+    `RemoteIP6` FixedString(16),
+    `IPNetworkID` UInt32,
+    `SilverlightVersion3` UInt32,
+    `CodeVersion` UInt32,
+    `ResolutionWidth` UInt16,
+    `ResolutionHeight` UInt16,
+    `UserAgentMajor` UInt16,
+    `UserAgentMinor` UInt16,
+    `WindowClientWidth` UInt16,
+    `WindowClientHeight` UInt16,
+    `SilverlightVersion2` UInt8,
+    `SilverlightVersion4` UInt16,
+    `FlashVersion3` UInt16,
+    `FlashVersion4` UInt16,
+    `ClientTimeZone` Int16,
+    `OS` UInt8,
+    `UserAgent` UInt8,
+    `ResolutionDepth` UInt8,
+    `FlashMajor` UInt8,
+    `FlashMinor` UInt8,
+    `NetMajor` UInt8,
+    `NetMinor` UInt8,
+    `MobilePhone` UInt8,
+    `SilverlightVersion1` UInt8,
+    `Age` UInt8,
+    `Sex` UInt8,
+    `Income` UInt8,
+    `JavaEnable` UInt8,
+    `CookieEnable` UInt8,
+    `JavascriptEnable` UInt8,
+    `IsMobile` UInt8,
+    `BrowserLanguage` UInt16,
+    `BrowserCountry` UInt16,
+    `Interests` UInt16,
+    `Robotness` UInt8,
+    `GeneralInterests` Array(UInt16),
+    `Params` Array(String),
+    `Goals` Nested(
+        ID UInt32,
+        Serial UInt32,
+        EventTime DateTime,
+        Price Int64,
+        OrderID String,
+        CurrencyID UInt32),
+    `WatchIDs` Array(UInt64),
+    `ParamSumPrice` Int64,
+    `ParamCurrency` FixedString(3),
+    `ParamCurrencyID` UInt16,
+    `ClickLogID` UInt64,
+    `ClickEventID` Int32,
+    `ClickGoodEvent` Int32,
+    `ClickEventTime` DateTime,
+    `ClickPriorityID` Int32,
+    `ClickPhraseID` Int32,
+    `ClickPageID` Int32,
+    `ClickPlaceID` Int32,
+    `ClickTypeID` Int32,
+    `ClickResourceID` Int32,
+    `ClickCost` UInt32,
+    `ClickClientIP` UInt32,
+    `ClickDomainID` UInt32,
+    `ClickURL` String,
+    `ClickAttempt` UInt8,
+    `ClickOrderID` UInt32,
+    `ClickBannerID` UInt32,
+    `ClickMarketCategoryID` UInt32,
+    `ClickMarketPP` UInt32,
+    `ClickMarketCategoryName` String,
+    `ClickMarketPPName` String,
+    `ClickAWAPSCampaignName` String,
+    `ClickPageName` String,
+    `ClickTargetType` UInt16,
+    `ClickTargetPhraseID` UInt64,
+    `ClickContextType` UInt8,
+    `ClickSelectType` Int8,
+    `ClickOptions` String,
+    `ClickGroupBannerID` Int32,
+    `OpenstatServiceName` String,
+    `OpenstatCampaignID` String,
+    `OpenstatAdID` String,
+    `OpenstatSourceID` String,
+    `UTMSource` String,
+    `UTMMedium` String,
+    `UTMCampaign` String,
+    `UTMContent` String,
+    `UTMTerm` String,
+    `FromTag` String,
+    `HasGCLID` UInt8,
+    `FirstVisit` DateTime,
+    `PredLastVisit` Date,
+    `LastVisit` Date,
+    `TotalVisits` UInt32,
+    `TraficSource` Nested(
+        ID Int8,
+        SearchEngineID UInt16,
+        AdvEngineID UInt8,
+        PlaceID UInt16,
+        SocialSourceNetworkID UInt8,
+        Domain String,
+        SearchPhrase String,
+        SocialSourcePage String),
+    `Attendance` FixedString(16),
+    `CLID` UInt32,
+    `YCLID` UInt64,
+    `NormalizedRefererHash` UInt64,
+    `SearchPhraseHash` UInt64,
+    `RefererDomainHash` UInt64,
+    `NormalizedStartURLHash` UInt64,
+    `StartURLDomainHash` UInt64,
+    `NormalizedEndURLHash` UInt64,
+    `TopLevelDomain` UInt64,
+    `URLScheme` UInt64,
+    `OpenstatServiceNameHash` UInt64,
+    `OpenstatCampaignIDHash` UInt64,
+    `OpenstatAdIDHash` UInt64,
+    `OpenstatSourceIDHash` UInt64,
+    `UTMSourceHash` UInt64,
+    `UTMMediumHash` UInt64,
+    `UTMCampaignHash` UInt64,
+    `UTMContentHash` UInt64,
+    `UTMTermHash` UInt64,
+    `FromHash` UInt64,
+    `WebVisorEnabled` UInt8,
+    `WebVisorActivity` UInt32,
+    `ParsedParams` Nested(
+        Key1 String,
+        Key2 String,
+        Key3 String,
+        Key4 String,
+        Key5 String,
+        ValueDouble Float64),
+    `Market` Nested(
+        Type UInt8,
+        GoalID UInt32,
+        OrderID String,
+        OrderPrice Int64,
+        PP UInt32,
+        DirectPlaceID UInt32,
+        DirectOrderID UInt32,
+        DirectBannerID UInt32,
+        GoodID String,
+        GoodName String,
+        GoodQuantity Int32,
+        GoodPrice Int64),
+    `IslandID` FixedString(16)
+)
+ENGINE = CollapsingMergeTree(Sign)
+PARTITION BY toYYYYMM(StartDate)
+ORDER BY (CounterID, StartDate, intHash32(UserID), VisitID)
+SAMPLE BY intHash32(UserID)
+```
+
+> What is CollapsingMergeTree?
+
+You can execute those queries using the interactive mode of `clickhouse-client` (just launch it in a terminal without specifying a query in advance) or try some alternative interface if you want.
+
+As we can see, `hits_v1` uses the basic MergeTree engine, while the `visits_v1` uses the Collapsing variant.
+
+##### Import Data
+
+Data import to ClickHouse is done via `INSERT INTO` query like in many other SQL databases. However, *data is usually provided in one of the supported serialization formats* instead of `VALUES` clause (which is also supported).
+
+The files we downloaded earlier are in tab-separated format, so here's how to import them via console client:
+
+```shell
+clickhouse-client --query "INSERT INTO tutorial.hits_v1 FORMAT TSV" --max_insert_block_size=100000 < hits_v1.tsv
+clickhouse-client --query "INSERT INTO tutorial.visits_v1 FORMAT TSV" --max_insert_block_size=100000 < visits_v1.tsv
+```
+
+ClickHouse has a lot of settings to tune and one way to specify them in console client is via arguments, as we can see with `--max_insert_block_size`. The easiest way to figure out what settings are available, what do they mean and what the defaults are is to query the system.settings table:
+
+```sql
+SELECT name, value, changed, description
+FROM system.settings
+WHERE name LIKE '%max_insert_b%'
+FORMAT TSV
+
+max_insert_block_size    1048576    0    "The maximum block size for insertion, if we control the creation of blocks for insertion."
+```
+
+Optionally you can `OPTIMIZE` the tables after import. Tables that are configured with an engine from MergeTree-family always do merges of data parts in the background to optimize data storage (or at least check if it makes sense). *These queries force the table engine to do storage optimization right now instead of some time later*:
+
+```shell
+clickhouse-client --query "OPTIMIZE TABLE tutorial.hits_v1 FINAL"
+clickhouse-client --query "OPTIMIZE TABLE tutorial.visits_v1 FINAL"
+```
+
+These queries start an I/O and CPU intensive operation, so if the table consistently receives new data, it's better to leave it alone and let merges run in the background.
+
+Now we can check if the table import was successful:
+
+```shell
+clickhouse-client --query "SELECT COUNT(*) FROM tutorial.hits_v1"
+clickhouse-client --query "SELECT COUNT(*) FROM tutorial.visits_v1"
+```
+
+## Interfaces
+
+ClickHouse provides two network interfaces (both can be optionally wrapped in TLS for additional security):
+
+- HTTP, which is documented and easy to use directly.
+- Native TCP, which has less overhead.
+  
+In most cases it is recommended to use appropriate tool or library instead of interacting with those directly. Officially supported by Yandex are the following:
+
+- Command-line client
+- JDBC driver
+- ODBC driver
+- C++ client library
+
+There are also a wide range of third-party libraries for working with ClickHouse:
+
+- Client libraries
+- Integrations
+- Visual interfaces
+
+### Command-line Client
+
+ClickHouse provides a native command-line client: `clickhouse-client`. The client supports command-line options and configuration files. For more information, see Configuring.
+
+Install it from the `clickhouse-client` package and run it with the command `clickhouse-client`.
+
+```shell
+$ clickhouse-client
+ClickHouse client version 20.13.1.5273 (official build).
+Connecting to localhost:9000 as user default.
+Connected to ClickHouse server version 20.13.1 revision 54442.
+
+:)
+```
+
+Different client and server versions are compatible with one another, but some features may not be available in older clients. We recommend using the same version of the client as the server app. When you try to use a client of the older version, then the server, clickhouse-client displays the message:
+
+```
+ClickHouse client version is older than ClickHouse server. It may lack support for new features.
+```
+
+#### Usage 
+
+The client can be used in interactive and non-interactive (batch) mode. To use batch mode, specify the 'query' parameter, or send data to 'stdin' (it verifies that 'stdin' is not a terminal), or both. Similar to the HTTP interface, when using the 'query' parameter and sending data to 'stdin', the request is a concatenation of the 'query' parameter, a line feed, and the data in 'stdin'. This is convenient for large INSERT queries.
+
+Example of using the client to insert data:
+
+```shell
+$ echo -ne "1, 'some text', '2016-08-14 00:00:00'\n2, 'some more text', '2016-08-14 00:00:01'" | clickhouse-client --database=test --query="INSERT INTO test FORMAT CSV";
+
+$ cat <<_EOF | clickhouse-client --database=test --query="INSERT INTO test FORMAT CSV";
+3, 'some text', '2016-08-14 00:00:00'
+4, 'some more text', '2016-08-14 00:00:01'
+_EOF
+
+$ cat file.csv | clickhouse-client --database=test --query="INSERT INTO test FORMAT CSV";
+```
+
+In batch mode, the default data format is `TabSeparated`. You can set the format in the `FORMAT` clause of the query.
+
+By default, you can only process a single query in batch mode. To make multiple queries from a "script," use the `--multiquery` parameter. This works for all queries except `INSERT`. Query results are output consecutively without additional separators. Similarly, to process a large number of queries, you can run clickhouse-client for each query. Note that it may take tens of milliseconds to launch the 'clickhouse-client' program.
+
+In interactive mode, you get a command line where you can enter queries.
+
+If 'multiline' is not specified (the default): To run the query, press Enter. The semicolon is not necessary at the end of the query. To enter a multiline query, enter a backslash \ before the line feed. After you press Enter, you will be asked to enter the next line of the query.
+
+If multiline is specified: To run a query, end it with a semicolon and press Enter. If the semicolon was omitted at the end of the entered line, you will be asked to enter the next line of the query.
+
+Only a single query is run, so everything after the semicolon is ignored.
+
+You can specify \G instead of or after the semicolon. This indicates Vertical format. In this format, each value is printed on a separate line, which is convenient for wide tables. This unusual feature was added for compatibility with the MySQL CLI.
+
+The command line is based on 'replxx' (similar to 'readline'). In other words, it uses the familiar keyboard shortcuts and keeps a history. The history is written to ~/.clickhouse-client-history.
+
+By default, the format used is PrettyCompact. You can change the format in the FORMAT clause of the query, or by specifying \G at the end of the query, using the --format or --vertical argument in the command line, or using the client configuration file.
+
+To exit the client, press Ctrl+D, or enter one of the following instead of a query: "exit", "quit", "logout", "exit;", "quit;", "logout;", "q", "Q", ":q"
+
+When processing a query, the client shows:
+
+1. Progress, which is updated no more than 10 times per second (by default). For quick queries, the progress might not have time to be displayed.
+2. The formatted query after parsing, for debugging.
+3. The result in the specified format.
+4. The number of lines in the result, the time passed, and the average speed of query processing.
+
+You can cancel a long query by pressing Ctrl+C. However, you will still need to wait for a little for the server to abort the request. It is not possible to cancel a query at certain stages. If you don't wait and press Ctrl+C a second time, the client will exit.
+
+The command-line client allows passing external data (external temporary tables) for querying. For more information, see the section "External data for query processing".
+
+##### Queries with Parameters 
+
+You can create a query with parameters and pass values to them from client application. This allows to avoid formatting query with specific dynamic values on client side. For example:
+
+```shell
+$ clickhouse-client --param_parName="[1, 2]"  -q "SELECT * FROM table WHERE a = {parName:Array(UInt16)}"
+```
+
+##### Query Syntax 
+Format a query as usual, then place the values that you want to pass from the app parameters to the query in braces in the following format:
+
+```shell
+{<name>:<data type>}
+```
+- name — Placeholder identifier. In the console client it should be used in app parameters as `--param_<name> = value`.
+- data type — Data type of the app parameter value. For example, a data structure like (integer, ('string', integer)) can have the Tuple(UInt8, Tuple(String, UInt8)) data type (you can also use another integer types). It's also possible to pass table, database, column names as a parameter, in that case you would need to use Identifier as a data type.
+
+##### Example 
+
+```shell
+$ clickhouse-client --param_tuple_in_tuple="(10, ('dt', 10))" -q "SELECT * FROM table WHERE val = {tuple_in_tuple:Tuple(UInt8, Tuple(String, UInt8))}"
+$ clickhouse-client --param_tbl="numbers" --param_db="system" --param_col="number" --query "SELECT {col:Identifier} FROM {db:Identifier}.{tbl:Identifier} LIMIT 10"
+```
+
+##### Configuring 
+
+You can pass parameters to `clickhouse-client` (all parameters have a default value) using:
+
+- From the Command Line
+
+Command-line options override the default values and settings in configuration files.
+
+- Configuration files.
+
+Settings in the configuration files override the default values.
+
+- Command Line Options 
+
+- `--host, -h` – The server name, 'localhost' by default. You can use either the name or the IPv4 or IPv6 address.
+- -`-port` – The port to connect to. Default value: 9000. Note that the HTTP interface and the native interface use different ports.
+- `--user, -u` – The username. Default value: default.
+- `--password` – The password. Default value: empty string.
+- `--query, -q` – The query to process when using non-interactive mode. You must specify either query or queries-file option.
+- `--queries-file, -qf` – file path with queries to execute. You must specify either query or queries-file option.
+- `--database, -d` – Select the current default database. Default value: the current database from the server settings ('default' by default).
+- `--multiline, -m` – If specified, allow multiline queries (do not send the query on Enter).
+- `--multiquery, -n` – If specified, allow processing multiple queries separated by semicolons.
+- `--format, -f` – Use the specified default format to output the result.
+- `--vertical, -E` – If specified, use the Vertical format by default to output the result. This is the same as –format=Vertical. In this format, each value is printed on a separate line, which is helpful when displaying wide tables.
+- `--time, -t` – If specified, print the query execution time to 'stderr' in non-interactive mode.
+- `--stacktrace` – If specified, also print the stack trace if an exception occurs.
+- `--config-file` – The name of the configuration file.
+- `--secure` – If specified, will connect to server over secure connection.
+- `--history_file` — Path to a file containing command history.
+- `--param_<name>` — Value for a query with parameters.
+
+Since version 20.5, clickhouse-client has automatic syntax highlighting (always enabled).
+
+##### Configuration Files 
+
+`clickhouse-client` uses the first existing file of the following:
+
+- Defined in the `--config-file` parameter.
+- `./clickhouse-client.xml`
+- `~/.clickhouse-client/config.xml`
+- `/etc/clickhouse-client/config.xml`
+
+Example of a config file:
+
+```xml
+￼<config>
+    <user>username</user>
+    <password>password</password>
+    <secure>False</secure>
+</config>
+```
+
+### Native Interface (TCP)
+
+The native protocol is used in the command-line client, for inter-server communication during distributed query processing, and also in other C++ programs. Unfortunately, native ClickHouse protocol does not have formal specification yet, but it can be reverse-engineered from ClickHouse source code (starting around here) and/or by intercepting and analyzing TCP traffic.
+
+### HTTP Interface
+
+## Engines
+
+### Table Engines
+
+The table engine (type of table) determines:
+
+- How and where data is stored, where to write it to, and where to read it from.
+- Which queries are supported, and how.
+- Concurrent data access.
+- Use of indexes, if present.
+- Whether multithreaded request execution is possible.
+- Data replication parameters.
+
+#### Engine Families
+
+##### MergeTree 
+
+The most universal and functional table engines for high-load tasks. The property shared by these engines is quick data insertion with subsequent background data processing. MergeTree family engines support data replication (with Replicated* versions of engines), partitioning, secondary data-skipping indexes, and other features not supported in other engines.
+
+Engines in the family:
+
+- MergeTree
+- ReplacingMergeTree
+- SummingMergeTree
+- AggregatingMergeTree
+- CollapsingMergeTree
+- VersionedCollapsingMergeTree
+- GraphiteMergeTree
+
+##### Log 
+
+Lightweight engines with minimum functionality. They're the most effective when you need to quickly write many small tables (up to approximately 1 million rows) and read them later as a whole.
+
+Engines in the family:
+
+- TinyLog
+- StripeLog
+- Log
+
+##### Integration Engines 
+
+Engines for communicating with other data storage and processing systems.
+
+Engines in the family:
+
+- Kafka
+- MySQL
+- ODBC
+- JDBC
+- HDFS
+- S3
+
+##### Special Engines 
+
+Engines in the family:
+
+- Distributed
+- MaterializedView
+- Dictionary
+- Merge
+- File
+- Null
+- Set
+- Join
+- URL
+- View
+- Memory
+- Buffer
+
+##### Virtual Columns
+
+Virtual column is an integral table engine attribute that is defined in the engine source code.
+
+You shouldn't specify virtual columns in the `CREATE TABLE` query and you can't see them in SHOW `CREATE TABLE` and `DESCRIBE TABLE` query results. Virtual columns are also read-only, so you can't insert data into virtual columns.
+
+To select data from a virtual column, you must specify its name in the `SELECT` query. `SELECT` * doesn't return values from virtual columns.
+
+If you create a table with a column that has the same name as one of the table virtual columns, the virtual column becomes inaccessible. We don't recommend doing this. To help avoid conflicts, virtual column names are usually prefixed with an underscore.
+
+### MergeTree Engine Family 
+
+Table engines from the MergeTree family are the core of ClickHouse data storage capabilities. They provide most features for resilience and high-performance data retrieval: columnar storage, custom partitioning, sparse primary index, secondary data-skipping indexes, etc.
+
+Base MergeTree table engine can be considered the default table engine for single-node ClickHouse instances because it is versatile and practical for a wide range of use cases.
+
+For production usage ReplicatedMergeTree is the way to go, because it adds high-availability to all features of regular MergeTree engine. A bonus is automatic data deduplication on data ingestion, so the software can safely retry if there was some network issue during insert.
+
+All other engines of MergeTree family add extra functionality for some specific use cases. Usually, it's implemented as additional data manipulation in background.
+
+The main downside of MergeTree engines is that they are rather heavy-weight. So the typical pattern is to have not so many of them. If you need many small tables, for example for temporary data, consider Log engine family.
+
+### MergeTree 
+
+The MergeTree engine and other engines of this family (`*MergeTree`) are the most robust ClickHouse table engines.
+
+Engines in the MergeTree family are designed for inserting a very large amount of data into a table. The data is quickly written to the table part by part, then rules are applied for merging the parts in the background. This method is much more efficient than continually rewriting the data in storage during insert.
+
+Main features:
 
 - Stores data sorted by primary key.
-- Partitions can be used if partitioning key is specified. ClickHouse supports certain operations with partitions that are more effective than general operations on the same data with the same result. ClickHouse also automatically cuts off the partition data where the partitioning key is specified in the query.
+
+- This allows you to create a small sparse index that helps find data faster.
+
+- Partitions can be used if the partitioning key is specified.
+  
+  ClickHouse supports certain operations with partitions that are more effective than general operations on the same data with the same result. ClickHouse also automatically cuts off the partition data where the partitioning key is specified in the query. This also improves query performance.
+
+- Data replication support.
+
+- The family of ReplicatedMergeTree tables provides data replication. For more information, see Data replication.
+
+- Data sampling support.
+  If necessary, you can set the data sampling method in the table.
+
+The Merge engine does not belong to the `*MergeTree` family.
 
 #### Creating a Table
 
@@ -58,33 +1207,101 @@ ORDER BY expr
 [PARTITION BY expr]
 [PRIMARY KEY expr]
 [SAMPLE BY expr]
-[TTL expr [DELETE|TO DISK 'xxx'|TO VOLUME 'xxx'], ...]
+[TTL expr 
+    [DELETE|TO DISK 'xxx'|TO VOLUME 'xxx' [, ...] ]
+    [WHERE conditions] 
+    [GROUP BY key_expr [SET v1 = aggr_func(v1) [, v2 = aggr_func(v2) ...]] ] ] 
 [SETTINGS name=value, ...]
 ```
 
-- `ENGINE`: Name and parameters of the engine.
-- `ORDER BY`: The sorting key. ClickHouse uses the sorting key as a primary key if the primary key is not defined obviously by the `PRIMARY KEY` clause.
-- `PARTITION BY`: The partitioning key.
-- `PRIMARY KEY`: The primary key if it differs from the sorting key.
+For a description of parameters, see the CREATE query description.
 
-#### Data Storage
+##### Query Clauses
+
+- `ENGINE` — Name and parameters of the engine. `ENGINE = MergeTree()`. The MergeTree engine does not have parameters.
+
+- `ORDER BY` — The sorting key.
+
+- A tuple of column names or arbitrary expressions. Example: `ORDER BY (CounterID, EventDate)`.
+
+  ClickHouse uses the sorting key as a primary key if the primary key is not defined obviously by the `PRIMARY KEY` clause.
+
+  Use the `ORDER BY` tuple() syntax, if you don't need sorting. See Selecting the Primary Key.
+
+  > If the sorting key is defined by tuple() syntax, no data sorting happens?
+
+- `PARTITION BY` — The partitioning key. Optional.
+
+  For partitioning by month, use the `toYYYYMM(date_column)` expression, where `date_column` is a column with a date of the type Date. The partition names here have the "YYYYMM" format.
+
+- `PRIMARY KEY` — The primary key if it differs from the sorting key. Optional.
+
+  By default the primary key is the same as the sorting key (which is specified by the `ORDER BY` clause). Thus in most cases it is unnecessary to specify a separate `PRIMARY KEY` clause.
+
+- `SAMPLE BY` — An expression for sampling. Optional.
+
+  If a sampling expression is used, the primary key must contain it. Example: `SAMPLE BY intHash32(UserID) ORDER BY (CounterID, EventDate, intHash32(UserID))`.
+
+- *`TTL` — A list of rules specifying storage duration of rows and defining logic of automatic parts movement between disks and volumes.* Optional.
+
+  Expression must have one `Date` or `DateTime` column as a result. Example: `TTL date + INTERVAL 1 DAY`
+
+  Type of the rule `DELETE|TO DISK 'xxx'|TO VOLUME 'xxx'|GROUP BY` specifies an action to be done with the part if the expression is satisfied (reaches current time): removal of expired rows, moving a part (if expression is satisfied for all rows in a part) to specified disk (`TO DISK` 'xxx') or to volume (`TO VOLUME` 'xxx'), or aggregating values in expired rows. Default type of the rule is removal (`DELETE`). List of multiple rules can specified, but there should be no more than one `DELETE` rule.
+
+  For more details, see TTL for columns and tables
+
+- `SETTINGS` — Additional parameters that control the behavior of the MergeTree (optional):
+
+  - `index_granularity` — Maximum number of data rows between the marks of an index. Default value: 8192. See Data Storage.
+  - `index_granularity_bytes` — Maximum size of data granules in bytes. Default value: 10Mb. To restrict the granule size only by number of rows, set to 0 (not recommended). See Data Storage.
+  - `min_index_granularity_bytes` — Min allowed size of data granules in bytes. Default value: 1024b. To provide a safeguard against accidentally creating tables with very low `index_granularity_bytes`. See Data Storage.
+  - `enable_mixed_granularity_parts` — Enables or disables transitioning to control the granule size with the `index_granularity_bytes` setting. Before version 19.11, there was only the `index_granularity` setting for restricting granule size. The `index_granularity_bytes` setting improves ClickHouse performance when selecting data from tables with big rows (tens and hundreds of megabytes). If you have tables with big rows, you can enable this setting for the tables to improve the efficiency of SELECT queries.
+  - `use_minimalistic_part_header_in_zookeeper` — Storage method of the data parts headers in ZooKeeper. If `use_minimalistic_part_header_in_zookeeper=1`, then ZooKeeper stores less data. For more information, see the setting description in "Server configuration parameters".
+  - `min_merge_bytes_to_use_direct_io` — The minimum data volume for merge operation that is required for using direct I/O access to the storage disk. When merging data parts, ClickHouse calculates the total storage volume of all the data to be merged. If the volume exceeds `min_merge_bytes_to_use_direct_io` bytes, ClickHouse reads and writes the data to the storage disk using the direct I/O interface (`O_DIRECT` option). If `min_merge_bytes_to_use_direct_io = 0`, then direct I/O is disabled. Default value: 10 * 1024 * 1024 * 1024 bytes.
+  - `merge_with_ttl_timeout` — Minimum delay in seconds before repeating a merge with TTL. Default value: 86400 (1 day).
+  - `write_final_mark` — Enables or disables writing the final index mark at the end of data part (after the last byte). Default value: 1. Don't turn it off.
+  - `merge_max_block_size` — Maximum number of rows in block for merge operations. Default value: 8192.
+  - `storage_policy` — Storage policy. See Using Multiple Block Devices for Data Storage.
+  - `min_bytes_for_wide_part`, `min_rows_for_wide_part` — Minimum number of bytes/rows in a data part that can be stored in Wide format. You can set one, both or none of these settings. See Data Storage.
+  - `max_parts_in_total` — Maximum number of parts in all partitions.
+  - `max_compress_block_size` — Maximum size of blocks of uncompressed data before compressing for writing to a table. You can also specify this setting in the global settings (see max_compress_block_size setting). The value specified when table is created overrides the global value for this setting.
+  - `min_compress_block_size` — Minimum size of blocks of uncompressed data required for compression when writing the next mark. You can also specify this setting in the global settings (see min_compress_block_size setting). The value specified when table is created overrides the global value for this setting.
+  - `max_partitions_to_read` — Limits the maximum number of partitions that can be accessed in one query. You can also specify setting `max_partitions_to_read` in the global setting.
+
+#### Example of Sections Setting
+
+```sql
+ENGINE MergeTree() PARTITION BY toYYYYMM(EventDate) ORDER BY (CounterID, EventDate, intHash32(UserID)) SAMPLE BY intHash32(UserID) SETTINGS index_granularity=8192
+```
+
+In the example, we set partitioning by month.
+
+We also set an expression for sampling as a hash by the user ID. This allows you to pseudorandomize the data in the table for each CounterID and EventDate. If you define a SAMPLE clause when selecting the data, ClickHouse will return an evenly pseudorandom data sample for a subset of users.
+
+The `index_granularity` setting can be omitted because 8192 is the default value.
+
+#### Data Storage 
 
 A table consists of data parts sorted by primary key.
 
-When data is inserted in a table, separate data parts are created, and the data in each part is lexicographically sorted by primary key. Data belonging to different partitions are separated into different parts. In the background, ClickHouse merges data parts for more efficient storage. Parts belonging to different partitions are not merged. The merge mechanism does not guarantee that all rows with the same primary key will be in the same data part.
+*When data is inserted in a table, separate data parts are created and each of them is lexicographically sorted by primary key.* For example, if the primary key is (CounterID, Date), the data in the part is sorted by CounterID, and within each CounterID, it is ordered by Date.
 
-Data parts can be stored in `Wide` or `Compact` format. In `Wide` format, each column is stored in a separate file in a filesystem. In `Compact` format, all columns in a table are stored in one file. `Compact` format can be used to increase performance of small and frequent inserts (因为读取的文件更少). If the number of bytes in a data part is less than `min_bytes_for_wide_part`, or if the number of rows in a data part is less than `min_rows_for_wide_part`, the part is stored in `Compact` format. Otherwise it is stored in `Wide` format. If none of these settings is set, data parts are stored in `Wide` format.
+*Data belonging to different partitions are separated into different parts. In the background, ClickHouse merges data parts for more efficient storage. Parts belonging to different partitions are not merged.* The merge mechanism does not guarantee that all rows with the same primary key will be in the same data part.
 
-Each data part is logically divided into granules. A granule is the smallest indivisible data set that ClickHouse reads when selecting data. ClickHouse doesn't split a row or a value, so each granule always contains an integer number of rows. The first row of a granule is marked with the value of the primary key for the row. For each data part, ClickHouse creates an index file that stores the marks (就是primary keys). For each column, whether it's in the primary key or not, ClickHouse also stores the same marks. These marks let you find data directly in column files. 
+*Data parts can be stored in Wide or Compact format. In Wide format each column is stored in a separate file in a filesystem, in Compact format all columns are stored in one file. Compact format can be used to increase performance of small and frequent inserts.*
 
-The granule size is restricted by the `index_granularity` and `index_granularity_bytes` settings of the table engine. The number of rows in a granule lays in the `[1, index_granularity]` range, depending on the size of the rows. The size of a granule can exceed `index_granularity_bytes` if the size of a single row is greater than the value of the settings (一行的大小都比预设值大，则存一行). In this case, the size of granule equals to the size of the row.
+*Data storing format is controlled by the `min_bytes_for_wide_part` and `min_rows_for_wide_part` settings of the table engine. If the number of bytes or rows in a data part is less then the corresponding setting's value, the part is stored in Compact format. Otherwise it is stored in Wide format. If none of these settings is set, data parts are stored in Wide format.*
+
+*Each data part is logically divided into granules. A granule is the smallest indivisible data set that ClickHouse reads when selecting data. ClickHouse doesn't split rows or values, so each granule always contains an integer number of rows. The first row of a granule is marked with the value of the primary key for the row. For each data part, ClickHouse creates an index file that stores the marks. For each column, whether it's in the primary key or not, ClickHouse also stores the same marks. These marks let you find data directly in column files.*
+
+*The granule size is restricted by the `index_granularity` and `index_granularity_bytes` settings of the table engine. The number of rows in a granule lays in the `[1, index_granularity]` range, depending on the size of the rows. The size of a granule can exceed `index_granularity_bytes` if the size of a single row is greater than the value of the setting. In this case, the size of the granule equals the size of the row.*
 
 #### Primary Keys and Indexes in Queries
 
-Taking the `CounterID, Date)` primary key as an example, the sorting and index can be illustrated as follows. The `CounterID` is a character, and the `Date` is represented by a single digit.
+Take the (CounterID, Date) primary key as an example. In this case, the sorting and index can be illustrated as follows:
 
 ```
-  Whole data:     [---------------------------------------------]
+ Whole data:     [--------------------------------------------------------------------------]
   CounterID:      [aaaaaaaaaaaaaaaaaabbbbcdeeeeeeeeeeeeefgggggggghhhhhhhhhiiiiiiiiikllllllll]
   Date:           [1111111222222233331233211111222222333211111112122222223111112223311122333]
   Marks:           |      |      |      |      |      |      |      |      |      |      |
@@ -92,38 +1309,1796 @@ Taking the `CounterID, Date)` primary key as an example, the sorting and index c
   Marks numbers:   0      1      2      3      4      5      6      7      8      9      10
 ```
 
-If the data query specifies:
-- `CounterID in ('a', 'h')`, the server reads the data in the range of marks `[0, 3)` (也就是0,1,2) and `[6, 8)`(也就是6,7).
-- `CounterID in ('a', 'h') AND Date = 3`, the server reads the data in the ranges of marks `[1, 3)` and `[7, 8)`.
-- `Date = 3`, the server reads the data in the range of marks `[1, 10]`.
+> The number of rows in a guanule (index_granualarity) is 8 in the example.
 
-The examples above show that it is always more effective to use an index than a full scan. 
+If the data query specifies:
+
+CounterID in ('a', 'h'), the server reads the data in the ranges of marks [0, 3) and [6, 8).
+CounterID IN ('a', 'h') AND Date = 3, the server reads the data in the ranges of marks [1, 3) and [7, 8).
+Date = 3, the server reads the data in the range of marks [1, 10].
+The examples above show that it is always more effective to use an index than a full scan.
+
+A sparse index allows extra data to be read. When reading a single range of the primary key, up to `index_granularity * 2` extra rows in each data block can be read.
+
+Sparse indexes allow you to work with a very large number of table rows, because in most cases, such indexes fit in the computer's RAM.
+
+*ClickHouse does not require a unique primary key.* You can insert multiple rows with the same primary key.
+
+You can use Nullable-typed expressions in the `PRIMARY KEY` and `ORDER BY` clauses. To allow this feature, turn on the `allow_nullable_key` setting.
+
+The `NULLS_LAST` principle applies for `NULL` values in the `ORDER BY` clause.
 
 #### Selecting the Primary Key
 
-ClickHouse does not require a unique primary key. You can insert multiple rows with the same primary key. The number of columns in the primary key is not explicitly limited. Depending on the data structure, you can include more or few columns in the primary key, and this may:
+The number of columns in the primary key is not explicitly limited. Depending on the data structure, you can include more or fewer columns in the primary key. This may:
 
-- Improve the performance of an index. 主键的列越多，搜索范围越小.
-- Improve the data compression. ClickHouse sorts data by primary key, so the higher the consistency, the better the compression.
+- Improve the performance of an index.
+- If the primary key is `(a, b)`, then adding another column `c` will improve the performance if the following conditions are met:
+  - There are queries with a condition on column `c`.
+  - Long data ranges (several times longer than the `index_granularity`) with identical values for `(a, b)` are common. In other words, when adding another column allows you to skip quite long data ranges.
+  - Improve data compression.
 
-You can create a table without a primary key using the `ORDER BY tuple()` syntax(填空元组). In this case, ClickHouse stores data in the order of inserting. If you want to save data order when inserting data by `INSERT ... SELECT` queries, set `max_insert_threads = 1`. To select data in the initial order, use single-threaded `SELECT` queries.
+*ClickHouse sorts data by primary key, so the higher the consistency, the better the compression.*
+
+Provide additional logic when merging data parts in the `CollapsingMergeTree` and `SummingMergeTree` engines.
+
+In this case it makes sense to specify the sorting key that is different from the primary key.
+
+A long primary key will negatively affect the insert performance and memory consumption, but extra columns in the primary key do not affect ClickHouse performance during `SELECT` queries.
+
+You can create a table without a primary key using the `ORDER BY tuple()` syntax. In this case, ClickHouse stores data in the order of inserting. If you want to save data order when inserting data by `INSERT` ... `SELECT` queries, set `max_insert_threads = 1`.
+
+> Data is not stored by the order of `ORDER BY tuple()`!
+
+To select data in the initial order, use single-threaded `SELECT` queries.
 
 #### Choosing a Primary Key that Differs from the Sorting Key
 
-The primary key is an expression with values that are written in the index file for each mark, and the sorting key is an expression for sorting the rows in data parts. They can be specified as different.
+*It is possible to specify a primary key (an expression with values that are written in the index file for each mark) that is different from the sorting key (an expression for sorting the rows in data parts). In this case the primary key expression tuple must be a prefix of the sorting key expression tuple.*
+
+This feature is helpful when using the `SummingMergeTree` and `AggregatingMergeTree` table engines. In a common case when using these engines, the table has two types of columns: dimensions and measures. Typical queries aggregate values of measure columns with arbitrary `GROUP BY` and filtering by dimensions. Because `SummingMergeTree` and `AggregatingMergeTree` aggregate rows with the same value of the sorting key, it is natural to add all dimensions to it. As a result, the key expression consists of a long list of columns and this list must be frequently updated with newly added dimensions.
+
+In this case it makes sense to leave only a few columns in the primary key that will provide efficient range scans and add the remaining dimension columns to the sorting key tuple.
+
+`ALTER` of the sorting key is a lightweight operation because when a new column is simultaneously added to the table and to the sorting key, existing data parts don't need to be changed. Since the old sorting key is a prefix of the new sorting key and there is no data in the newly added column, the data is sorted by both the old and new sorting keys at the moment of table modification.
+
+#### Use of Indexes and Partitions in Queries
+
+For `SELECT` queries, ClickHouse analyzes whether an index can be used. *An index can be used if the `WHERE/PREWHERE` clause has an expression (as one of the conjunction elements, or entirely) that represents an equality or inequality comparison operation, or if it has `IN` or `LIKE` with a fixed prefix on columns or expressions that are in the primary key or partitioning key, or on certain partially repetitive functions of these columns, or logical relationships of these expressions.*
+
+Thus, it is possible to quickly run queries on one or many ranges of the primary key. In this example, queries will be fast when run for a specific tracking tag, for a specific tag and date range, for a specific tag and date, for multiple tags with a date range, and so on.
+
+Let's look at the engine configured as follows:
+
+```sql
+ENGINE MergeTree() PARTITION BY toYYYYMM(EventDate) ORDER BY (CounterID, EventDate) SETTINGS index_granularity=8192
+```
+
+In this case, in queries:
+
+```sql
+SELECT count() FROM table WHERE EventDate = toDate(now()) AND CounterID = 34
+SELECT count() FROM table WHERE EventDate = toDate(now()) AND (CounterID = 34 OR CounterID = 42)
+SELECT count() FROM table WHERE ((EventDate >= toDate('2014-01-01') AND EventDate <= toDate('2014-01-31')) OR EventDate = toDate('2014-05-01')) AND CounterID IN (101500, 731962, 160656) AND (CounterID = 101500 OR EventDate != toDate('2014-05-01'))
+```
+
+ClickHouse will use the primary key index to trim improper data and the monthly partitioning key to trim partitions that are in improper date ranges.
+
+The queries above show that the index is used even for complex expressions. Reading from the table is organized so that using the index can't be slower than a full scan.
+
+In the example below, the index can't be used.
+
+```sql
+SELECT count() FROM table WHERE CounterID = 34 OR URL LIKE '%upyachka%'
+```
+
+To check whether ClickHouse can use the index when running a query, use the settings force_index_by_date and force_primary_key.
+
+The key for partitioning by month allows reading only those data blocks which contain dates from the proper range. In this case, the data block may contain data for many dates (up to an entire month). Within a block, data is sorted by primary key, which might not contain the date as the first column. Because of this, using a query with only a date condition that does not specify the primary key prefix will cause more data to be read than for a single date.
+
+#### Use of Index for Partially-monotonic Primary Keys
+
+Consider, for example, the days of the month. They form a monotonic sequence for one month, but not monotonic for more extended periods. This is a partially-monotonic sequence. If a user creates the table with partially-monotonic primary key, ClickHouse creates a sparse index as usual. When a user selects data from this kind of table, ClickHouse analyzes the query conditions. If the user wants to get data between two marks of the index and both these marks fall within one month, ClickHouse can use the index in this particular case because it can calculate the distance between the parameters of a query and index marks.
+
+ClickHouse cannot use an index if the values of the primary key in the query parameter range don't represent a monotonic sequence. In this case, ClickHouse uses the full scan method.
+
+ClickHouse uses this logic not only for days of the month sequences, but for any primary key that represents a partially-monotonic sequence.
+
+#### Data Skipping Indexes
+
+The index declaration is in the columns section of the CREATE query.
+
+```sql
+INDEX index_name expr TYPE type(...) GRANULARITY granularity_value
+```
+
+For tables from the *MergeTree family, data skipping indices can be specified.
+
+These indices aggregate some information about the specified expression on blocks, which consist of granularity_value granules (the size of the granule is specified using the index_granularity setting in the table engine). Then these aggregates are used in SELECT queries for reducing the amount of data to read from the disk by skipping big blocks of data where the where query cannot be satisfied.
+
+Example:
+
+```sql
+CREATE TABLE table_name
+(
+    u64 UInt64,
+    i32 Int32,
+    s String,
+    ...
+    INDEX a (u64 * i32, s) TYPE minmax GRANULARITY 3,
+    INDEX b (u64 * length(s)) TYPE set(1000) GRANULARITY 4
+) ENGINE = MergeTree()
+...
+```
+
+Indices from the example can be used by ClickHouse to reduce the amount of data to read from disk in the following queries:
+
+```sql
+SELECT count() FROM table WHERE s < 'z'
+SELECT count() FROM table WHERE u64 * i32 == 10 AND u64 * length(s) >= 1234
+```
+
+##### Available Types of Indices
+
+- `minmax`
+
+  Stores extremes of the specified expression (if the expression is tuple, then it stores extremes for each element of tuple), uses stored info for skipping blocks of data like the primary key.
+
+- `set(max_rows)`
+
+  Stores unique values of the specified expression (no more than max_rows rows, max_rows=0 means "no limits"). Uses the values to check if the WHERE expression is not satisfiable on a block of data.
+
+- `ngrambf_v1(n, size_of_bloom_filter_in_bytes, number_of_hash_functions, random_seed)`
+
+  Stores a Bloom filter that contains all ngrams from a block of data. Works only with strings. Can be used for optimization of equals, like and in expressions.
+
+  - `n` — ngram size,
+  - `size_of_bloom_filter_in_bytes` — Bloom filter size in bytes (you can use large values here, for example, 256 or 512, because it can be compressed well).
+  - number_of_hash_functions — The number of hash functions used in the Bloom filter.
+  - random_seed — The seed for Bloom filter hash functions.
+
+- `tokenbf_v1(size_of_bloom_filter_in_bytes, number_of_hash_functions, random_seed)`
+
+  The same as ngrambf_v1, but stores tokens instead of ngrams. Tokens are sequences separated by non-alphanumeric characters.
+
+- `bloom_filter([false_positive])` — Stores a Bloom filter for the specified columns.
+
+  The optional false_positive parameter is the probability of receiving a false positive response from the filter. Possible values: (0, 1). Default value: 0.025.
+
+  Supported data types: Int*, UInt*, Float*, Enum, Date, DateTime, String, FixedString, Array, LowCardinality, Nullable.
+
+  The following functions can use it: equals, notEquals, in, notIn, has.
+
+```sql
+INDEX sample_index (u64 * length(s)) TYPE minmax GRANULARITY 4
+INDEX sample_index2 (u64 * length(str), i32 + f64 * 100, date, str) TYPE set(100) GRANULARITY 4
+INDEX sample_index3 (lower(str), str) TYPE ngrambf_v1(3, 256, 2, 0) GRANULARITY 4
+```
+
+##### Functions Support
+
+Conditions in the `WHERE` clause contains calls of the functions that operate with columns. If the column is a part of an index, ClickHouse tries to use this index when performing the functions. ClickHouse supports different subsets of functions for using indexes.
+
+The `set` index can be used with all functions. Function subsets for other indexes are shown in the table below.
+
+![](./pics/clickhouse/set_index.png)
+
+Functions with a constant argument that is less than ngram size can't be used by `ngrambf_v1` for query optimization.
+
+Bloom filters can have false positive matches, so the `ngrambf_v1`, `tokenbf_v1`, and `bloom_filter` indexes can't be used for optimizing queries where the result of a function is expected to be false, for example:
+
+- Can be optimized:
+  - s LIKE '%test%'
+  - NOT s NOT LIKE '%test%'
+  - s = 1
+  - NOT s != 1
+  - startsWith(s, 'test')
+
+- Can't be optimized:
+  - NOT s LIKE '%test%'
+  - s NOT LIKE '%test%'
+  - NOT s = 1
+  - s != 1
+  - NOT startsWith(s, 'test')
+
+#### Concurrent Data Access
+
+For concurrent table access, we use multi-versioning. In other words, when a table is simultaneously read and updated, data is read from a set of parts that is current at the time of the query. There are no lengthy locks. Inserts do not get in the way of read operations.
+
+Reading from a table is automatically parallelized.
+
+#### TTL for Columns and Tables
+
+Determines the lifetime of values.
+
+The `TTL` clause can be set for the whole table and for each individual column. Table-level TTL can also specify logic of automatic move of data between disks and volumes.
+
+Expressions must evaluate to Date or DateTime data type.
+
+Example:
+
+```sql
+TTL time_column
+TTL time_column + interval
+```
+
+To define interval, use time interval operators.
+
+```sql
+TTL date_time + INTERVAL 1 MONTH
+TTL date_time + INTERVAL 15 HOUR
+```
+
+#### Column TTL 
+
+When the values in the column expire, ClickHouse replaces them with the default values for the column data type. If all the column values in the data part expire, ClickHouse deletes this column from the data part in a filesystem.
+
+The `TTL` clause can't be used for key columns.
+
+Examples:
+
+Creating a table with TTL
+
+```sql
+CREATE TABLE example_table
+(
+    d DateTime,
+    a Int TTL d + INTERVAL 1 MONTH,
+    b Int TTL d + INTERVAL 1 MONTH,
+    c String
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(d)
+ORDER BY d;
+```
+
+Adding TTL to a column of an existing table
+
+```sql
+ALTER TABLE example_table
+    MODIFY COLUMN
+    c String TTL d + INTERVAL 1 DAY;
+```
+
+Altering TTL of the column
+
+```sql
+ALTER TABLE example_table
+    MODIFY COLUMN
+    c String TTL d + INTERVAL 1 MONTH;
+```
+
+#### Table TTL
+
+Table can have an expression for removal of expired rows, and multiple expressions for automatic move of parts between disks or volumes. When rows in the table expire, ClickHouse deletes all corresponding rows. For parts moving feature, all rows of a part must satisfy the movement expression criteria.
+
+```sql
+TTL expr 
+    [DELETE|TO DISK 'xxx'|TO VOLUME 'xxx'][, DELETE|TO DISK 'aaa'|TO VOLUME 'bbb'] ...
+    [WHERE conditions] 
+    [GROUP BY key_expr [SET v1 = aggr_func(v1) [, v2 = aggr_func(v2) ...]] ]   
+```
+
+Type of TTL rule may follow each TTL expression. It affects an action which is to be done once the expression is satisfied (reaches current time):
+
+- `DELETE` - delete expired rows (default action);
+- `TO DISK 'aaa'` - move part to the disk aaa;
+- `TO VOLUME 'bbb'` - move part to the disk bbb;
+- `GROUP BY` - aggregate expired rows.
+
+With `WHERE` clause you may specify which of the expired rows to delete or aggregate (it cannot be applied to moves).
+
+`GROUP BY` expression must be a prefix of the table primary key.
+
+If a column is not part of the `GROUP BY` expression and is not set explicitely in the SET clause, in result row it contains an occasional value from the grouped rows (as if aggregate function any is applied to it).
+
+Examples
+
+Creating a table with TTL:
+
+```sql
+CREATE TABLE example_table
+(
+    d DateTime,
+    a Int
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(d)
+ORDER BY d
+TTL d + INTERVAL 1 MONTH [DELETE],
+    d + INTERVAL 1 WEEK TO VOLUME 'aaa',
+    d + INTERVAL 2 WEEK TO DISK 'bbb';
+```
+
+Altering TTL of the table:
+
+```sql
+ALTER TABLE example_table
+    MODIFY TTL d + INTERVAL 1 DAY;
+```
+
+Creating a table, where the rows are expired after one month. The expired rows where dates are Mondays are deleted:
+
+```sql
+CREATE TABLE table_with_where
+(
+    d DateTime, 
+    a Int
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(d)
+ORDER BY d
+TTL d + INTERVAL 1 MONTH DELETE WHERE toDayOfWeek(d) = 1;
+```
+
+Creating a table, where expired rows are aggregated. In result rows `x` contains the maximum value accross the grouped rows, `y` — the minimum value, and `d` — any occasional value from grouped rows.
+
+```sql
+CREATE TABLE table_for_aggregation
+(
+    d DateTime, 
+    k1 Int, 
+    k2 Int, 
+    x Int, 
+    y Int
+)
+ENGINE = MergeTree
+ORDER BY (k1, k2)
+TTL d + INTERVAL 1 MONTH GROUP BY k1, k2 SET x = max(x), y = min(y);
+```
+
+##### Removing Data
+
+Data with an expired TTL is removed when ClickHouse merges data parts.
+
+When ClickHouse see that data is expired, it performs an off-schedule merge. To control the frequency of such merges, you can set merge_with_ttl_timeout. If the value is too low, it will perform many off-schedule merges that may consume a lot of resources.
+
+If you perform the `SELECT` query between merges, you may get expired data. To avoid it, use the `OPTIMIZE` query before `SELECT`.
 
 #### Using Multiple Block Devices for Data Storage
 
-`MergeTree` family table engines can store data on multiple block devices. For example, it can be useful when the data of a certain table are implicitly split into "hot" and "cold". The most recent data is regularly requested but requires only a small amount of space. On the contrary, the fat-tailed historical data is requested rarely. If several disks are available, the “hot” data may be located on fast disks (for example, NVMe SSDs or in memory), while the “cold” data - on relatively slow ones (for example, HDD).
+##### Introduction 
 
-#### Custom Partitioning Key
+`MergeTree` family table engines can store data on multiple block devices. For example, it can be useful when the data of a certain table are implicitly split into "hot" and "cold". The most recent data is regularly requested but requires only a small amount of space. On the contrary, the fat-tailed historical data is requested rarely. If several disks are available, the "hot" data may be located on fast disks (for example, NVMe SSDs or in memory), while the "cold" data - on relatively slow ones (for example, HDD).
 
-Partitioning is available for the MergeTree family tables. A partition is a local combination of records in a table by a specified criterion. Each partition is stored separately to simply manipulations of this data. When accessing the data, ClickHouse uses the smallest subset of partitions possible (就是把最小数量的partition取出来).
+Data part is the minimum movable unit for MergeTree-engine tables. The data belonging to one part are stored on one disk. Data parts can be moved between disks in the background (according to user settings) as well as by means of the ALTER queries.
 
-The partition is specified in the `PARTITION BY expr` clause when creating a table. The partition key can be any expression from the table columns, and can also be a tuple of expressions (similar to the primary key).
+##### Terms 
+- Disk — Block device mounted to the filesystem.
+- Default disk — Disk that stores the path specified in the path server setting.
+- Volume — Ordered set of equal disks (similar to JBOD).
+- Storage policy — Set of volumes and the rules for moving data between them.
+The names given to the described entities can be found in the system tables, system.storage_policies and system.disks. To apply one of the configured storage policies for a table, use the storage_policy setting of MergeTree-engine family tables.
 
-*When inserting new data to a table, this data is stored as a separate part (chunk) sorted by the primary key. In 10~15 minutes after inserting, the parts of the same partition are merged into the entire part.*
+##### Configuration 
 
-Note that a merge only works for data parts that have the same value for the partitioning expression. This means you shouldn't make overly granular partitions (不能分的太细). Otherwise, the `SELECT` query performs poorly because of an unreasonably large number of files in the file system and open file descriptors.
+Disks, volumes and storage policies should be declared inside the `<storage_configuration>` tag either in the main file `config.xml` or in a distinct file in the `config.d` directory.
 
-Use the **system.parts** table to view the table parts and partitions.
+Configuration structure:
+
+```xml
+<storage_configuration>
+    <disks>
+        <disk_name_1> <!-- disk name -->
+            <path>/mnt/fast_ssd/clickhouse/</path>
+        </disk_name_1>
+        <disk_name_2>
+            <path>/mnt/hdd1/clickhouse/</path>
+            <keep_free_space_bytes>10485760</keep_free_space_bytes>
+        </disk_name_2>
+        <disk_name_3>
+            <path>/mnt/hdd2/clickhouse/</path>
+            <keep_free_space_bytes>10485760</keep_free_space_bytes>
+        </disk_name_3>
+
+        ...
+    </disks>
+
+    ...
+</storage_configuration>
+```
+
+Tags:
+
+- `<disk_name_N>` — Disk name. Names must be different for all disks.
+- `path` — path under which a server will store data (data and shadow folders), should be terminated with '/'.
+- `keep_free_space_bytes` — the amount of free disk space to be reserved.
+
+The order of the disk definition is not important.
+
+Storage policies configuration markup:
+
+```xml
+<storage_configuration>
+    ...
+    <policies>
+        <policy_name_1>
+            <volumes>
+                <volume_name_1>
+                    <disk>disk_name_from_disks_configuration</disk>
+                    <max_data_part_size_bytes>1073741824</max_data_part_size_bytes>
+                </volume_name_1>
+                <volume_name_2>
+                    <!-- configuration -->
+                </volume_name_2>
+                <!-- more volumes -->
+            </volumes>
+            <move_factor>0.2</move_factor>
+        </policy_name_1>
+        <policy_name_2>
+            <!-- configuration -->
+        </policy_name_2>
+
+        <!-- more policies -->
+    </policies>
+    ...
+</storage_configuration>
+```
+
+Tags:
+
+- `policy_name_N` — Policy name. Policy names must be unique.
+- `volume_name_N` — Volume name. Volume names must be unique.
+- `disk` — a disk within a volume.
+- `max_data_part_size_bytes` — the maximum size of a part that can be stored on any of the volume's disks.
+- `move_factor` — when the amount of available space gets lower than this factor, data automatically start to move on the next volume if any (by default, 0.1).
+- `prefer_not_to_merge` — Disables merging of data parts on this volume. When this setting is enabled, merging data on this volume is not allowed. This allows controlling how ClickHouse works with slow disks.
+
+Cofiguration examples:
+
+```xml
+<storage_configuration>
+    ...
+    <policies>
+        <hdd_in_order> <!-- policy name -->
+            <volumes>
+                <single> <!-- volume name -->
+                    <disk>disk1</disk>
+                    <disk>disk2</disk>
+                </single>
+            </volumes>
+        </hdd_in_order>
+
+        <moving_from_ssd_to_hdd>
+            <volumes>
+                <hot>
+                    <disk>fast_ssd</disk>
+                    <max_data_part_size_bytes>1073741824</max_data_part_size_bytes>
+                </hot>
+                <cold>
+                    <disk>disk1</disk>
+                </cold>
+            </volumes>
+            <move_factor>0.2</move_factor>
+        </moving_from_ssd_to_hdd>
+
+        <small_jbod_with_external_no_merges>
+            <volumes>
+                <main>
+                    <disk>jbod1</disk>
+                </main>
+                <external>
+                    <disk>external</disk>
+                    <prefer_not_to_merge>true</prefer_not_to_merge>
+                </external>
+            </volumes>
+        </small_jbod_with_external_no_merges>
+    </policies>
+    ...
+</storage_configuration>
+```
+
+In given example, the `hdd_in_order` policy implements the round-robin approach. Thus this policy defines only one volume (`single`), the data parts are stored on all its disks in circular order. Such policy can be quite useful if there are several similar disks are mounted to the system, but RAID is not configured. Keep in mind that each individual disk drive is not reliable and you might want to compensate it with replication factor of 3 or more.
+
+If there are different kinds of disks available in the system, `moving_from_ssd_to_hdd` policy can be used instead. The volume hot consists of an SSD disk (`fast_ssd`), and the maximum size of a part that can be stored on this volume is 1GB. All the parts with the size larger than 1GB will be stored directly on the cold volume, which contains an HDD disk `disk1`.
+
+Also, once the disk `fast_ssd` gets filled by more than 80%, data will be transferred to the `disk1` by a background process.
+
+The order of volume enumeration within a storage policy is important. Once a volume is overfilled, data are moved to the next one. The order of disk enumeration is important as well because data are stored on them in turns.
+
+When creating a table, one can apply one of the configured storage policies to it:
+
+```sql
+CREATE TABLE table_with_non_default_policy (
+    EventDate Date,
+    OrderID UInt64,
+    BannerID UInt64,
+    SearchPhrase String
+) ENGINE = MergeTree
+ORDER BY (OrderID, BannerID)
+PARTITION BY toYYYYMM(EventDate)
+SETTINGS storage_policy = 'moving_from_ssd_to_hdd'
+```
+
+The `default` storage policy implies using only one volume, which consists of only one disk given in `<path>`. Once a table is created, its storage policy cannot be changed.
+
+The number of threads performing background moves of data parts can be changed by `background_move_pool_size` setting.
+
+##### Details
+
+In the case of `MergeTree` tables, data is getting to disk in different ways:
+
+As a result of an insert (`INSERT` query).
+During background merges and mutations.
+When downloading from another replica.
+As a result of partition freezing ALTER TABLE … FREEZE PARTITION.
+In all these cases except for mutations and partition freezing, a part is stored on a volume and a disk according to the given storage policy:
+
+1. The first volume (in the order of definition) that has enough disk space for storing a part (`unreserved_space > current_part_size`) and allows for storing parts of a given size (`max_data_part_size_bytes > current_part_size`) is chosen.
+2. Within this volume, that disk is chosen that follows the one, which was used for storing the previous chunk of data, and that has free space more than the part size (`unreserved_space - keep_free_space_bytes > current_part_size`).
+
+Under the hood, mutations and partition freezing make use of hard links. Hard links between different disks are not supported, therefore in such cases the resulting parts are stored on the same disks as the initial ones.
+
+In the background, parts are moved between volumes on the basis of the amount of free space (`move_factor` parameter) according to the order the volumes are declared in the configuration file.
+Data is never transferred from the last one and into the first one. One may use system tables system.part_log (field `type = MOVE_PART`) and system.parts (fields path and disk) to monitor background moves. Also, the detailed information can be found in server logs.
+
+User can force moving a part or a partition from one volume to another using the query ALTER TABLE … MOVE PART|PARTITION … TO VOLUME|DISK …, all the restrictions for background operations are taken into account. The query initiates a move on its own and does not wait for background operations to be completed. User will get an error message if not enough free space is available or if any of the required conditions are not met.
+
+Moving data does not interfere with data replication. Therefore, different storage policies can be specified for the same table on different replicas.
+
+After the completion of background merges and mutations, old parts are removed only after a certain amount of time (`old_parts_lifetime`).
+During this time, they are not moved to other volumes or disks. Therefore, until the parts are finally removed, they are still taken into account for evaluation of the occupied disk space.
+
+##### Using S3 for Data Storage
+
+MergeTree family table engines is able to store data to S3 using a disk with type s3.
+
+Configuration markup:
+
+```xml
+<storage_configuration>
+    ...
+    <disks>
+        <s3>
+            <type>s3</type>
+            <endpoint>https://storage.yandexcloud.net/my-bucket/root-path/</endpoint>
+            <access_key_id>your_access_key_id</access_key_id>
+            <secret_access_key>your_secret_access_key</secret_access_key>
+            <server_side_encryption_customer_key_base64>your_base64_encoded_customer_key</server_side_encryption_customer_key_base64>
+            <proxy>
+                <uri>http://proxy1</uri>
+                <uri>http://proxy2</uri>
+            </proxy>
+            <connect_timeout_ms>10000</connect_timeout_ms>
+            <request_timeout_ms>5000</request_timeout_ms>
+            <retry_attempts>10</retry_attempts>
+            <min_bytes_for_seek>1000</min_bytes_for_seek>
+            <metadata_path>/var/lib/clickhouse/disks/s3/</metadata_path>
+            <cache_enabled>true</cache_enabled>
+            <cache_path>/var/lib/clickhouse/disks/s3/cache/</cache_path>
+            <skip_access_check>false</skip_access_check>
+        </s3>
+    </disks>
+    ...
+</storage_configuration>
+```
+
+Required parameters:
+- `endpoint` — S3 endpoint url in path or virtual hosted styles. Endpoint url should contain bucket and root path to store data.
+- `access_key_id` — S3 access key id.
+- `secret_access_key` — S3 secret access key.
+
+Optional parameters:
+- `use_environment_credentials` — Reads AWS credentials from the Environment variables AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN if they exist. Default value is `false`.
+- `proxy` — Proxy configuration for S3 endpoint. Each uri element inside proxy block should contain a proxy URL.
+- `connect_timeout_ms` — Socket connect timeout in milliseconds. Default value is 10 seconds.
+- `request_timeout_ms` — Request timeout in milliseconds. Default value is 5 seconds.
+- `retry_attempts` — Number of retry attempts in case of failed request. Default value is 10.
+- `min_bytes_for_seek` — Minimal number of bytes to use seek operation instead of sequential read. Default value is 1 Mb.
+- `metadata_path` — Path on local FS to store metadata files for S3. Default value is `/var/lib/clickhouse/disks/<disk_name>/`.
+- `cache_enabled` — Allows to cache mark and index files on local FS. Default value is true.
+- `cache_path` — Path on local FS where to store cached mark and index files. Default value is `/var/lib/clickhouse/disks/<disk_name>/cache/`.
+- `skip_access_check` — If true, disk access checks will not be performed on disk start-up. Default value is false.
+- `server_side_encryption_customer_key_base64` — If specified, required headers for accessing S3 objects with SSE-C encryption will be set.
+
+S3 disk can be configured as main or cold storage:
+
+```xml
+<storage_configuration>
+    ...
+    <disks>
+        <s3>
+            <type>s3</type>
+            <endpoint>https://storage.yandexcloud.net/my-bucket/root-path/</endpoint>
+            <access_key_id>your_access_key_id</access_key_id>
+            <secret_access_key>your_secret_access_key</secret_access_key>
+        </s3>
+    </disks>
+    <policies>
+        <s3_main>
+            <volumes>
+                <main>
+                    <disk>s3</disk>
+                </main>
+            </volumes>
+        </s3_main>
+        <s3_cold>
+            <volumes>
+                <main>
+                    <disk>default</disk>
+                </main>
+                <external>
+                    <disk>s3</disk>
+                </external>
+            </volumes>
+            <move_factor>0.2</move_factor>
+        </s3_cold>
+    </policies>
+    ...
+</storage_configuration>
+```
+
+In case of cold option a data can be moved to S3 if local disk free size will be smaller than `move_factor * disk_size` or by TTL move rule.
+
+### Data Replication
+
+Replication is only supported for tables in the MergeTree family:
+
+- ReplicatedMergeTree
+- ReplicatedSummingMergeTree
+- ReplicatedReplacingMergeTree
+- ReplicatedAggregatingMergeTree
+- ReplicatedCollapsingMergeTree
+- ReplicatedVersionedCollapsingMergeTree
+- ReplicatedGraphiteMergeTree
+- Replication works at the level of an individual table, not the entire server. A server can store both replicated and non-replicated tables at the same time.
+
+Replication does not depend on sharding. Each shard has its own independent replication.
+
+Compressed data for INSERT and ALTER queries is replicated (for more information, see the documentation for ALTER).
+
+CREATE, DROP, ATTACH, DETACH and RENAME queries are executed on a single server and are not replicated:
+
+- The CREATE TABLE query creates a new replicatable table on the server where the query is run. If this table already exists on other servers, it adds a new replica.
+- The DROP TABLE query deletes the replica located on the server where the query is run.
+- The RENAME query renames the table on one of the replicas. In other words, replicated tables can have different names on different replicas.
+
+ClickHouse uses Apache ZooKeeper for storing replicas meta information. Use ZooKeeper version 3.4.5 or newer.
+
+To use replication, set parameters in the zookeeper server configuration section.
+
+Don’t neglect the security setting. ClickHouse supports the digest ACL scheme of the ZooKeeper security subsystem.
+
+Example of setting the addresses of the ZooKeeper cluster:
+
+```xml
+<zookeeper>
+    <node>
+        <host>example1</host>
+        <port>2181</port>
+    </node>
+    <node>
+        <host>example2</host>
+        <port>2181</port>
+    </node>
+    <node>
+        <host>example3</host>
+        <port>2181</port>
+    </node>
+</zookeeper>
+```
+
+ClickHouse also supports to store replicas meta information in the auxiliary ZooKeeper cluster by providing ZooKeeper cluster name and path as engine arguments.
+In other word, it supports to store the metadata of differnt tables in different ZooKeeper clusters.
+
+Example of setting the addresses of the auxiliary ZooKeeper cluster:
+
+```xml
+<auxiliary_zookeepers>
+    <zookeeper2>
+        <node>
+            <host>example_2_1</host>
+            <port>2181</port>
+        </node>
+        <node>
+            <host>example_2_2</host>
+            <port>2181</port>
+        </node>
+        <node>
+            <host>example_2_3</host>
+            <port>2181</port>
+        </node>
+    </zookeeper2>
+    <zookeeper3>
+        <node>
+            <host>example_3_1</host>
+            <port>2181</port>
+        </node>
+    </zookeeper3>
+</auxiliary_zookeepers>
+```
+
+To store table datameta in a auxiliary ZooKeeper cluster instead of default ZooKeeper cluster, we can use the SQL to create table with `ReplicatedMergeTree` engine as follow:
+
+```sql
+CREATE TABLE table_name ( ... ) ENGINE = ReplicatedMergeTree('zookeeper_name_configured_in_auxiliary_zookeepers:path', 'replica_name') ...
+```
+
+You can specify any existing ZooKeeper cluster and the system will use a directory on it for its own data (the directory is specified when creating a replicatable table).
+
+If ZooKeeper isn’t set in the config file, you can’t create replicated tables, and any existing replicated tables will be read-only.
+
+ZooKeeper is not used in `SELECT` queries because replication does not affect the performance of `SELECT` and queries run just as fast as they do for non-replicated tables. When querying distributed replicated tables, ClickHouse behavior is controlled by the settings `max_replica_delay_for_distributed_queries` and `fallback_to_stale_replicas_for_distributed_queries`.
+
+For each `INSERT` query, approximately ten entries are added to ZooKeeper through several transactions. (To be more precise, this is for each inserted block of data; an `INSERT` query contains one block or one block per `max_insert_block_size` = 1048576 rows.) This leads to slightly longer latencies for `INSERT` compared to non-replicated tables. But if you follow the recommendations to insert data in batches of no more than one `INSERT` per second, it doesn’t create any problems. The entire ClickHouse cluster used for coordinating one ZooKeeper cluster has a total of several hundred `INSERT`s per second. The throughput on data inserts (the number of rows per second) is just as high as for non-replicated data.
+
+For very large clusters, you can use different ZooKeeper clusters for different shards. However, this hasn’t proven necessary on the Yandex.Metrica cluster (approximately 300 servers).
+
+Replication is asynchronous and multi-master. `INSERT` queries (as well as ALTER) can be sent to any available server. Data is inserted on the server where the query is run, and then it is copied to the other servers. Because it is asynchronous, recently inserted data appears on the other replicas with some latency. If part of the replicas are not available, the data is written when they become available. If a replica is available, the latency is the amount of time it takes to transfer the block of compressed data over the network. The number of threads performing background tasks for replicated tables can be set by `background_schedule_pool_size` setting.
+
+By default, an `INSERT` query waits for confirmation of writing the data from only one replica. If the data was successfully written to only one replica and the server with this replica ceases to exist, the stored data will be lost. To enable getting confirmation of data writes from multiple replicas, use the `insert_quorum` option.
+
+Each block of data is written atomically. The `INSERT` query is divided into blocks up to `max_insert_block_size = 1048576` rows. In other words, if the `INSERT` query has less than 1048576 rows, it is made atomically.
+
+Data blocks are deduplicated. For multiple writes of the same data block (data blocks of the same size containing the same rows in the same order), the block is only written once. The reason for this is in case of network failures when the client application doesn’t know if the data was written to the DB, so the INSERT query can simply be repeated. It doesn’t matter which replica INSERTs were sent to with identical data. INSERTs are idempotent. Deduplication parameters are controlled by merge_tree server settings.
+
+During replication, only the source data to insert is transferred over the network. Further data transformation (merging) is coordinated and performed on all the replicas in the same way. This minimizes network usage, which means that replication works well when replicas reside in different datacenters. (Note that duplicating data in different datacenters is the main goal of replication.)
+
+You can have any number of replicas of the same data. Yandex.Metrica uses double replication in production. Each server uses RAID-5 or RAID-6, and RAID-10 in some cases. This is a relatively reliable and convenient solution.
+
+The system monitors data synchronicity on replicas and is able to recover after a failure. Failover is automatic (for small differences in data) or semi-automatic (when data differs too much, which may indicate a configuration error).
+
+#### Creating Replicated Tables
+
+The Replicated prefix is added to the table engine name. For example:ReplicatedMergeTree.
+
+**Replicated*MergeTree parameters**
+
+- `zoo_path` — The path to the table in ZooKeeper.
+- `replica_name` — The replica name in ZooKeeper.
+- `other_parameters` — Parameters of an engine which is used for creating the replicated version, for example, version in ReplacingMergeTree.
+
+**Example**:
+
+```sql
+CREATE TABLE table_name
+(
+    EventDate DateTime,
+    CounterID UInt32,
+    UserID UInt32,
+    ver UInt16
+) ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/{layer}-{shard}/table_name', '{replica}', ver)
+PARTITION BY toYYYYMM(EventDate)
+ORDER BY (CounterID, EventDate, intHash32(UserID))
+SAMPLE BY intHash32(UserID)
+```
+
+As the example shows, these parameters can contain substitutions in curly brackets. The substituted values are taken from the «macros section of the configuration file.
+
+**Example**:
+
+```xml
+<macros>
+    <layer>05</layer>
+    <shard>02</shard>
+    <replica>example05-02-1.yandex.ru</replica>
+</macros>
+```
+
+The path to the table in ZooKeeper should be unique for each replicated table. Tables on different shards should have different paths.
+In this case, the path consists of the following parts:
+
+/clickhouse/tables/ is the common prefix. We recommend using exactly this one.
+
+{layer}-{shard} is the shard identifier. In this example it consists of two parts, since the Yandex.Metrica cluster uses bi-level sharding. For most tasks, you can leave just the {shard} substitution, which will be expanded to the shard identifier.
+
+table_name is the name of the node for the table in ZooKeeper. It is a good idea to make it the same as the table name. It is defined explicitly, because in contrast to the table name, it doesn’t change after a RENAME query.
+HINT: you could add a database name in front of table_name as well. E.g. db_name.table_name
+
+The two built-in substitutions {database} and {table} can be used, they expand into the table name and the database name respectively (unless these macros are defined in the macros section). So the zookeeper path can be specified as '/clickhouse/tables/{layer}-{shard}/{database}/{table}'.
+Be careful with table renames when using these built-in substitutions. The path in Zookeeper cannot be changed, and when the table is renamed, the macros will expand into a different path, the table will refer to a path that does not exist in Zookeeper, and will go into read-only mode.
+
+The replica name identifies different replicas of the same table. You can use the server name for this, as in the example. The name only needs to be unique within each shard.
+
+You can define the parameters explicitly instead of using substitutions. This might be convenient for testing and for configuring small clusters. However, you can’t use distributed DDL queries (ON CLUSTER) in this case.
+
+When working with large clusters, we recommend using substitutions because they reduce the probability of error.
+
+You can specify default arguments for Replicated table engine in the server configuration file. For instance:
+
+```xml
+<default_replica_path>/clickhouse/tables/{shard}/{database}/{table}</default_replica_path>
+<default_replica_name>{replica}</default_replica_name>
+```
+
+In this case, you can omit arguments when creating tables:
+
+```sql
+CREATE TABLE table_name (
+    x UInt32
+) ENGINE = ReplicatedMergeTree 
+ORDER BY x;
+```
+
+It is equivalent to:
+
+```sql
+CREATE TABLE table_name (
+    x UInt32
+) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/{database}/table_name', '{replica}') 
+ORDER BY x;
+```
+
+Run the CREATE TABLE query on each replica. This query creates a new replicated table, or adds a new replica to an existing one.
+
+If you add a new replica after the table already contains some data on other replicas, the data will be copied from the other replicas to the new one after running the query. In other words, the new replica syncs itself with the others.
+
+To delete a replica, run DROP TABLE. However, only one replica is deleted – the one that resides on the server where you run the query.
+
+#### Recovery After Failures
+
+If ZooKeeper is unavailable when a server starts, replicated tables switch to read-only mode. The system periodically attempts to connect to ZooKeeper.
+
+If ZooKeeper is unavailable during an INSERT, or an error occurs when interacting with ZooKeeper, an exception is thrown.
+
+After connecting to ZooKeeper, the system checks whether the set of data in the local file system matches the expected set of data (ZooKeeper stores this information). If there are minor inconsistencies, the system resolves them by syncing data with the replicas.
+
+If the system detects broken data parts (with the wrong size of files) or unrecognized parts (parts written to the file system but not recorded in ZooKeeper), it moves them to the detached subdirectory (they are not deleted). Any missing parts are copied from the replicas.
+
+Note that ClickHouse does not perform any destructive actions such as automatically deleting a large amount of data.
+
+When the server starts (or establishes a new session with ZooKeeper), it only checks the quantity and sizes of all files. If the file sizes match but bytes have been changed somewhere in the middle, this is not detected immediately, but only when attempting to read the data for a SELECT query. The query throws an exception about a non-matching checksum or size of a compressed block. In this case, data parts are added to the verification queue and copied from the replicas if necessary.
+
+If the local set of data differs too much from the expected one, a safety mechanism is triggered. The server enters this in the log and refuses to launch. The reason for this is that this case may indicate a configuration error, such as if a replica on a shard was accidentally configured like a replica on a different shard. However, the thresholds for this mechanism are set fairly low, and this situation might occur during normal failure recovery. In this case, data is restored semi-automatically - by “pushing a button”.
+
+To start recovery, create the node /path_to_table/replica_name/flags/force_restore_data in ZooKeeper with any content, or run the command to restore all replicated tables:
+
+```shell
+sudo -u clickhouse touch /var/lib/clickhouse/flags/force_restore_data
+```
+
+Then restart the server. On start, the server deletes these flags and starts recovery.
+
+#### Recovery After Complete Data Loss
+
+If all data and metadata disappeared from one of the servers, follow these steps for recovery:
+
+1. Install ClickHouse on the server. Define substitutions correctly in the config file that contains the shard identifier and replicas, if you use them.
+2. If you had unreplicated tables that must be manually duplicated on the servers, copy their data from a replica (in the directory `/var/lib/clickhouse/data/db_name/table_name/`).
+3. Copy table definitions located in `/var/lib/clickhouse/metadata/` from a replica. If a shard or replica identifier is defined explicitly in the table definitions, correct it so that it corresponds to this replica. (Alternatively, start the server and make all the `ATTACH TABLE` queries that should have been in the .sql files in `/var/lib/clickhouse/metadata/`.)
+4. To start recovery, create the ZooKeeper node `/path_to_table/replica_name/flags/force_restore_data` with any content, or run the command to restore all replicated tables: `sudo -u clickhouse touch /var/lib/clickhouse/flags/force_restore_data`
+Then start the server (restart, if it is already running). Data will be downloaded from replicas.
+
+An alternative recovery option is to delete information about the lost replica from ZooKeeper (`/path_to_table/replica_name`), then create the replica again as described in “Creating replicated tables”.
+
+There is no restriction on network bandwidth during recovery. Keep this in mind if you are restoring many replicas at once.
+
+#### Converting from MergeTree to ReplicatedMergeTree
+
+We use the term MergeTree to refer to all table engines in the MergeTree family, the same as for `ReplicatedMergeTree`.
+
+If you had a `MergeTree` table that was manually replicated, you can convert it to a replicated table. You might need to do this if you have already collected a large amount of data in a `MergeTree` table and now you want to enable replication.
+
+If the data differs on various replicas, first sync it, or delete this data on all the replicas except one.
+
+1. Rename the existing `MergeTree` table, then create a `ReplicatedMergeTree` table with the old name.
+2. Move the data from the old table to the detached subdirectory inside the directory with the new table data (`/var/lib/clickhouse/data/db_name/table_name/`).
+3. Then run `ALTER TABLE ATTACH PARTITION` on one of the replicas to add these data parts to the working set.
+
+#### Converting from ReplicatedMergeTree to MergeTree 
+
+Create a MergeTree table with a different name. Move all the data from the directory with the `ReplicatedMergeTree` table data to the new table’s data directory. Then delete the `ReplicatedMergeTree` table and restart the server.
+
+If you want to get rid of a `ReplicatedMergeTree` table without launching the server:
+
+- Delete the corresponding .sql file in the metadata directory (`/var/lib/clickhouse/metadata/`).
+- Delete the corresponding path in ZooKeeper (`/path_to_table/replica_name`).
+
+After this, you can launch the server, create a `MergeTree` table, move the data to its directory, and then restart the server.
+
+#### Recovery When Metadata in the Zookeeper Cluster Is Lost or Damaged 
+
+If the data in ZooKeeper was lost or damaged, you can save data by moving it to an unreplicated table as described above.
+
+### Custom Partitioning Key
+
+Partitioning is available for the MergeTree family tables (including replicated tables). Materialized views based on MergeTree tables support partitioning, as well.
+
+A partition is a logical combination of records in a table by a specified criterion. You can set a partition by an arbitrary criterion, such as by month, by day, or by event type. Each partition is stored separately to simplify manipulations of this data. When accessing the data, ClickHouse uses the smallest subset of partitions possible.
+
+The partition is specified in the PARTITION BY expr clause when creating a table. The partition key can be any expression from the table columns. For example, to specify partitioning by month, use the expression `toYYYYMM(date_column)`:
+
+```sql
+CREATE TABLE visits
+(
+    VisitDate Date,
+    Hour UInt8,
+    ClientID UUID
+)
+ENGINE = MergeTree()
+PARTITION BY toYYYYMM(VisitDate)
+ORDER BY Hour;
+```
+
+The partition key can also be a tuple of expressions (similar to the primary key). For example:
+
+```sql
+ENGINE = ReplicatedCollapsingMergeTree('/clickhouse/tables/name', 'replica1', Sign)
+PARTITION BY (toMonday(StartDate), EventType)
+ORDER BY (CounterID, StartDate, intHash32(UserID));
+```
+
+In this example, we set partitioning by the event types that occurred during the current week.
+
+When inserting new data to a table, this data is stored as a separate part (chunk) sorted by the primary key. In 10-15 minutes after inserting, the parts of the same partition are merged into the entire part.
+
+A merge only works for data parts that have the same value for the partitioning expression. This means you shouldn’t make overly granular partitions (more than about a thousand partitions). Otherwise, the `SELECT` query performs poorly because of an unreasonably large number of files in the file system and open file descriptors.
+
+Use the system.parts table to view the table parts and partitions. For example, let’s assume that we have a visits table with partitioning by month. Let’s perform the SELECT query for the system.parts table:
+
+```sql
+SELECT
+    partition,
+    name,
+    active
+FROM system.parts
+WHERE table = 'visits'
+
+┌─partition─┬─name───────────┬─active─┐
+│ 201901    │ 201901_1_3_1   │      0 │
+│ 201901    │ 201901_1_9_2   │      1 │
+│ 201901    │ 201901_8_8_0   │      0 │
+│ 201901    │ 201901_9_9_0   │      0 │
+│ 201902    │ 201902_4_6_1   │      1 │
+│ 201902    │ 201902_10_10_0 │      1 │
+│ 201902    │ 201902_11_11_0 │      1 │
+└───────────┴────────────────┴────────┘
+```
+
+The `partition` column contains the names of the partitions. There are two partitions in this example: `201901` and `201902`. You can use this column value to specify the partition name in `ALTER` … `PARTITION` queries.
+
+The name column contains the names of the partition data parts. You can use this column to specify the name of the part in the `ALTER ATTACH PART` query.
+
+Let’s break down the name of the first part: 201901_1_3_1:
+
+- 201901 is the partition name.
+- 1 is the minimum number of the data block.
+- 3 is the maximum number of the data block.
+- 1 is the chunk level (the depth of the merge tree it is formed from).
+
+The parts of old-type tables have the name: `20190117_20190123_2_2_0` (minimum date - maximum date - minimum block number - maximum block number - level).
+
+The `active` column shows the status of the part. 1 is active; 0 is inactive. The inactive parts are, for example, source parts remaining after merging to a larger part. The corrupted data parts are also indicated as inactive.
+
+As you can see in the example, there are several separated parts of the same partition (for example, `201901_1_3_1` and `201901_1_9_2`). This means that these parts are not merged yet. ClickHouse merges the inserted parts of data periodically, approximately 15 minutes after inserting. In addition, you can perform a non-scheduled merge using the `OPTIMIZE` query. Example:
+
+```sql
+OPTIMIZE TABLE visits PARTITION 201902;
+
+￼┌─partition─┬─name───────────┬─active─┐
+│ 201901    │ 201901_1_3_1   │      0 │
+│ 201901    │ 201901_1_9_2   │      1 │
+│ 201901    │ 201901_8_8_0   │      0 │
+│ 201901    │ 201901_9_9_0   │      0 │
+│ 201902    │ 201902_4_6_1   │      0 │
+│ 201902    │ 201902_4_11_2  │      1 │
+│ 201902    │ 201902_10_10_0 │      0 │
+│ 201902    │ 201902_11_11_0 │      0 │
+└───────────┴────────────────┴────────┘
+```
+
+Inactive parts will be deleted approximately 10 minutes after merging.
+
+Another way to view a set of parts and partitions is to go into the directory of the table: `/var/lib/clickhouse/data/<database>/<table>/`. For example:
+
+```shell
+/var/lib/clickhouse/data/default/visits$ ls -l
+total 40
+drwxr-xr-x 2 clickhouse clickhouse 4096 Feb  1 16:48 201901_1_3_1
+drwxr-xr-x 2 clickhouse clickhouse 4096 Feb  5 16:17 201901_1_9_2
+drwxr-xr-x 2 clickhouse clickhouse 4096 Feb  5 15:52 201901_8_8_0
+drwxr-xr-x 2 clickhouse clickhouse 4096 Feb  5 15:52 201901_9_9_0
+drwxr-xr-x 2 clickhouse clickhouse 4096 Feb  5 16:17 201902_10_10_0
+drwxr-xr-x 2 clickhouse clickhouse 4096 Feb  5 16:17 201902_11_11_0
+drwxr-xr-x 2 clickhouse clickhouse 4096 Feb  5 16:19 201902_4_11_2
+drwxr-xr-x 2 clickhouse clickhouse 4096 Feb  5 12:09 201902_4_6_1
+drwxr-xr-x 2 clickhouse clickhouse 4096 Feb  1 16:48 detached
+```
+
+The folders ‘201901_1_1_0’, ‘201901_1_7_1’ and so on are the directories of the parts. Each part relates to a corresponding partition and contains data just for a certain month (the table in this example has partitioning by month).
+
+The detached directory contains parts that were detached from the table using the DETACH query. The corrupted parts are also moved to this directory, instead of being deleted. The server does not use the parts from the detached directory. You can add, delete, or modify the data in this directory at any time – the server will not know about this until you run the ATTACH query.
+
+Note that on the operating server, you cannot manually change the set of parts or their data on the file system, since the server will not know about it. For non-replicated tables, you can do this when the server is stopped, but it isn’t recommended. For replicated tables, the set of parts cannot be changed in any case.
+
+ClickHouse allows you to perform operations with the partitions: delete them, copy from one table to another, or create a backup. See the list of all operations in the section Manipulations With Partitions and Parts.
+
+### ReplacingMergeTree
+
+The engine differs from MergeTree in that it removes duplicate entries with the same sorting key value (ORDER BY table section, not PRIMARY KEY).
+
+Data deduplication occurs only during a merge. Merging occurs in the background at an unknown time, so you can’t plan for it. Some of the data may remain unprocessed. Although you can run an unscheduled merge using the OPTIMIZE query, don’t count on using it, because the OPTIMIZE query will read and write a large amount of data.
+
+Thus, ReplacingMergeTree is suitable for clearing out duplicate data in the background in order to save space, but it doesn’t guarantee the absence of duplicates.
+
+#### Creating a Table
+
+```sql
+CREATE TABLE [IF NOT EXISTS] [db.]table_name [ON CLUSTER cluster]
+(
+    name1 [type1] [DEFAULT|MATERIALIZED|ALIAS expr1],
+    name2 [type2] [DEFAULT|MATERIALIZED|ALIAS expr2],
+    ...
+) ENGINE = ReplacingMergeTree([ver])
+[PARTITION BY expr]
+[ORDER BY expr]
+[PRIMARY KEY expr]
+[SAMPLE BY expr]
+[SETTINGS name=value, ...]
+```
+For a description of request parameters, see statement description.
+
+Uniqueness of rows is determined by the ORDER BY table section, not PRIMARY KEY.
+
+**ReplacingMergeTree Parameters**
+
+- `ver` — column with version. `Type UInt*`, `Date` or `DateTime`. Optional parameter.
+  
+  When merging, `ReplacingMergeTree` from all the rows with the same sorting key leaves only one:
+
+  - The last in the selection, if ver not set. A selection is a set of rows in a set of parts participating in the merge. The most recently created part (the last insert) will be the last one in the selection. Thus, after deduplication, the very last row from the most recent insert will remain for each unique sorting key.
+  - With the maximum version, if ver specified.
+
+**Query clauses**
+
+When creating a `ReplacingMergeTree` table the same clauses are required, as when creating a `MergeTree` table.
+
+### SummingMergeTree
+
+The engine inherits from MergeTree. The difference is that when merging data parts for `SummingMergeTree` tables ClickHouse replaces all the rows with the same primary key (or more accurately, with the same sorting key) with one row which contains summarized values for the columns with the numeric data type. If the sorting key is composed in a way that a single key value corresponds to large number of rows, this significantly reduces storage volume and speeds up data selection.
+
+We recommend to use the engine together with MergeTree. Store complete data in MergeTree table, and use `SummingMergeTree` for aggregated data storing, for example, when preparing reports. Such an approach will prevent you from losing valuable data due to an incorrectly composed primary key.
+
+#### Creating a Table
+
+```sql
+CREATE TABLE [IF NOT EXISTS] [db.]table_name [ON CLUSTER cluster]
+(
+    name1 [type1] [DEFAULT|MATERIALIZED|ALIAS expr1],
+    name2 [type2] [DEFAULT|MATERIALIZED|ALIAS expr2],
+    ...
+) ENGINE = SummingMergeTree([columns])
+[PARTITION BY expr]
+[ORDER BY expr]
+[SAMPLE BY expr]
+[SETTINGS name=value, ...]
+```
+
+For a description of request parameters, see request description.
+
+**Parameters of SummingMergeTree**
+
+- `columns` - a tuple with the names of columns where values will be summarized. Optional parameter.
+  The columns must be of a numeric type and must not be in the primary key.
+
+  If columns not specified, ClickHouse summarizes the values in all columns with a numeric data type that are not in the primary key.
+
+**Query clauses**
+
+When creating a SummingMergeTree table the same clauses are required, as when creating a MergeTree table.
+
+#### Usage Example 
+
+Consider the following table:
+
+```sql
+CREATE TABLE summtt
+(
+    key UInt32,
+    value UInt32
+)
+ENGINE = SummingMergeTree()
+ORDER BY key
+```
+
+Insert data to it:
+
+```sql
+INSERT INTO summtt Values(1,1),(1,2),(2,1)
+```
+
+ClickHouse may sum all the rows not completely (see below), so we use an aggregate function sum and GROUP BY clause in the query.
+
+￼SELECT key, sum(value) FROM summtt GROUP BY key
+￼┌─key─┬─sum(value)─┐
+│   2 │          1 │
+│   1 │          3 │
+└─────┴────────────┘
+
+#### Data Processing 
+
+When data are inserted into a table, they are saved as-is. ClickHouse merges the inserted parts of data periodically and this is when rows with the same primary key are summed and replaced with one for each resulting part of data.
+
+ClickHouse can merge the data parts so that different resulting parts of data cat consist rows with the same primary key, i.e. the summation will be incomplete. Therefore (SELECT) an aggregate function sum() and GROUP BY clause should be used in a query as described in the example above.
+
+##### Common Rules for Summation
+
+The values in the columns with the numeric data type are summarized. The set of columns is defined by the parameter `columns`.
+
+If the values were 0 in all of the columns for summation, the row is deleted.
+
+If column is not in the primary key and is not summarized, an arbitrary value is selected from the existing ones.
+
+The values are not summarized for columns in the primary key.
+
+##### The Summation in the Aggregatefunction Columns 
+
+For columns of AggregateFunction type ClickHouse behaves as AggregatingMergeTree engine aggregating according to the function.
+
+##### Nested Structures 
+Table can have nested data structures that are processed in a special way.
+
+If the name of a nested table ends with Map and it contains at least two columns that meet the following criteria:
+
+- the first column is numeric `(*Int*, Date, DateTime)` or a string `(String, FixedString)`, let’s call it key,
+- the other columns are arithmetic `(*Int*, Float32/64)`, let’s call it `(values...)`,
+
+then this nested table is interpreted as a mapping of `key => (values...)`, and when merging its rows, the elements of two data sets are merged by key with a summation of the corresponding `(values...)`.
+
+Examples:
+
+```
+[(1, 100)] + [(2, 150)] -> [(1, 100), (2, 150)]
+[(1, 100)] + [(1, 150)] -> [(1, 250)]
+[(1, 100)] + [(1, 150), (2, 150)] -> [(1, 250), (2, 150)]
+[(1, 100), (2, 150)] + [(1, -100)] -> [(2, 150)]
+```
+
+When requesting data, use the sumMap(key, value) function for aggregation of `Map`.
+
+For nested data structure, you do not need to specify its columns in the tuple of columns for summation.
+
+### Aggregatingmergetree
+
+The engine inherits from MergeTree, altering the logic for data parts merging. ClickHouse replaces all rows with the same primary key (or more accurately, with the same sorting key) with a single row (within a one data part) that stores a combination of states of aggregate functions.
+
+You can use `AggregatingMergeTree` tables for incremental data aggregation, including for aggregated materialized views.
+
+The engine processes all columns with the following types:
+
+- AggregateFunction
+- SimpleAggregateFunction
+
+It is appropriate to use `AggregatingMergeTree` if it reduces the number of rows by orders.
+
+#### Creating a Table 
+
+```sql
+CREATE TABLE [IF NOT EXISTS] [db.]table_name [ON CLUSTER cluster]
+(
+    name1 [type1] [DEFAULT|MATERIALIZED|ALIAS expr1],
+    name2 [type2] [DEFAULT|MATERIALIZED|ALIAS expr2],
+    ...
+) ENGINE = AggregatingMergeTree()
+[PARTITION BY expr]
+[ORDER BY expr]
+[SAMPLE BY expr]
+[TTL expr]
+[SETTINGS name=value, ...]
+```
+
+For a description of request parameters, see request description.
+
+**Query clauses**
+
+When creating a AggregatingMergeTree table the same clauses are required, as when creating a MergeTree table.
+
+#### SELECT and INSERT 
+
+To insert data, use INSERT SELECT query with aggregate -State- functions.
+When selecting data from `AggregatingMergeTree` table, use `GROUP BY` clause and the same aggregate functions as when inserting data, but using `-Merge` suffix.
+
+In the results of `SELECT` query, the values of `AggregateFunction` type have implementation-specific binary representation for all of the ClickHouse output formats. If dump data into, for example, TabSeparated format with `SELECT` query then this dump can be loaded back using `INSERT` query.
+
+#### Example of an Aggregated Materialized View 
+
+`AggregatingMergeTree` materialized view that watches the test.visits table:
+
+```sql
+CREATE MATERIALIZED VIEW test.basic
+ENGINE = AggregatingMergeTree() PARTITION BY toYYYYMM(StartDate) ORDER BY (CounterID, StartDate)
+AS SELECT
+    CounterID,
+    StartDate,
+    sumState(Sign)    AS Visits,
+    uniqState(UserID) AS Users
+FROM test.visits
+GROUP BY CounterID, StartDate;
+```
+
+Inserting data into the test.visits table.
+
+```sql
+INSERT INTO test.visits ...
+```
+
+The data are inserted in both the table and view test.basic that will perform the aggregation.
+
+To get the aggregated data, we need to execute a query such as `SELECT ... GROUP BY ...` from the view test.basic:
+
+```sql
+SELECT
+    StartDate,
+    sumMerge(Visits) AS Visits,
+    uniqMerge(Users) AS Users
+FROM test.basic
+GROUP BY StartDate
+ORDER BY StartDate;
+```
+
+### CollapsingMergeTree
+
+The engine inherits from MergeTree and adds the logic of rows collapsing to data parts merge algorithm.
+
+CollapsingMergeTree asynchronously deletes (collapses) pairs of rows if all of the fields in a sorting key (ORDER BY) are equivalent excepting the particular field Sign which can have 1 and -1 values. Rows without a pair are kept. For more details see the Collapsing section of the document.
+
+The engine may significantly reduce the volume of storage and increase the efficiency of SELECT query as a consequence.
+
+#### Creating a Table
+
+```sql
+CREATE TABLE [IF NOT EXISTS] [db.]table_name [ON CLUSTER cluster]
+(
+    name1 [type1] [DEFAULT|MATERIALIZED|ALIAS expr1],
+    name2 [type2] [DEFAULT|MATERIALIZED|ALIAS expr2],
+    ...
+) ENGINE = CollapsingMergeTree(sign)
+[PARTITION BY expr]
+[ORDER BY expr]
+[SAMPLE BY expr]
+[SETTINGS name=value, ...]
+```
+
+For a description of query parameters, see query description.
+
+**CollapsingMergeTree Parameters**
+
+- sign — Name of the column with the type of row: 1 is a “state” row, -1 is a “cancel” row.
+  
+  Column data type — Int8.
+
+**Query clauses**
+
+When creating a CollapsingMergeTree table, the same query clauses are required, as when creating a MergeTree table.
+
+#### Collapsing
+
+##### Data
+
+Consider the situation where you need to save continually changing data for some object. It sounds logical to have one row for an object and update it at any change, but update operation is expensive and slow for DBMS because it requires rewriting of the data in the storage. If you need to write data quickly, update not acceptable, but you can write the changes of an object sequentially as follows.
+
+Use the particular column Sign. If Sign = 1 it means that the row is a state of an object, let’s call it “state” row. If Sign = -1 it means the cancellation of the state of an object with the same attributes, let’s call it “cancel” row.
+
+For example, we want to calculate how much pages users checked at some site and how long they were there. At some moment we write the following row with the state of user activity:
+
+```
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         5 │      146 │    1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+```
+
+At some moment later we register the change of user activity and write it with the following two rows.
+
+```
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         5 │      146 │   -1 │
+│ 4324182021466249494 │         6 │      185 │    1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+```
+
+The first row cancels the previous state of the object (user). It should copy the sorting key fields of the cancelled state excepting Sign.
+
+The second row contains the current state.
+
+As we need only the last state of user activity, the rows
+
+```
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         5 │      146 │    1 │
+│ 4324182021466249494 │         5 │      146 │   -1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+```
+
+can be deleted collapsing the invalid (old) state of an object. CollapsingMergeTree does this while merging of the data parts.
+
+Why we need 2 rows for each change read in the Algorithm paragraph.
+
+**Peculiar properties of such approach**
+
+1. The program that writes the data should remember the state of an object to be able to cancel it. “Cancel” string should contain copies of the sorting key fields of the “state” string and the opposite Sign. It increases the initial size of storage but allows to write the data quickly.
+2. Long growing arrays in columns reduce the efficiency of the engine due to load for writing. The more straightforward data, the higher the efficiency.
+3. The SELECT results depend strongly on the consistency of object changes history. Be accurate when preparing data for inserting. You can get unpredictable results in inconsistent data, for example, negative values for non-negative metrics such as session depth.
+
+##### Algorithm
+
+When ClickHouse merges data parts, each group of consecutive rows with the same sorting key (ORDER BY) is reduced to not more than two rows, one with Sign = 1 (“state” row) and another with Sign = -1 (“cancel” row). In other words, entries collapse.
+
+For each resulting data part ClickHouse saves:
+
+1. The first “cancel” and the last “state” rows, if the number of “state” and “cancel” rows matches and the last row is a “state” row.
+2. The last “state” row, if there are more “state” rows than “cancel” rows.
+3. The first “cancel” row, if there are more “cancel” rows than “state” rows.
+4. None of the rows, in all other cases.
+
+Also when there are at least 2 more “state” rows than “cancel” rows, or at least 2 more “cancel” rows then “state” rows, the merge continues, but ClickHouse treats this situation as a logical error and records it in the server log. This error can occur if the same data were inserted more than once.
+
+Thus, collapsing should not change the results of calculating statistics.
+Changes gradually collapsed so that in the end only the last state of almost every object left.
+
+The `Sign` is required because the merging algorithm doesn’t guarantee that all of the rows with the same sorting key will be in the same resulting data part and even on the same physical server. ClickHouse process `SELECT` queries with multiple threads, and it can not predict the order of rows in the result. The aggregation is required if there is a need to get completely “collapsed” data from `CollapsingMergeTree` table.
+
+To finalize collapsing, write a query with `GROUP BY` clause and aggregate functions that account for the sign. For example, to calculate quantity, use `sum(Sign)` instead of `count()`. To calculate the sum of something, use `sum(Sign * x)` instead of `sum(x)`, and so on, and also add `HAVING sum(Sign) > 0`.
+
+The aggregates `count`, `sum` and `avg` could be calculated this way. The aggregate uniq could be calculated if an object has at least one state not collapsed. The aggregates min and max could not be calculated because CollapsingMergeTree does not save the values history of the collapsed states.
+
+If you need to extract data without aggregation (for example, to check whether rows are present whose newest values match certain conditions), you can use the `FINAL` modifier for the FROM clause. This approach is significantly less efficient.
+
+#### Example of Use
+
+Example data:
+
+```
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         5 │      146 │    1 │
+│ 4324182021466249494 │         5 │      146 │   -1 │
+│ 4324182021466249494 │         6 │      185 │    1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+```
+
+Creation of the table:
+
+```sql
+CREATE TABLE UAct
+(
+    UserID UInt64,
+    PageViews UInt8,
+    Duration UInt8,
+    Sign Int8
+)
+ENGINE = CollapsingMergeTree(Sign)
+ORDER BY UserID
+Insertion of the data:
+
+￼INSERT INTO UAct VALUES (4324182021466249494, 5, 146, 1)
+￼INSERT INTO UAct VALUES (4324182021466249494, 5, 146, -1),(4324182021466249494, 6, 185, 1)
+```
+
+We use two INSERT queries to create two different data parts. If we insert the data with one query ClickHouse creates one data part and will not perform any merge ever.
+
+Getting the data:
+
+```sql
+SELECT * FROM UAct
+￼┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         5 │      146 │   -1 │
+│ 4324182021466249494 │         6 │      185 │    1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         5 │      146 │    1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+```
+
+What do we see and where is collapsing?
+
+With two `INSERT` queries, we created 2 data parts. The `SELECT` query was performed in 2 threads, and we got a random order of rows. Collapsing not occurred because there was no merge of the data parts yet. ClickHouse merges data part in an unknown moment which we can not predict.
+
+Thus we need aggregation:
+
+```sql
+SELECT
+    UserID,
+    sum(PageViews * Sign) AS PageViews,
+    sum(Duration * Sign) AS Duration
+FROM UAct
+GROUP BY UserID
+HAVING sum(Sign) > 0
+
+┌──────────────UserID─┬─PageViews─┬─Duration─┐
+│ 4324182021466249494 │         6 │      185 │
+└─────────────────────┴───────────┴──────────┘
+```
+
+If we do not need aggregation and want to force collapsing, we can use FINAL modifier for FROM clause.
+
+```sql
+SELECT * FROM UAct FINAL
+
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         6 │      185 │    1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+```
+
+This way of selecting the data is very inefficient. Don’t use it for big tables.
+
+#### Example of Another Approach
+
+Example data:
+
+```
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         5 │      146 │    1 │
+│ 4324182021466249494 │        -5 │     -146 │   -1 │
+│ 4324182021466249494 │         6 │      185 │    1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+```
+
+The idea is that merges take into account only key fields. And in the “Cancel” line we can specify negative values that equalize the previous version of the row when summing without using the Sign column. For this approach, it is necessary to change the data type PageViews,Duration to store negative values of UInt8 -> Int16.
+
+```sql
+CREATE TABLE UAct
+(
+    UserID UInt64,
+    PageViews Int16,
+    Duration Int16,
+    Sign Int8
+)
+ENGINE = CollapsingMergeTree(Sign)
+ORDER BY UserID
+```
+
+Let’s test the approach:
+
+```sql
+insert into UAct values(4324182021466249494,  5,  146,  1);
+insert into UAct values(4324182021466249494, -5, -146, -1);
+insert into UAct values(4324182021466249494,  6,  185,  1);
+
+select * from UAct final; // avoid using final in production (just for a test or small tables)
+
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         6 │      185 │    1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+
+SELECT
+    UserID,
+    sum(PageViews) AS PageViews,
+    sum(Duration) AS Duration
+FROM UAct
+GROUP BY UserID
+┌──────────────UserID─┬─PageViews─┬─Duration─┐
+│ 4324182021466249494 │         6 │      185 │
+└─────────────────────┴───────────┴──────────┘
+
+select count() FROM UAct
+┌─count()─┐
+│       3 │
+└─────────┘
+optimize table UAct final;
+
+select * FROM UAct
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┐
+│ 4324182021466249494 │         6 │      185 │    1 │
+└─────────────────────┴───────────┴──────────┴──────┘
+```
+
+### VersionedCollapsingMergeTree
+
+This engine:
+
+- Allows quick writing of object states that are continually changing.
+- Deletes old object states in the background. This significantly reduces the volume of storage.
+
+See the section Collapsing for details.
+
+The engine inherits from MergeTree and adds the logic for collapsing rows to the algorithm for merging data parts. VersionedCollapsingMergeTree serves the same purpose as CollapsingMergeTree but uses a different collapsing algorithm that allows inserting the data in any order with multiple threads. In particular, the Version column helps to collapse the rows properly even if they are inserted in the wrong order. In contrast, CollapsingMergeTree allows only strictly consecutive insertion.
+
+#### Creating a Table
+
+```sql
+CREATE TABLE [IF NOT EXISTS] [db.]table_name [ON CLUSTER cluster]
+(
+    name1 [type1] [DEFAULT|MATERIALIZED|ALIAS expr1],
+    name2 [type2] [DEFAULT|MATERIALIZED|ALIAS expr2],
+    ...
+) ENGINE = VersionedCollapsingMergeTree(sign, version)
+[PARTITION BY expr]
+[ORDER BY expr]
+[SAMPLE BY expr]
+[SETTINGS name=value, ...]
+```
+
+For a description of query parameters, see the query description.
+
+**Engine Parameters**
+
+```sql
+VersionedCollapsingMergeTree(sign, version)
+```
+
+- `sign` — Name of the column with the type of row: 1 is a “state” row, -1 is a “cancel” row.
+
+  The column data type should be Int8.
+
+- `version` — Name of the column with the version of the object state.
+
+  The column data type should be UInt*.
+
+**Query Clauses**
+
+When creating a `VersionedCollapsingMergeTree` table, the same clauses are required as when creating a MergeTree table.
+
+#### Collapsing 
+
+##### Data 
+
+Consider a situation where you need to save continually changing data for some object. It is reasonable to have one row for an object and update the row whenever there are changes. However, the update operation is expensive and slow for a DBMS because it requires rewriting the data in the storage. Update is not acceptable if you need to write data quickly, but you can write the changes to an object sequentially as follows.
+
+Use the Sign column when writing the row. If `Sign = 1` it means that the row is a state of an object (let’s call it the “state” row). If `Sign = -1` it indicates the cancellation of the state of an object with the same attributes (let’s call it the “cancel” row). Also use the Version column, which should identify each state of an object with a separate number.
+
+For example, we want to calculate how many pages users visited on some site and how long they were there. At some point in time we write the following row with the state of user activity:
+
+```
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┬─Version─┐
+│ 4324182021466249494 │         5 │      146 │    1 │       1 |
+└─────────────────────┴───────────┴──────────┴──────┴─────────┘
+```
+
+At some point later we register the change of user activity and write it with the following two rows.
+
+```
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┬─Version─┐
+│ 4324182021466249494 │         5 │      146 │   -1 │       1 |
+│ 4324182021466249494 │         6 │      185 │    1 │       2 |
+└─────────────────────┴───────────┴──────────┴──────┴─────────┘
+```
+
+The first row cancels the previous state of the object (user). It should copy all of the fields of the canceled state except Sign.
+
+The second row contains the current state.
+
+Because we need only the last state of user activity, the rows
+
+```
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┬─Version─┐
+│ 4324182021466249494 │         5 │      146 │    1 │       1 |
+│ 4324182021466249494 │         5 │      146 │   -1 │       1 |
+└─────────────────────┴───────────┴──────────┴──────┴─────────┘
+```
+
+can be deleted, collapsing the invalid (old) state of the object. `VersionedCollapsingMergeTree` does this while merging the data parts.
+
+To find out why we need two rows for each change, see Algorithm.
+
+**Notes on Usage**
+
+1. The program that writes the data should remember the state of an object to be able to cancel it. “Cancel” string should contain copies of the primary key fields and the version of the “state” string and the opposite Sign. It increases the initial size of storage but allows to write the data quickly.
+2. Long growing arrays in columns reduce the efficiency of the engine due to the load for writing. The more straightforward the data, the better the efficiency.
+3. SELECT results depend strongly on the consistency of the history of object changes. Be accurate when preparing data for inserting. You can get unpredictable results with inconsistent data, such as negative values for non-negative metrics like session depth.
+
+
+##### Algorithm 
+
+When ClickHouse merges data parts, it deletes each pair of rows that have the same primary key and version and different Sign. The order of rows does not matter.
+
+When ClickHouse inserts data, it orders rows by the primary key. If the Version column is not in the primary key, ClickHouse adds it to the primary key implicitly as the last field and uses it for ordering.
+
+#### Selecting Data 
+
+ClickHouse doesn’t guarantee that all of the rows with the same primary key will be in the same resulting data part or even on the same physical server. This is true both for writing the data and for subsequent merging of the data parts. In addition, ClickHouse processes `SELECT` queries with multiple threads, and it cannot predict the order of rows in the result. This means that aggregation is required if there is a need to get completely “collapsed” data from a `VersionedCollapsingMergeTree` table.
+
+To finalize collapsing, write a query with a `GROUP BY` clause and aggregate functions that account for the sign. For example, to calculate quantity, use `sum(Sign)` instead of `count()`. To calculate the sum of something, use `sum(Sign * x)` instead of `sum(x)`, and add `HAVING sum(Sign) > 0`.
+
+The aggregates count, sum and avg can be calculated this way. The aggregate uniq can be calculated if an object has at least one non-collapsed state. The aggregates min and max can’t be calculated because VersionedCollapsingMergeTree does not save the history of values of collapsed states.
+
+If you need to extract the data with “collapsing” but without aggregation (for example, to check whether rows are present whose newest values match certain conditions), you can use the FINAL modifier for the FROM clause. This approach is inefficient and should not be used with large tables.
+
+##### Example of Use 
+
+Example data:
+
+```
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┬─Version─┐
+│ 4324182021466249494 │         5 │      146 │    1 │       1 |
+│ 4324182021466249494 │         5 │      146 │   -1 │       1 |
+│ 4324182021466249494 │         6 │      185 │    1 │       2 |
+└─────────────────────┴───────────┴──────────┴──────┴─────────┘
+```
+
+Creating the table:
+
+```sql
+CREATE TABLE UAct
+(
+    UserID UInt64,
+    PageViews UInt8,
+    Duration UInt8,
+    Sign Int8,
+    Version UInt8
+)
+ENGINE = VersionedCollapsingMergeTree(Sign, Version)
+ORDER BY UserID
+```
+
+Inserting the data:
+
+```sql
+￼INSERT INTO UAct VALUES (4324182021466249494, 5, 146, 1, 1)
+￼INSERT INTO UAct VALUES (4324182021466249494, 5, 146, -1, 1),(4324182021466249494, 6, 185, 1, 2)
+```
+
+We use two `INSERT` queries to create two different data parts. If we insert the data with a single query, ClickHouse creates one data part and will never perform any merge.
+
+Getting the data:
+
+```sql
+SELECT * FROM UAct
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┬─Version─┐
+│ 4324182021466249494 │         5 │      146 │    1 │       1 │
+└─────────────────────┴───────────┴──────────┴──────┴─────────┘
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┬─Version─┐
+│ 4324182021466249494 │         5 │      146 │   -1 │       1 │
+│ 4324182021466249494 │         6 │      185 │    1 │       2 │
+└─────────────────────┴───────────┴──────────┴──────┴─────────┘
+```
+
+What do we see here and where are the collapsed parts?
+We created two data parts using two INSERT queries. The SELECT query was performed in two threads, and the result is a random order of rows.
+Collapsing did not occur because the data parts have not been merged yet. ClickHouse merges data parts at an unknown point in time which we cannot predict.
+
+This is why we need aggregation:
+
+```sql
+SELECT
+    UserID,
+    sum(PageViews * Sign) AS PageViews,
+    sum(Duration * Sign) AS Duration,
+    Version
+FROM UAct
+GROUP BY UserID, Version
+HAVING sum(Sign) > 0
+
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Version─┐
+│ 4324182021466249494 │         6 │      185 │       2 │
+└─────────────────────┴───────────┴──────────┴─────────┘
+```
+If we don’t need aggregation and want to force collapsing, we can use the FINAL modifier for the FROM clause.
+
+```sql
+SELECT * FROM UAct FINAL
+┌──────────────UserID─┬─PageViews─┬─Duration─┬─Sign─┬─Version─┐
+│ 4324182021466249494 │         6 │      185 │    1 │       2 │
+└─────────────────────┴───────────┴──────────┴──────┴─────────┘
+```
+
+This is a very inefficient way to select data. Don’t use it for large tables.
+
+### GraphiteMergeTree
+
+This engine is designed for thinning and aggregating/averaging (rollup) Graphite data. It may be helpful to developers who want to use ClickHouse as a data store for Graphite.
+
+You can use any ClickHouse table engine to store the Graphite data if you don’t need rollup, but if you need a rollup use GraphiteMergeTree. The engine reduces the volume of storage and increases the efficiency of queries from Graphite.
+
+The engine inherits properties from MergeTree.
+
+#### Creating a Table 
+
+```sql
+CREATE TABLE [IF NOT EXISTS] [db.]table_name [ON CLUSTER cluster]
+(
+    Path String,
+    Time DateTime,
+    Value <Numeric_type>,
+    Version <Numeric_type>
+    ...
+) ENGINE = GraphiteMergeTree(config_section)
+[PARTITION BY expr]
+[ORDER BY expr]
+[SAMPLE BY expr]
+[SETTINGS name=value, ...]
+```
+
+See a detailed description of the CREATE TABLE query.
+
+A table for the Graphite data should have the following columns for the following data:
+
+- Metric name (Graphite sensor). Data type: String.
+- Time of measuring the metric. Data type: DateTime.
+- Value of the metric. Data type: any numeric.
+- Version of the metric. Data type: any numeric.
+  ClickHouse saves the rows with the highest version or the last written if versions are the same. Other rows are deleted during the merge of data parts.
+
+The names of these columns should be set in the rollup configuration.
+
+**GraphiteMergeTree parameters**
+
+- `config_section` — Name of the section in the configuration file, where are the rules of rollup set.
+
+**Query clauses**
+
+When creating a `GraphiteMergeTree` table, the same clauses are required, as when creating a MergeTree table.
+
+#### Rollup Configuration 
+
+The settings for rollup are defined by the `graphite_rollup` parameter in the server configuration. The name of the parameter could be any. You can create several configurations and use them for different tables.
+
+Rollup configuration structure:
+
+```
+￼ required-columns
+  patterns
+```
+
+##### Required Columns 
+
+- `path_column_name` — The name of the column storing the metric name (Graphite sensor). Default value: Path.
+- `time_column_name` — The name of the column storing the time of measuring the metric. Default value: Time.
+- `value_column_name` — The name of the column storing the value of the metric at the time set in `time_column_name`. Default value: Value.
+- `version_column_name` — The name of the column storing the version of the metric. Default value: Timestamp.
+
+##### Patterns 
+
+Structure of the patterns section:
+
+```shell
+￼pattern
+    regexp
+    function
+pattern
+    regexp
+    age + precision
+    ...
+pattern
+    regexp
+    function
+    age + precision
+    ...
+pattern
+    ...
+default
+    function
+    age + precision
+    ...
+```
+
+**Attention**
+
+Patterns must be strictly ordered:
+
+1. Patterns without `function` or `retention`.
+2. Patterns with both `function` and `retention`.
+3. Pattern `default`.
+
+When processing a row, ClickHouse checks the rules in the `pattern` sections. Each of `pattern` (including `default`) sections can contain function parameter for aggregation, retention parameters or both. If the metric name matches the regexp, the rules from the `pattern` section (or sections) are applied; otherwise, the rules from the default section are used.
+
+Fields for `pattern` and `default` sections:
+
+- `regexp–` A pattern for the metric name.
+- `age` – The minimum age of the data in seconds.
+- `precision–` How precisely to define the age of the data in seconds. Should be a divisor for 86400 (seconds in a day).
+- `function` – The name of the aggregating function to apply to data whose age falls within the range [age, age + precision].
+
+
+##### Configuration Example
+
+```xml
+￼<graphite_rollup>
+    <version_column_name>Version</version_column_name>
+    <pattern>
+        <regexp>click_cost</regexp>
+        <function>any</function>
+        <retention>
+            <age>0</age>
+            <precision>5</precision>
+        </retention>
+        <retention>
+            <age>86400</age>
+            <precision>60</precision>
+        </retention>
+    </pattern>
+    <default>
+        <function>max</function>
+        <retention>
+            <age>0</age>
+            <precision>60</precision>
+        </retention>
+        <retention>
+            <age>3600</age>
+            <precision>300</precision>
+        </retention>
+        <retention>
+            <age>86400</age>
+            <precision>3600</precision>
+        </retention>
+    </default>
+</graphite_rollup>
+```

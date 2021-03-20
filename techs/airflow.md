@@ -1,16 +1,16 @@
 # The Application of Airflow
 
-Airflow is a management and execution tool for task pipeline. It has convenient features such as remote execution, task communication, manual control, and task monitoring. Airflow is based on Python, so it's simple to install and deploy.
+Airflow is a management and execution tool for task pipeline. It has convenient features such as remote execution, task communication, manual control, and task monitoring. Airflow is based on Python, and it's simple to install and deploy.
 
 ## Terminologies
 
-- DAG: directed acyclic graph, which is a concept borrowed from graph algorithm, describes a pipeline and the relationships between tasks. DAGs are defined in Python source files and in global space. The DAG files should be located under `~/airflow/dags`, which can be automatically detected and executed by Airflow database and scheduler. DAG file is configuration file written in Python.
-- Task: the unit of execution. A task is a node in DAG. Task is implemented by Airflow operators. `PythonOperator` implements python callable object as task. `BashOperators` implements bash command or bash script as task. `SSHOperator` implements remote execution job.
+- DAG: directed acyclic graph, which is a concept borrowed from graph algorithm, describes a pipeline and the relationships between tasks. DAGs are defined in Python source files and in global space. The DAG files should be located under `~/airflow/dags`, which can be automatically detected and executed by Airflow scheduler. DAG file is not a script or program, but a configuration file written in Python that describes a set of tasks.
+- Task: the unit of execution. A task is a node in DAG. Task is implemented by Airflow operators. `PythonOperator` implements python callable object as task. `BashOperators` implements bash command or bash script as task. `SSHOperator` implements remote execution job via SSH session.
 - Airflow scheduler: a daemon process that execute the task at the defined time and in the defined order.
 - Airflow web server: a web service that can visualize the execution status and history of all DAGs.
-- Back-end database: Airflow needs a back-end relational database for task status management. The default database is sqlite, but since sqlite does not support multiple concurrent connection, it can only work with `SequentialExecutor`. In this way, independent tasks in DAG cannot be executed in parallel. In production deployment, `LocalExecutor` with MySQL or Postgresql is recommended. 
+- Back-end database: Airflow needs a back-end relational database for DAGs and tasks management. The default DBMS is Sqlite, but since Sqlite does not support multiple concurrent connections, it can only work with `SequentialExecutor`. In this way, independent tasks in a DAG cannot be executed in parallel. In production deployment, `LocalExecutor` with MySQL or Postgresql is recommended. 
 - Celery executor: an Airflow executor that can control a number of workers deployed in multiple host servers. Celery executor is deployed at each server, and tasks can be executed by the worker on each server. A worker can also be defined for receive interested DAGs only by specifying the `queue`. 
-- Execution date: the logical date that is meaningful for specific task. Execution date can be extracted using the `ds` Jinja template and for business procedure. If manually specified, the execution date should be after the `start_date` of DAGs. The actual running time of DAGs is determined by the `start_date` and `schedule_interval`, if tasks are launched by Airflow scheduler.
+- Execution date: the logical datetime that is meaningful for specific task. Execution date can be extracted using the `{{ ds }}` Jinja template. If manually specified, the execution date should be after the `start_date` of DAGs. The actual running time of DAGs is determined by the `start_date` and `schedule_interval`, if tasks are launched by Airflow scheduler.
 
 ## Important Concepts
 
@@ -26,20 +26,6 @@ Airflow is a management and execution tool for task pipeline. It has convenient 
 - Airflow scheduler should be run as daemon process. The log file should be specified to a proper location, which contains the launch information for each well-defined DAG. It is recommended to redirect stdout and sterr to the log file as well. DAGs are automatically detected and imported by scheduler without manually run the DAG python file. If DAG is not well-defined, the error message or exception is dumped into the log file. For DAGs that are scheduled to run, the execution information is written into `~/airflow/logs/some_dag_name/some_task_name/execution_time/number.log` file. 
 
 ## Examples
-
-### Simple Bash Task
-
-
-
-### Simple Python Task
-
-
-
-### Sending Email and XCom
-
-
-
-### Remote Task on SSH
 
 
 
