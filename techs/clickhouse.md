@@ -1,5 +1,5 @@
-# The Application and Performance of Clickhouse
-- [The Application and Performance of Clickhouse](#the-application-and-performance-of-clickhouse)
+# Clickhouse
+- [Clickhouse](#clickhouse)
   - [Introduction](#introduction)
     - [Overview](#overview)
       - [What Is ClickHouse?](#what-is-clickhouse)
