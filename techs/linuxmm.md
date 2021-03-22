@@ -94,6 +94,44 @@
       - [Draining a Per-CPU Cache](#draining-a-per-cpu-cache)
     - [Slab Allocator Initialisation](#slab-allocator-initialisation)
     - [Interfacing with the Buddy Allocator](#interfacing-with-the-buddy-allocator)
+  - [High Memory Management](#high-memory-management)
+    - [Managing the PKMap Address Space](#managing-the-pkmap-address-space)
+    - [Mapping High Memory Pages](#mapping-high-memory-pages)
+      - [Unmapping Pages](#unmapping-pages)
+    - [Mapping High Memory Pages Atomically](#mapping-high-memory-pages-atomically)
+    - [Bounce Buffers](#bounce-buffers)
+      - [Disk Buffering](#disk-buffering)
+      - [Creating Bounce Buffers](#creating-bounce-buffers)
+      - [Copying via bounce buffers](#copying-via-bounce-buffers)
+    - [Emergency Pools](#emergency-pools)
+  - [Swap Management](#swap-management)
+    - [Describing the Swap Area](#describing-the-swap-area)
+    - [Mapping Page Table Entries to Swap Entries](#mapping-page-table-entries-to-swap-entries)
+    - [Allocating a swap slot](#allocating-a-swap-slot)
+    - [Swap Cache](#swap-cache)
+    - [Reading Pages from Backing Storage](#reading-pages-from-backing-storage)
+    - [Writing Pages to Backing Storage](#writing-pages-to-backing-storage)
+    - [Reading/Writing Swap Area Blocks](#readingwriting-swap-area-blocks)
+    - [Activating a Swap Area](#activating-a-swap-area)
+    - [Deactivating a Swap Area](#deactivating-a-swap-area)
+  - [Shared Memory Virtual Filesystem](#shared-memory-virtual-filesystem)
+    - [Initialising the Virtual Filesystem](#initialising-the-virtual-filesystem)
+    - [Using shmem Functions](#using-shmem-functions)
+    - [Creating Files in tmpfs](#creating-files-in-tmpfs)
+    - [Page Faulting within a Virtual File](#page-faulting-within-a-virtual-file)
+      - [Locating Swapped Pages](#locating-swapped-pages)
+      - [Writing Pages to Swap](#writing-pages-to-swap)
+    - [File Operations in tmpfs](#file-operations-in-tmpfs)
+    - [Inode Operations in tmpfs](#inode-operations-in-tmpfs)
+    - [Setting up Shared Regions](#setting-up-shared-regions)
+    - [System V IPC](#system-v-ipc)
+  - [Out Of Memory Management](#out-of-memory-management)
+    - [Checking Available Memory](#checking-available-memory)
+    - [Determining OOM Status](#determining-oom-status)
+    - [Selecting a Process](#selecting-a-process)
+    - [Killing the Selected Process](#killing-the-selected-process)
+    - [Is That It?](#is-that-it)
+  - [The Final Word](#the-final-word)
 
 ## Describing Physical Memory
 
@@ -1849,5 +1887,656 @@ That statically defines all the fields that can be calculated at compile time. T
 ### Interfacing with the Buddy Allocator
 
 The slab allocator does not come with pages attached, it must ask the physical page allocator for its pages. Two APIs are provided for this task called kmem_getpages() and kmem_freepages(). They are basically wrappers around the buddy allocators API so that slab flags will be taken into account for allocations. For allocations, the default flags are taken from cachep→gfpflags and the order is taken from cachep→gfporder where cachep is the cache requesting the pages. When freeing the pages, PageClearSlab() will be called for every page being freed before calling free_pages().
+
+## High Memory Management
+
+The kernel may only directly address memory for which it has set up a page table entry. In the most common case, the user/kernel address space split of 3GiB/1GiB implies that at best only 896MiB of memory may be directly accessed at any given time on a 32-bit machine as explained in Section 4.1. On 64-bit hardware, this is not really an issue as there is more than enough virtual address space. It is highly unlikely there will be machines running 2.4 kernels with more than terabytes of RAM.
+
+There are many high end 32-bit machines that have more than 1GiB of memory and the inconveniently located memory cannot be simply ignored. The solution Linux uses is to temporarily map pages from high memory into the lower page tables. This will be discussed in Section 9.2.
+
+High memory and IO have a related problem which must be addressed, as not all devices are able to address high memory or all the memory available to the CPU. This may be the case if the CPU has PAE extensions enabled, the device is limited to addresses the size of a signed 32-bit integer (2GiB) or a 32-bit device is being used on a 64-bit architecture. Asking the device to write to memory will fail at best and possibly disrupt the kernel at worst. The solution to this problem is to use a bounce buffer and this will be discussed in Section 9.4.
+
+This chapter begins with a brief description of how the Persistent Kernel Map (PKMap) address space is managed before talking about how pages are mapped and unmapped from high memory. The subsequent section will deal with the case where the mapping must be atomic before discussing bounce buffers in depth. Finally we will talk about how emergency pools are used for when memory is very tight.
+
+### Managing the PKMap Address Space
+
+Space is reserved at the top of the kernel page tables from `PKMAP_BASE` to `FIXADDR_START` for a PKMap. The size of the space reserved varies slightly. On the x86, `PKMAP_BASE` is at `0xFE000000` and the address of `FIXADDR_START` is a compile time constant that varies with configure options but is typically only a few pages located near the end of the linear address space. This means that there is slightly below 32MiB of page table space for mapping pages from high memory into usable space.
+
+For mapping pages, a single page set of PTEs is stored at the beginning of the PKMap area to allow 1024 high pages to be mapped into low memory for short periods with the function `kmap()` and unmapped with `kunmap()`. The pool seems very small but the page is only mapped by `kmap()` for a very short time. Comments in the code indicate that there was a plan to allocate contiguous page table entries to expand this area but it has remained just that, comments in the code, so a large portion of the PKMap is unused.
+
+The page table entry for use with `kmap()` is called pkmap_page_table which is located at `PKMAP_BASE` and set up during system initialisation. On the x86, this takes place at the end of the `pagetable_init()` function. The pages for the PGD and PMD entries are allocated by the boot memory allocator to ensure they exist.
+
+The current state of the page table entries is managed by a simple array called called `pkmap_count` which has `LAST_PKMAP` entries in it. On an x86 system without PAE, this is 1024 and with PAE, it is 512. More accurately, albeit not expressed in code, the `LAST_PKMAP` variable is equivalent to `PTRS_PER_PTE`.
+
+Each element is not exactly a reference count but it is very close. If the entry is 0, the page is free and has not been used since the last TLB flush. If it is 1, the slot is unused but a page is still mapped there waiting for a TLB flush. Flushes are delayed until every slot has been used at least once as a global flush is required for all CPUs when the global page tables are modified and is extremely expensive. Any higher value is a reference count of n-1 users of the page.
+
+### Mapping High Memory Pages
+
+The API for mapping pages from high memory is described in Table 9.1. The main function for mapping a page is `kmap()`. For users that do not wish to block, `kmap_nonblock()` is available and interrupt users have `kmap_atomic()`. The kmap pool is quite small so it is important that users of `kmap()` call `kunmap()` as quickly as possible because the pressure on this small window grows incrementally worse as the size of high memory grows in comparison to low memory.
+
+![](./pics/understand-html054.png)
+
+The `kmap()` function itself is fairly simple. It first checks to make sure an interrupt is not calling this function(as it may sleep) and calls `out_of_line_bug()` if true. An interrupt handler calling `BUG()` would panic the system so `out_of_line_bug()` prints out bug information and exits cleanly. The second check is that the page is below `highmem_start_page` as pages below this mark are already visible and do not need to be mapped.
+
+It then checks if the page is already in low memory and simply returns the address if it is. This way, users that need `kmap()` may use it unconditionally knowing that if it is already a low memory page, the function is still safe. If it is a high page to be mapped, `kmap_high()` is called to begin the real work.
+
+The `kmap_high()` function begins with checking the page→virtual field which is set if the page is already mapped. If it is NULL, `map_new_virtual()` provides a mapping for the page.
+
+Creating a new virtual mapping with `map_new_virtual()` is a simple case of linearly scanning pkmap_count. The scan starts at last_pkmap_nr instead of 0 to prevent searching over the same areas repeatedly between `kmap()`s. When last_pkmap_nr wraps around to 0, `flush_all_zero_pkmaps()` is called to set all entries from 1 to 0 before flushing the TLB.
+
+If, after another scan, an entry is still not found, the process sleeps on the `pkmap_map_wait` wait queue until it is woken up after the next `kunmap()`.
+
+Once a mapping has been created, the corresponding entry in the `pkmap_count` array is incremented and the virtual address in low memory returned.
+
+- `void * kmap(struct page *page)`
+  Takes a struct page from high memory and maps it into low memory. The address returned is the virtual address of the mapping
+- `void * kmap_nonblock(struct page *page)`
+  This is the same as `kmap()` except it will not block if no slots are available and will instead return NULL. This is not the same as `kmap_atomic()` which uses specially reserved slots
+- `void * kmap_atomic(struct page *page, enum km_type type)`
+  There are slots maintained in the map for atomic use by interrupts (see Section 9.3). Their use is heavily discouraged and callers of this function may not sleep or schedule. This function will map a page from high memory atomically for a specific purpose
+ 
+#### Unmapping Pages
+
+![](./pics/understand-html055.png)
+
+The `kunmap_high()` is simple in principle. It decrements the corresponding element for this page in pkmap_count. If it reaches 1 (remember this means no more users but a TLB flush is required), any process waiting on the pkmap_map_wait is woken up as a slot is now available. The page is not unmapped from the page tables then as that would require a TLB flush. It is delayed until `flush_all_zero_pkmaps()` is called.
+
+- `void kunmap(struct page *page)`
+  Unmaps a struct page from low memory and frees up the page table entry mapping it
+ 
+- `void kunmap_atomic(void *kvaddr, enum km_type type)`
+  Unmap a page that was mapped atomically
+
+### Mapping High Memory Pages Atomically
+
+The use of `kmap_atomic()` is discouraged but slots are reserved for each CPU for when they are necessary, such as when bounce buffers, are used by devices from interrupt. There are a varying number of different requirements an architecture has for atomic high memory mapping which are enumerated by km_type. The total number of uses is KM_TYPE_NR. On the x86, there are a total of six different uses for atomic kmaps.
+
+There are `KM_TYPE_NR` entries per processor are reserved at boot time for atomic mapping at the location `FIX_KMAP_BEGIN` and ending at `FIX_KMAP_END`. Obviously a user of an atomic kmap may not sleep or exit before calling `kunmap_atomic()` as the next process on the processor may try to use the same entry and fail.
+
+The function `kmap_atomic()` has the very simple task of mapping the requested page to the slot set aside in the page tables for the requested type of operation and processor. The function `kunmap_atomic()` is interesting as it will only clear the PTE with `pte_clear()` if debugging is enabled. It is considered unnecessary to bother unmapping atomic pages as the next call to `kmap_atomic()` will simply replace it making TLB flushes unnecessary.
+
+### Bounce Buffers
+
+Bounce buffers are required for devices that cannot access the full range of memory available to the CPU. An obvious example of this is when a device does not address with as many bits as the CPU, such as 32-bit devices on 64-bit architectures or recent Intel processors with PAE enabled.
+
+The basic concept is very simple. A bounce buffer resides in memory low enough for a device to copy from and write data to. It is then copied to the desired user page in high memory. This additional copy is undesirable, but unavoidable. Pages are allocated in low memory which are used as buffer pages for DMA to and from the device. This is then copied by the kernel to the buffer page in high memory when IO completes so the bounce buffer acts as a type of bridge. There is significant overhead to this operation as at the very least it involves copying a full page but it is insignificant in comparison to swapping out pages in low memory.
+
+#### Disk Buffering
+
+Blocks, typically around 1KiB are packed into pages and managed by a struct buffer_head allocated by the slab allocator. Users of buffer heads have the option of registering a callback function. This function is stored in `buffer_head->b_end_io()` and called when IO completes. It is this mechanism that bounce buffers uses to have data copied out of the bounce buffers. The callback registered is the function `bounce_end_io_write()`.
+
+Any other feature of buffer heads or how they are used by the block layer is beyond the scope of this document and more the concern of the IO layer.
+
+#### Creating Bounce Buffers
+
+The creation of a bounce buffer is a simple affair which is started by the `create_bounce()` function. The principle is very simple, create a new buffer using a provided buffer head as a template. The function takes two parameters which are a read/write parameter (rw) and the template buffer head to use (`bh_orig`).
+
+![](./pics/understand-html056.png)
+
+A page is allocated for the buffer itself with the function `alloc_bounce_page()` which is a wrapper around `alloc_page()` with one important addition. If the allocation is unsuccessful, there is an emergency pool of pages and buffer heads available for bounce buffers. This is discussed further in Section 9.5.
+
+The buffer head is, predictably enough, allocated with `alloc_bounce_bh()` which, similar in principle to `alloc_bounce_page()`, calls the slab allocator for a buffer_head and uses the emergency pool if one cannot be allocated. Additionally, `bdflush` is woken up to start flushing dirty buffers out to disk so that buffers are more likely to be freed soon.
+
+Once the page and buffer_head have been allocated, information is copied from the template buffer_head into the new one. Since part of this operation may use `kmap_atomic()`, bounce buffers are only created with the IRQ safe `io_request_lock` held. The IO completion callbacks are changed to be either `bounce_end_io_write()` or `bounce_end_io_read()` depending on whether this is a read or write buffer so the data will be copied to and from high memory.
+
+The most important aspect of the allocations to note is that the GFP flags specify that no IO operations involving high memory may be used. This is specified with `SLAB_NOHIGHIO` to the slab allocator and `GFP_NOHIGHIO` to the buddy allocator. This is important as bounce buffers are used for IO operations with high memory. If the allocator tries to perform high memory IO, it will recurse and eventually crash.
+
+#### Copying via bounce buffers
+
+![](./pics/understand-html057.png)
+
+Data is copied via the bounce buffer differently depending on whether it is a read or write buffer. If the buffer is for writes to the device, the buffer is populated with the data from high memory during bounce buffer creation with the function `copy_from_high_bh()`. The callback function `bounce_end_io_write()` will complete the IO later when the device is ready for the data.
+
+If the buffer is for reading from the device, no data transfer may take place until the device is ready. When it is, the interrupt handler for the device calls the callback function `bounce_end_io_read()` which copies the data to high memory with `copy_to_high_bh_irq()`.
+
+In either case the buffer head and page may be reclaimed by `bounce_end_io()` once the IO has completed and the IO completion function for the template `buffer_head()` is called. If the emergency pools are not full, the resources are added to the pools otherwise they are freed back to the respective allocators.
+
+### Emergency Pools
+
+Two emergency pools of buffer_heads and pages are maintained for the express use by bounce buffers. If memory is too tight for allocations, failing to complete IO requests is going to compound the situation as buffers from high memory cannot be freed until low memory is available. This leads to processes halting, thus preventing the possibility of them freeing up their own memory.
+
+The pools are initialised by `init_emergency_pool()` to contain `POOL_SIZE` entries each which is currently defined as 32. The pages are linked via the `page->list` field on a list headed by emergency_pages. Figure 9.5 illustrates how pages are stored on emergency pools and acquired when necessary.
+
+The `buffer_heads` are very similar as they linked via the `buffer_head->inode_buffers` on a list headed by `emergency_bhs`. The number of entries left on the pages and buffer lists are recorded by two counters `nr_emergency_pages` and `nr_emergency_bhs` respectively and the two lists are protected by the `emergency_lock` spinlock.
+
+![](./pics/understand-html058.png)
+
+## Swap Management
+
+Just as Linux uses free memory for purposes such as buffering data from disk, there eventually is a need to free up private or anonymous pages used by a process. These pages, unlike those backed by a file on disk, cannot be simply discarded to be read in later. Instead they have to be carefully copied to backing storage, sometimes called the swap area. This chapter details how Linux uses and manages its backing storage.
+
+Strictly speaking, Linux does not swap as “swapping” refers to coping an entire process address space to disk and “paging” to copying out individual pages. Linux actually implements paging as modern hardware supports it, but traditionally has called it swapping in discussions and documentation. To be consistent with the Linux usage of the word, we too will refer to it as swapping.
+
+There are two principle reasons that the existence of swap space is desirable. First, it expands the amount of memory a process may use. Virtual memory and swap space allows a large process to run even if the process is only partially resident. As “old” pages may be swapped out, the amount of memory addressed may easily exceed RAM as demand paging will ensure the pages are reloaded if necessary.
+
+The casual reader1 may think that with a sufficient amount of memory, swap is unnecessary but this brings us to the second reason. A significant number of the pages referenced by a process early in its life may only be used for initialisation and then never used again. It is better to swap out those pages and create more disk buffers than leave them resident and unused.
+
+It is important to note that swap is not without its drawbacks and the most important one is the most obvious one; Disk is slow, very very slow. If processes are frequently addressing a large amount of memory, no amount of swap or expensive high-performance disks will make it run within a reasonable time, only more RAM will help. This is why it is very important that the correct page be swapped out as discussed in Chapter 10, but also that related pages be stored close together in the swap space so they are likely to be swapped in at the same time while reading ahead. We will start with how Linux describes a swap area.
+
+This chapter begins with describing the structures Linux maintains about each active swap area in the system and how the swap area information is organised on disk. We then cover how Linux remembers how to find pages in the swap after they have been paged out and how swap slots are allocated. After that the Swap Cache is discussed which is important for shared pages. At that point, there is enough information to begin understanding how swap areas are activated and deactivated, how pages are paged in and paged out and finally how the swap area is read and written to.
+
+### Describing the Swap Area
+
+Each active swap area, be it a file or partition, has a struct swap_info_struct describing the area. All the structs in the running system are stored in a statically declared array called swap_info which holds `MAX_SWAPFILES`, which is statically defined as 32, entries. This means that at most 32 swap areas can exist on a running system. The `swap_info_struct` is declared as follows in `<linux/swap.h>`:
+
+```c
+ 64 struct swap_info_struct {
+ 65     unsigned int flags;
+ 66     kdev_t swap_device;
+ 67     spinlock_t sdev_lock;
+ 68     struct dentry * swap_file;
+ 69     struct vfsmount *swap_vfsmnt;
+ 70     unsigned short * swap_map;
+ 71     unsigned int lowest_bit;
+ 72     unsigned int highest_bit;
+ 73     unsigned int cluster_next;
+ 74     unsigned int cluster_nr;
+ 75     int prio;
+ 76     int pages;
+ 77     unsigned long max;
+ 78     int next;
+ 79 };
+```
+
+Here is a small description of each of the fields in this quite sizable struct.
+
+- **flags** This is a bit field with two possible values. `SWP_USED` is set if the swap area is currently active. `SWP_WRITEOK` is defined as 3, the two lowest significant bits, including the `SWP_USED` bit. The flags is set to `SWP_WRITEOK` when Linux is ready to write to the area as it must be active to be written to;
+- **swap_device** The device corresponding to the partition used for this swap area is stored here. If the swap area is a file, this is NULL;
+- **sdev_lock** As with many structs in Linux, this one has to be protected too. sdev_lock is a spinlock protecting the struct, principally the `swap_map`. It is locked and unlocked with `swap_device_lock()` and `swap_device_unlock()`;
+- **swap_file** This is the dentry for the actual special file that is mounted as a swap area. This could be the dentry for a file in the `/dev/` directory for example in the case a partition is mounted. This field is needed to identify the correct swap_info_struct when deactiating a swap area;
+- **vfs_mount** This is the vfs_mount object corresponding to where the device or file for this swap area is stored;
+- **swap_map** This is a large array with one entry for every swap entry, or page sized slot in the area. An entry is a reference count of the number of users of this page slot. The swap cache counts as one user and every PTE that has been paged out to the slot counts as a user. If it is equal to `SWAP_MAP_MAX`, the slot is allocated permanently. If equal to SWAP_MAP_BAD, the slot will never be used;
+- **lowest_bit** This is the lowest possible free slot available in the swap area and is used to start from when linearly scanning to reduce the search space. It is known that there are definitely no free slots below this mark;
+- **highest_bit** This is the highest possible free slot available in this swap area. Similar to lowest_bit, there are definitely no free slots above this mark;
+- **cluster_next** This is the offset of the next cluster of blocks to use. The swap area tries to have pages allocated in cluster blocks to increase the chance related pages will be stored together;
+- **cluster_nr** This the number of pages left to allocate in this cluster;
+- **prio** Each swap area has a priority which is stored in this field. Areas are arranged in order of priority and determine how likely the area is to be used. By default the priorities are arranged in order of activation but the system administrator may also specify it using the -p flag when using swapon;
+- **pages** As some slots on the swap file may be unusable, this field stores the number of usable pages in the swap area. This differs from max in that slots marked SWAP_MAP_BAD are not counted;
+- **max** This is the total number of slots in this swap area;
+- **next** This is the index in the swap_info array of the next swap area in the system.
+
+The areas, though stored in an array, are also kept in a pseudo list called `swap_list` which is a very simple type declared as follows in `<linux/swap.h>`:
+
+```c
+153 struct swap_list_t {
+154     int head;    /* head of priority-ordered swapfile list */
+155     int next;    /* swapfile to be used next */
+156 };
+```
+
+The field `swap_list_t->head` is the swap area of the highest priority swap area in use and `swap_list_t->next` is the next swap area that should be used. This is so areas may be arranged in order of priority when searching for a suitable area but still looked up quickly in the array when necessary.
+
+Each swap area is divided up into a number of page sized slots on disk which means that each slot is 4096 bytes on the x86 for example. The first slot is always reserved as it contains information about the swap area that should not be overwritten. The first 1 KiB of the swap area is used to store a disk label for the partition that can be picked up by userspace tools. The remaining space is used for information about the swap area which is filled when the swap area is created with the system program mkswap. The information is used to fill in a union swap_header which is declared as follows in `<linux/swap.h>`:
+
+```c
+ 25 union swap_header {
+ 26     struct 
+ 27     {
+ 28         char reserved[PAGE_SIZE - 10];
+ 29         char magic[10];
+ 30     } magic;
+ 31     struct 
+ 32     {
+ 33         char     bootbits[1024];
+ 34         unsigned int version;
+ 35         unsigned int last_page;
+ 36         unsigned int nr_badpages;
+ 37         unsigned int padding[125];
+ 38         unsigned int badpages[1];
+ 39     } info;
+ 40 };
+```
+
+A description of each of the fields follows
+
+- **magic** The magic part of the union is used just for identifying the “magic” string. The string exists to make sure there is no chance a partition that is not a swap area will be used and to decide what version of swap area is is. If the string is “SWAP-SPACE”, it is version 1 of the swap file format. If it is “SWAPSPACE2”, it is version 2. The large reserved array is just so that the magic string will be read from the end of the page;
+- **bootbits** This is the reserved area containing information about the partition such as the disk label;
+- **version** This is the version of the swap area layout;
+- **last_page** This is the last usable page in the area;
+- **nr_badpages** The known number of bad pages that exist in the swap area are stored in this field;
+- **padding** A disk section is usually about 512 bytes in size. The three fields version, last_page and nr_badpages make up 12 bytes and the padding fills up the remaining 500 bytes to cover one sector;
+- **badpages** The remainder of the page is used to store the indices of up to `MAX_SWAP_BADPAGES` number of bad page slots. These slots are filled in by the mkswap system program if the -c switch is specified to check the area.
+
+`MAX_SWAP_BADPAGES` is a compile time constant which varies if the struct changes but it is 637 entries in its current form as given by the simple equation;
+
+```
+MAX_SWAP_BADPAGES = (PAGE_SIZE - 1024 - 512 - 10) / sizeof(long)
+```
+
+Where 1024 is the size of the bootblock, 512 is the size of the padding and 10 is the size of the magic string identifing the format of the swap file.
+
+### Mapping Page Table Entries to Swap Entries
+
+When a page is swapped out, Linux uses the corresponding PTE to store enough information to locate the page on disk again. Obviously a PTE is not large enough in itself to store precisely where on disk the page is located, but it is more than enough to store an index into the swap_info array and an offset within the swap_map and this is precisely what Linux does.
+
+Each PTE, regardless of architecture, is large enough to store a swp_entry_t which is declared as follows in `<linux/shmem_fs.h>`
+
+```c
+ 16 typedef struct {
+ 17     unsigned long val;
+ 18 } swp_entry_t;
+```
+
+Two macros are provided for the translation of PTEs to swap entries and vice versa. They are `pte_to_swp_entry()` and `swp_entry_to_pte()` respectively.
+
+Each architecture has to be able to determine if a PTE is present or swapped out. For illustration, we will show how this is implemented on the x86. In the swp_entry_t, two bits are always kept free. On the x86, Bit 0 is reserved for the `_PAGE_PRESENT` flag and Bit 7 is reserved for `_PAGE_PROTNONE`. The requirement for both bits is explained in Section 3.2. Bits 1-6 are for the type which is the index within the `swap_info` array and are returned by the `SWP_TYPE()` macro.
+
+Bits 8-31 are used are to store the offset within the swap_map from the `swp_entry_t`. On the x86, this means 24 bits are available, “limiting” the size of the swap area to 64GiB. The macro `SWP_OFFSET()` is used to extract the offset.
+
+To encode a type and offset into a `swp_entry_t`, the macro `SWP_ENTRY()` is available which simply performs the relevant bit shifting operations. The relationship between all these macros is illustrated in Figure 11.1.
+
+![](./pics/understand-html065.png)
+
+It should be noted that the six bits for “type” should allow up to 64 swap areas to exist in a 32 bit architecture instead of the `MAX_SWAPFILES` restriction of 32. The restriction is due to the consumption of the vmalloc address space. If a swap area is the maximum possible size then 32MiB is required for the `swap_map (224 * sizeof(short))`; remember that each page uses one short for the reference count. For just `MAX_SWAPFILES` maximum number of swap areas to exist, 1GiB of virtual malloc space is required which is simply impossible because of the user/kernel linear address space split.
+
+This would imply supporting 64 swap areas is not worth the additional complexity but there are cases where a large number of swap areas would be desirable even if the overall swap available does not increase. Some modern machines2 have many separate disks which between them can create a large number of separate block devices. In this case, it is desirable to create a large number of small swap areas which are evenly distributed across all disks. This would allow a high degree of parallelism in the page swapping behaviour which is important for swap intensive applications.
+
+### Allocating a swap slot
+
+All page sized slots are tracked by the array `swap_info_struct->swap_map` which is of type unsigned short. Each entry is a reference count of the number of users of the slot which happens in the case of a shared page and is 0 when free. If the entry is `SWAP_MAP_MAX`, the page is permanently reserved for that slot. It is unlikely, if not impossible, for this condition to occur but it exists to ensure the reference count does not overflow. If the entry is `SWAP_MAP_BAD`, the slot is unusable.
+
+![](./pics/understand-html066.png)
+
+The task of finding and allocating a swap entry is divided into two major tasks. The first performed by the high level function `get_swap_page()`. Starting with `swap_list->next`, it searches swap areas for a suitable slot. Once a slot has been found, it records what the next swap area to be used will be and returns the allocated entry.
+
+The task of searching the map is the responsibility of `scan_swap_map()`. In principle, it is very simple as it linearly scan the array for a free slot and return. Predictably, the implementation is a bit more thorough.
+
+Linux attempts to organise pages into clusters on disk of size `SWAPFILE_CLUSTER`. It allocates `SWAPFILE_CLUSTER` number of pages sequentially in swap keeping count of the number of sequentially allocated pages in `swap_info_struct->cluster_nr` and records the current offset in `swap_info_struct->cluster_next`. Once a sequential block has been allocated, it searches for a block of free entries of size `SWAPFILE_CLUSTER`. If a block large enough can be found, it will be used as another cluster sized sequence.
+
+If no free clusters large enough can be found in the swap area, a simple first-free search starting from `swap_info_struct->lowest_bit` is performed. The aim is to have pages swapped out at the same time close together on the premise that pages swapped out together are related. This premise, which seems strange at first glance, is quite solid when it is considered that the page replacement algorithm will use swap space most when linearly scanning the process address space swapping out pages. Without scanning for large free blocks and using them, it is likely that the scanning would degenerate to first-free searches and never improve. With it, processes exiting are likely to free up large blocks of slots.
+
+### Swap Cache
+
+Pages that are shared between many processes can not be easily swapped out because, as mentioned, there is no quick way to map a struct page to every PTE that references it. This leads to the race condition where a page is present for one PTE and swapped out for another gets updated without being synced to disk thereby losing the update.
+
+To address this problem, shared pages that have a reserved slot in backing storage are considered to be part of the swap cache. The swap cache is purely conceptual as it is simply a specialisation of the page cache. The first principal difference between pages in the swap cache rather than the page cache is that pages in the swap cache always use swapper_space as their address_space in `page->mapping`. The second difference is that pages are added to the swap cache with `add_to_swap_cache()` instead of `add_to_page_cache()`.
+
+![](./pics/understand-html067.png)
+
+Anonymous pages are not part of the swap cache until an attempt is made to swap them out. The variable `swapper_space` is declared as follows in swap_state.c:
+
+```c
+ 39 struct address_space swapper_space = {
+ 40     LIST_HEAD_INIT(swapper_space.clean_pages),
+ 41     LIST_HEAD_INIT(swapper_space.dirty_pages),
+ 42     LIST_HEAD_INIT(swapper_space.locked_pages),
+ 43     0,
+ 44     &swap_aops,
+ 45 };
+```
+
+A page is identified as being part of the swap cache once the `page->mapping` field has been set to `swapper_space` which is tested by the `PageSwapCache()` macro. Linux uses the exact same code for keeping pages between swap and memory in sync as it uses for keeping file-backed pages and memory in sync as they both share the page cache code, the differences are just in the functions used.
+
+The address space for backing storage, `swapper_space` uses swap_ops for it's `address_space->a_ops`. The `page->index` field is then used to store the `swp_entry_t` structure instead of a file offset which is it's normal purpose. The address_space_operations struct `swap_aops` is declared as follows in `swap_state.c`:
+
+![](./pics/understand-html068.png)
+
+Subsequent swapping of the page from shared PTEs results in a call to `swap_duplicate()` which simply increments the reference to the slot in the swap_map. If the PTE is marked dirty by the hardware as a result of a write, the bit is cleared and the struct page is marked dirty with `set_page_dirty()` so that the on-disk copy will be synced before the page is dropped. This ensures that until all references to the page have been dropped, a check will be made to ensure the data on disk matches the data in the page frame.
+
+When the reference count to the page finally reaches 0, the page is eligible to be dropped from the page cache and the swap map count will have the count of the number of PTEs the on-disk slot belongs to so that the slot will not be freed prematurely. It is laundered and finally dropped with the same LRU aging and logic described in Chapter 10.
+
+If, on the other hand, a page fault occurs for a page that is “swapped out”, the logic in `do_swap_page()` will check to see if the page exists in the swap cache by calling `lookup_swap_cache()`. If it does, the PTE is updated to point to the page frame, the page reference count incremented and the swap slot decremented with `swap_free()`.
+
+
+- `swp_entry_t get_swap_page()`
+  This function allocates a slot in a swap_map by searching active swap areas. This is covered in greater detail in Section 11.3 but included here as it is principally used in conjunction with the swap cache
+- `int add_to_swap_cache(struct page *page, swp_entry_t entry)`
+  This function adds a page to the swap cache. It first checks if it already exists by calling `swap_duplicate()` and if not, is adds it to the swap cache via the normal page cache interface function `add_to_page_cache_unique()`
+- `struct page * lookup_swap_cache(swp_entry_t entry)`
+  This searches the swap cache and returns the struct page corresponding to the supplied entry. It works by searching the normal page cache based on swapper_space and the swap_map offset
+- `int swap_duplicate(swp_entry_t entry)`
+  This function verifies a swap entry is valid and if so, increments its swap map count
+- `void swap_free(swp_entry_t entry)`
+  The complement function to `swap_duplicate()`. It decrements the relevant counter in the swap_map. When the count reaches zero, the slot is effectively free
+ 
+### Reading Pages from Backing Storage
+
+The principal function used when reading in pages is `read_swap_cache_async()` which is mainly called during page faulting. The function begins be searching the swap cache with `find_get_page()`. Normally, swap cache searches are performed by `lookup_swap_cache()` but that function updates statistics on the number of searches performed and as the cache may need to be searched multiple times, `find_get_page()` is used instead.
+
+![](./pics/understand-html069.png)
+
+The page can already exist in the swap cache if another process has the same page mapped or multiple processes are faulting on the same page at the same time. If the page does not exist in the swap cache, one must be allocated and filled with data from backing storage.
+
+Once the page is allocated with `alloc_page()`, it is added to the swap cache with `add_to_swap_cache()` as swap cache operations may only be performed on pages in the swap cache. If the page cannot be added to the swap cache, the swap cache will be searched again to make sure another process has not put the data in the swap cache already.
+
+To read information from backing storage, `rw_swap_page()` is called which is discussed in Section 11.7. Once the function completes, `page_cache_release()` is called to drop the reference to the page taken by `find_get_page()`.
+
+### Writing Pages to Backing Storage
+
+When any page is being written to disk, the `address_space->a_ops` is consulted to find the appropriate write-out function. In the case of backing storage, the address_space is `swapper_space` and the swap operations are contained in `swap_aops`. The struct `swap_aops` registers `swap_writepage()` as it's write-out function.
+
+![](./pics/understand-html070.png)
+
+The function `swap_writepage()` behaves differently depending on whether the writing process is the last user of the swap cache page or not. It knows this by calling `remove_exclusive_swap_page()` which checks if there is any other processes using the page. This is a simple case of examining the page count with the pagecache_lock held. If no other process is mapping the page, it is removed from the swap cache and freed.
+
+If `remove_exclusive_swap_page()` removed the page from the swap cache and freed it `swap_writepage()` will unlock the page as it is no longer in use. If it still exists in the swap cache, `rw_swap_page()` is called to write the data to the backing storage.
+
+### Reading/Writing Swap Area Blocks
+
+The top-level function for reading and writing to the swap area is `rw_swap_page()`. This function ensures that all operations are performed through the swap cache to prevent lost updates. `rw_swap_page_base()` is the core function which performs the real work.
+
+It begins by checking if the operation is a read. If it is, it clears the uptodate flag with `ClearPageUptodate()` as the page is obviously not up to date if IO is required to fill it with data. This flag will be set again if the page is successfully read from disk. It then calls `get_swaphandle_info()` to acquire the device for the swap partition of the inode for the swap file. These are required by the block layer which will be performing the actual IO.
+
+The core function can work with either swap partition or files as it uses the block layer function `brw_page()` to perform the actual disk IO. If the swap area is a file, `bmap()` is used to fill a local array with a list of all blocks in the filesystem which contain the page data. Remember that filesystems may have their own method of storing files and disk and it is not as simple as the swap partition where information may be written directly to disk. If the backing storage is a partition, then only one page-sized block requires IO and as there is no filesystem involved, `bmap()` is unnecessary.
+
+Once it is known what blocks must be read or written, a normal block IO operation takes place with `brw_page()`. All IO that is performed is asynchronous so the function returns quickly. Once the IO is complete, the block layer will unlock the page and any waiting process will wake up.
+
+### Activating a Swap Area
+
+As it has now been covered what swap areas are, how they are represented and how pages are tracked, it is time to see how they all tie together to activate an area. Activating an area is conceptually quite simple; Open the file, load the header information from disk, populate a `swap_info_struct` and add it to the swap list.
+
+The function responsible for the activation of a swap area is `sys_swapon()` and it takes two parameters, the path to the special file for the swap area and a set of flags. While swap is been activated, the Big Kernel Lock (BKL) is held which prevents any application entering kernel space while this operation is been performed. The function is quite large but can be broken down into the following simple steps;
+
+- Find a free `swap_info_struct` in the swap_info array an initialise it with default values
+- Call `user_path_walk()` which traverses the directory tree for the supplied specialfile and populates a namidata structure with the available data on the file, such as the dentry and the filesystem information for where it is stored (vfsmount)
+- Populate `swap_info_struct` fields pertaining to the dimensions of the swap area and how to find it. If the swap area is a partition, the block size will be configured to the `PAGE_SIZE` before calculating the size. If it is a file, the information is obtained directly from the inode
+- Ensure the area is not already activated. If not, allocate a page from memory and read the first page sized slot from the swap area. This page contains information such as the number of good slots and how to populate the `swap_info_struct->swap_map` with the bad entries
+- Allocate memory with `vmalloc()` for `swap_info_struct->swap_map` and initialise each entry with 0 for good slots and `SWAP_MAP_BAD` otherwise. Ideally the header information will be a version 2 file format as version 1 was limited to swap areas of just under 128MiB for architectures with 4KiB page sizes like the x863
+- After ensuring the information indicated in the header matches the actual swap area, fill in the remaining information in the `swap_info_struct` such as the maximum number of pages and the available good pages. Update the global statistics for `nr_swap_pages` and `total_swap_pages`
+- The swap area is now fully active and initialised and so it is inserted into the swap list in the correct position based on priority of the newly activated area
+
+At the end of the function, the BKL is released and the system now has a new swap area available for paging to.
+
+### Deactivating a Swap Area
+
+In comparison to activating a swap area, deactivation is incredibly expensive. The principal problem is that the area cannot be simply removed, every page that is swapped out must now be swapped back in again. Just as there is no quick way of mapping a struct page to every PTE that references it, there is no quick way to map a swap entry to a PTE either. This requires that all process page tables be traversed to find PTEs which reference the swap area to be deactivated and swap them in. This of course means that swap deactivation will fail if the physical memory is not available.
+
+The function responsible for deactivating an area is, predictably enough, called `sys_swapoff()`. This function is mainly concerned with updating the swap_info_struct. The major task of paging in each paged-out page is the responsibility of `try_to_unuse()` which is extremely expensive. For each slot used in the `swap_map`, the page tables for processes have to be traversed searching for it. In the worst case, all page tables belonging to all mm_structs may have to be traversed. Therefore, the tasks taken for deactivating an area are broadly speaking;
+
+- Call `user_path_walk()` to acquire the information about the special file to be deactivated and then take the BKL
+- Remove the `swap_info_struct` from the swap list and update the global statistics on the number of swap pages available (`nr_swap_pages`) and the total number of swap entries (total_swap_pages. Once this is acquired, the BKL can be released again
+- Call `try_to_unuse()` which will page in all pages from the swap area to be deactivated. This function loops through the swap map using `find_next_to_unuse()` to locate the next used swap slot. For each used slot it finds, it performs the following;
+    - Call `read_swap_cache_async()` to allocate a page for the slot saved on disk. Ideally it exists in the swap cache already but the page allocator will be called if it is not
+    - Wait on the page to be fully paged in and lock it. Once locked, call `unuse_process()` for every process that has a PTE referencing the page. This function traverses the page table searching for the relevant PTE and then updates it to point to the struct page. If the page is a shared memory page with no remaining reference, `shmem_unuse()` is called instead
+    - Free all slots that were permanently mapped. It is believed that slots will never become permanently reserved so the risk is taken.
+    - Delete the page from the swap cache to prevent `try_to_swap_out()` referencing a page in the event it still somehow has a reference in swap map
+- If there was not enough available memory to page in all the entries, the swap area is reinserted back into the running system as it cannot be simply dropped. If it succeeded, the `swap_info_struct` is placed into an uninitialised state and the `swap_map` memory freed with `vfree()`
+
+## Shared Memory Virtual Filesystem
+
+Sharing a region region of memory backed by a file or device is simply a case of calling `mmap()` with the `MAP_SHARED` flag. However, there are two important cases where an anonymous region needs to be shared between processes. The first is when `mmap()` with `MAP_SHARED` but no file backing. These regions will be shared between a parent and child process after a `fork() `is executed. The second is when a region is explicitly setting them up with `shmget()` and attached to the virtual address space with `shmat()`.
+
+When pages within a VMA are backed by a file on disk, the interface used is straight-forward. To read a page during a page fault, the required `nopage()` function is found `vm_area_struct->vm_ops`. To write a page to backing storage, the appropriate `writepage()` function is found in the address_space_operations via `inode->i_mapping->a_ops` or alternatively via `page->mapping->a_ops`. When normal file operations are taking place such as `mmap()`, `read()` and `write()`, the struct file_operations with the appropriate functions is found via `inode->i_fop` and so on. These relationships were illustrated in Figure 4.2.
+
+This is a very clean interface that is conceptually easy to understand but it does not help anonymous pages as there is no file backing. To keep this nice interface, Linux creates an artifical file-backing for anonymous pages using a RAM-based filesystem where each VMA is backed by a “file” in this filesystem. Every inode in the filesystem is placed on a linked list called shmem_inodes so that they may always be easily located. This allows the same file-based interface to be used without treating anonymous pages as a special case.
+
+The filesystem comes in two variations called shm and tmpfs. They both share core functionality and mainly differ in what they are used for. shm is for use by the kernel for creating file backings for anonymous pages and for backing regions created by `shmget()`. This filesystem is mounted by `kern_mount()` so that it is mounted internally and not visible to users. tmpfs is a temporary filesystem that may be optionally mounted on `/tmp/` to have a fast RAM-based temporary filesystem. A secondary use for tmpfs is to mount it on `/dev/shm/`. Processes that `mmap()` files in the tmpfs filesystem will be able to share information between them as an alternative to System V IPC mechanisms. Regardless of the type of use, tmpfs must be explicitly mounted by the system administrator.
+
+This chapter begins with a description of how the virtual filesystem is implemented. From there we will discuss how shared regions are setup and destroyed before talking about how the tools are used to implement System V IPC mechanisms.
+
+### Initialising the Virtual Filesystem
+
+The virtual filesystem is initialised by the function `init_tmpfs()` during either system start or when the module is begin loaded. This function registers the two filesystems, tmpfs and shm, mounts shm as an internal filesystem with `kern_mount()`. It then calculates the maximum number of blocks and inodes that can exist in the filesystems. As part of the registration, the function `shmem_read_super()` is used as a callback to populate a struct super_block with more information about the filesystems such as making the block size equal to the page size.
+
+![](./pics/understand-html071.png)
+
+Every inode created in the filesystem will have a struct `shmem_inode_info` associated with it which contains private information specific to the filesystem. The function `SHMEM_I() `takes an inode as a parameter and returns a pointer to a struct of this type. It is declared as follows in `<linux/shmem_fs.h>`:
+
+```c
+ 20 struct shmem_inode_info {
+ 21     spinlock_t              lock;
+ 22     unsigned long           next_index;
+ 23     swp_entry_t             i_direct[SHMEM_NR_DIRECT];
+ 24     void                  **i_indirect;
+ 25     unsigned long           swapped;
+ 26     unsigned long           flags;
+ 27     struct list_head        list;
+ 28     struct inode           *inode;
+ 29 };
+```
+
+The fields are:
+
+- **lock** is a spinlock protecting the inode information from concurrent accessses
+- **next_index** is an index of the last page being used in the file. This will be different from `inode->i_size` while a file is being trucated
+- **i_direct** is a direct block containing the first `SHMEM_NR_DIRECT` swap vectors in use by the file. See Section 12.4.1.
+- **i_indirect** is a pointer to the first indirect block. See Section 12.4.1.
+- **swapped** is a count of the number of pages belonging to the file that are currently swapped out
+- **flags** is currently only used to remember if the file belongs to a shared region setup by `shmget()`. It is set by specifying `SHM_LOCK` with `shmctl()` and unlocked by specifying `SHM_UNLOCK`
+- **list** is a list of all inodes used by the filesystem
+- **inode** is a pointer to the parent inode
+
+### Using shmem Functions
+
+Different structs contain pointers for shmem specific functions. In all cases, tmpfs and shm share the same structs.
+
+For faulting in pages and writing them to backing storage, two structs called shmem_aops and `shmem_vm_ops` of type struct `address_space_operations` and struct vm_operations_struct respectively are declared.
+
+The address space operations struct shmem_aops contains pointers to a small number of functions of which the most important one is `shmem_writepage()` which is called when a page is moved from the page cache to the swap cache. `shmem_removepage()` is called when a page is removed from the page cache so that the block can be reclaimed. `shmem_readpage()` is not used by tmpfs but is provided so that the `sendfile()` system call my be used with tmpfs files. `shmem_prepare_write()` and `shmem_commit_write()` are also unused, but are provided so that tmpfs can be used with the loopback device. shmem_aops is declared as follows in `mm/shmem.c`
+
+```c
+1500 static struct address_space_operations shmem_aops = {
+1501     removepage:     shmem_removepage,
+1502     writepage:      shmem_writepage,
+1503 #ifdef CONFIG_TMPFS
+1504     readpage:       shmem_readpage,
+1505     prepare_write:  shmem_prepare_write,
+1506     commit_write:   shmem_commit_write,
+1507 #endif
+1508 };
+```
+
+Anonymous VMAs use `shmem_vm_ops` as it's `vm_operations_struct` so that `shmem_nopage()` is called when a new page is being faulted in. It is declared as follows:
+
+```c
+1426 static struct vm_operations_struct shmem_vm_ops = {
+1427     nopage: shmem_nopage,
+1428 };
+```
+
+To perform operations on files and inodes, two structs, `file_operations` and inode_operations are required. The `file_operations`, called `shmem_file_operations`, provides functions which implement `mmap()`, `read()`, `write()` and `fsync()`. It is declared as follows:
+
+```c
+1510 static struct file_operations shmem_file_operations = {
+1511     mmap:           shmem_mmap,
+1512 #ifdef CONFIG_TMPFS
+1513     read:           shmem_file_read,
+1514     write:          shmem_file_write,
+1515     fsync:          shmem_sync_file,
+1516 #endif
+1517 };
+```
+
+Three sets of `inode_operations` are provided. The first is `shmem_inode_operations` which is used for file inodes. The second, called `shmem_dir_inode_operations` is for directories. The last pair, called `shmem_symlink_inline_operations` and `shmem_symlink_inode_operations` is for use with symbolic links.
+
+The two file operations supported are `truncate()` and `setattr()` which are stored in a struct inode_operations called `shmem_inode_operations`. `shmem_truncate()` is used to truncate a file. `shmem_notify_change()` is called when the file attributes change. This allows, amoung other things, to allows a file to be grown with `truncate()` and use the global zero page as the data page. `shmem_inode_operations` is declared as follows:
+
+```c
+1519 static struct inode_operations shmem_inode_operations = {
+1520         truncate:       shmem_truncate,
+1521         setattr:        shmem_notify_change,
+1522 };
+```
+
+The directory inode_operations provides functions such as `create()`, `link()` and `mkdir()`. They are declared as follows:
+
+```c
+1524 static struct inode_operations shmem_dir_inode_operations = {
+1525 #ifdef CONFIG_TMPFS
+1526     create:         shmem_create,
+1527     lookup:         shmem_lookup,
+1528     link:           shmem_link,
+1529     unlink:         shmem_unlink,
+1530     symlink:        shmem_symlink,
+1531     mkdir:          shmem_mkdir,
+1532     rmdir:          shmem_rmdir,
+1533     mknod:          shmem_mknod,
+1534     rename:         shmem_rename,
+1535 #endif
+1536 };
+```
+
+The last pair of operations are for use with symlinks. They are declared as:
+
+```c
+1354 static struct inode_operations shmem_symlink_inline_operations = {
+1355         readlink:       shmem_readlink_inline,
+1356         follow_link:    shmem_follow_link_inline,
+1357 };
+1358 
+1359 static struct inode_operations shmem_symlink_inode_operations = {
+1360         truncate:       shmem_truncate,
+1361         readlink:       shmem_readlink,
+1362         follow_link:    shmem_follow_link,
+1363 };
+```
+
+The difference between the two `readlink()` and `follow_link()` functions is related to where the link information is stored. A symlink inode does not require the private inode information struct `shmem_inode_information`. If the length of the symbolic link name is smaller than this struct, the space in the inode is used to store the name and shmem_symlink_inline_operations becomes the inode operations struct. Otherwise a page is allocated with `shmem_getpage()`, the symbolic link is copied to it and `shmem_symlink_inode_operations` is used. The second struct includes a `truncate()` function so that the page will be reclaimed when the file is deleted.
+
+These various structs ensure that the shmem equivalent of inode related operations will be used when regions are backed by virtual files. When they are used, the majority of the VM sees no difference between pages backed by a real file and ones backed by virtual files.
+
+### Creating Files in tmpfs
+
+As `tmpfs` is mounted as a proper filesystem that is visible to the user, it must support directory inode operations such as `open()`, `mkdir()` and `link()`. Pointers to functions which implement these for tmpfs are provided in `shmem_dir_inode_operations` which was shown in Section 12.2.
+
+The implementations of most of these functions are quite small and, at some level, they are all interconnected as can be seen from Figure 12.2. All of them share the same basic principal of performing some work with inodes in the virtual filesystem and the majority of the inode fields are filled in by `shmem_get_inode()`.
+
+![](./pics/understand-html072.png)
+
+When creating a new file, the top-level function called is `shmem_create()`. This small function calls `shmem_mknod()` with the `S_IFREG` flag added so that a regular file will be created. `shmem_mknod()` is little more than a wrapper around the `shmem_get_inode()` which, predictably, creates a new inode and fills in the struct fields. The three fields of principal interest that are filled are the `inode->i_mapping->a_ops`, `inode->i_op` and `inode->i_fop` fields. Once the inode has been created, `shmem_mknod()` updates the directory inode size and mtime statistics before instantiating the new inode.
+
+Files are created differently in shm even though the filesystems are essentially identical in functionality. How these files are created is covered later in Section 12.7.
+
+### Page Faulting within a Virtual File
+
+When a page fault occurs, `do_no_page()` will call `vma->vm_ops->nopage` if it exists. In the case of the virtual filesystem, this means the function `shmem_nopage()`, whose call graph is shown in Figure 12.3, will be called when a page fault occurs.
+
+![](./pics/understand-html073.png
+
+The core function in this case is `shmem_getpage()` which is responsible for either allocating a new page or finding it in swap. This overloading of fault types is unusual as `do_swap_page()` is normally responsible for locating pages that have been moved to the swap cache or backing storage using information encoded within the PTE. In this case, pages backed by virtual files have their PTE set to 0 when they are moved to the swap cache. The inode's private filesystem data stores direct and indirect block information which is used to locate the pages later. This operation is very similar in many respects to normal page faulting.
+
+#### Locating Swapped Pages
+
+When a page has been swapped out, a `swp_entry_t` will contain information needed to locate the page again. Instead of using the PTEs for this task, the information is stored within the filesystem-specific private information in the inode.
+
+When faulting, the function called to locate the swap entry is `shmem_alloc_entry()`. It's basic task is to perform basic checks and ensure that `shmem_inode_info->next_index` always points to the page index at the end of the virtual file. It's principal task is to call `shmem_swp_entry()` which searches for the swap vector within the inode information with `shmem_swp_entry()` and allocate new pages as necessary to store swap vectors.
+
+The first SHMEM_NR_DIRECT entries are stored in `inode->i_direct`. This means that for the x86, files that are smaller than 64KiB (`SHMEM_NR_DIRECT * PAGE_SIZE`) will not need to use indirect blocks. Larger files must use indirect blocks starting with the one located at `inode->i_indirect`.
+
+![](./pics/understand-html074.png)
+
+The initial indirect block (`inode->i_indirect`) is broken into two halves. The first half contains pointers to doubly indirect blocks and the second half contains pointers to triply indirect blocks. The doubly indirect blocks are pages containing swap vectors (`swp_entry_t`). The triple indirect blocks contain pointers to pages which in turn are filled with swap vectors. The relationship between the different levels of indirect blocks is illustrated in Figure 12.4. The relationship means that the maximum number of pages in a virtual file (`SHMEM_MAX_INDEX`) is defined as follows in mm/shmem.c:
+
+```c
+ 44 #define SHMEM_MAX_INDEX  (
+         SHMEM_NR_DIRECT + 
+         (ENTRIES_PER_PAGEPAGE/2) *
+         (ENTRIES_PER_PAGE+1))
+```
+
+#### Writing Pages to Swap
+
+The function `shmem_writepage()` is the registered function in the filesystems `address_space_operations` for writing pages to swap. The function is responsible for simply moving the page from the page cache to the swap cache. This is implemented with a few simple steps:
+
+- Record the current `page->mapping` and information about the inode
+- Allocate a free slot in the backing storage with `get_swap_page()`
+- Allocate a `swp_entry_t` with `shmem_swp_entry()`
+- Remove the page from the page cache
+- Add the page to the swap cache. If it fails, free the swap slot, add back to the page cache and try again
+
+### File Operations in tmpfs
+
+Four operations, `mmap()`, `read()`, `write()` and `fsync()` are supported with virtual files. Pointers to the functions are stored in shmem_file_operations which was shown in Section 12.2.
+
+There is little that is unusual in the implementation of these operations and they are covered in detail in the Code Commentary. The `mmap()` operation is implemented by `shmem_mmap()` and it simply updates the VMA that is managing the mapped region. `read()`, implemented by `shmem_read()`, performs the operation of copying bytes from the virtual file to a userspace buffer, faulting in pages as necessary. `write()`, implemented by `shmem_write()` is essentially the same. The `fsync()` operation is implemented by `shmem_file_sync()` but is essentially a NULL operation as it performs no task and simply returns 0 for success. As the files only exist in RAM, they do not need to be synchronised with any disk.
+
+### Inode Operations in tmpfs
+
+The most complex operation that is supported for inodes is truncation and involves four distinct stages. The first, in `shmem_truncate()` will truncate the a partial page at the end of the file and continually calls `shmem_truncate_indirect()` until the file is truncated to the proper size. Each call to `shmem_truncate_indirect()` will only process one indirect block at each pass which is why it may need to be called multiple times.
+
+The second stage, in `shmem_truncate_indirect()`, understands both doubly and triply indirect blocks. It finds the next indirect block that needs to be truncated. This indirect block, which is passed to the third stage, will contain pointers to pages which in turn contain swap vectors.
+
+The third stage in `shmem_truncate_direct()` works with pages that contain swap vectors. It selects a range that needs to be truncated and passes the range to the last stage `shmem_swp_free()`. The last stage frees entries with `free_swap_and_cache()` which frees both the swap entry and the page containing data.
+
+The linking and unlinking of files is very simple as most of the work is performed by the filesystem layer. To link a file, the directory inode size is incremented, the ctime and mtime of the affected inodes is updated and the number of links to the inode being linked to is incremented. A reference to the new dentry is then taken with `dget()` before instantiating the new dentry with `d_instantiate()`. Unlinking updates the same inode statistics before decrementing the reference to the dentry with `dput()`. `dput()` will also call `iput()` which will clear up the inode when it's reference count hits zero.
+
+Creating a directory will use `shmem_mkdir()` to perform the task. It simply uses `shmem_mknod()` with the `S_IFDIR` flag before incrementing the parent directory inode's `i_nlink` counter. The function `shmem_rmdir()` will delete a directory by first ensuring it is empty with `shmem_empty()`. If it is, the function then decrementing the parent directory inode's `i_nlink` count and calls `shmem_unlink()` to remove the requested directory.
+
+### Setting up Shared Regions
+
+A shared region is backed by a file created in shm. There are two cases where a new file will be created, during the setup of a shared region with `shmget()` and when an anonymous region is setup with `mmap()` with the `MAP_SHARED` flag. Both functions use the core function `shmem_file_setup()` to create a file.
+
+![](./pics/understand-html075.png)
+
+As the filesystem is internal, the names of the files created do not have to be unique as the files are always located by inode, not name. Therefore, `shmem_zero_setup()` always says to create a file called `dev/zero` which is how it shows up in the file `/proc/pid/maps`. Files created by `shmget()` are called `SYSVNN` where the NN is the key that is passed as a parameter to `shmget()`.
+
+The core function `shmem_file_setup()` simply creates a new dentry and inode, fills in the relevant fields and instantiates them.
+
+### System V IPC
+
+The full internals of the IPC implementation is beyond the scope of this book. This section will focus just on the implementations of `shmget()` and `shmat()` and how they are affected by the VM. The system call `shmget()` is implemented by `sys_shmget()`. It performs basic checks to the parameters and sets up the IPC related data structures. To create the segment, it calls `newseg()`. This is the function that creates the file in shmfs with `shmem_file_setup()` as discussed in the previous section.
+
+![](./pics/understand-html076.png)
+
+The system call `shmat()` is implemented by `sys_shmat()`. There is little remarkable about the function. It acquires the appropriate descriptor and makes sure all the parameters are valid before calling `do_mmap()` to map the shared region into the process address space. There are only two points of note in the function.
+
+The first is that it is responsible for ensuring that VMAs will not overlap if the caller specifies the address. The second is that the `shp->shm_nattch` counter is maintained by a `vm_operations_struct()` called `shm_vm_ops`. It registers `open()` and `close()` callbacks called `shm_open()` and `shm_close()` respectively. The `shm_close()` callback is also responsible for destroyed shared regions if the `SHM_DEST` flag is specified and the `shm_nattch` counter reaches zero.
+
+## Out Of Memory Management
+
+The last aspect of the VM we are going to discuss is the Out Of Memory (OOM) manager. This intentionally is a very short chapter as it has one simple task; check if there is enough available memory to satisfy, verify that the system is truely out of memory and if so, select a process to kill. This is a controversial part of the VM and it has been suggested that it be removed on many occasions. Regardless of whether it exists in the latest kernel, it still is a useful system to examine as it touches off a number of other subsystems.
+
+### Checking Available Memory
+
+For certain operations, such as expaning the heap with `brk()` or remapping an address space with `mremap()`, the system will check if there is enough available memory to satisfy a request. Note that this is separate to the `out_of_memory()` path that is covered in the next section. This path is used to avoid the system being in a state of OOM if at all possible.
+
+When checking available memory, the number of required pages is passed as a parameter to `vm_enough_memory()`. Unless the system administrator has specified that the system should overcommit memory, the mount of available memory will be checked. To determine how many pages are potentially available, Linux sums up the following bits of data:
+
+- **Total page cache** as page cache is easily reclaimed
+- **Total free pages** because they are already available
+- **Total free swap pages** as userspace pages may be paged out
+- **Total pages managed by swapper_space** although this double-counts the free swap pages. This is balanced by the fact that slots are sometimes reserved but not used
+- **Total pages used by the dentry cache** as they are easily reclaimed
+- **Total pages used by the inode cache** as they are easily reclaimed
+
+If the total number of pages added here is sufficient for the request, `vm_enough_memory()` returns true to the caller. If false is returned, the caller knows that the memory is not available and usually decides to return -`ENOMEM` to userspace.
+
+### Determining OOM Status
+
+When the machine is low on memory, old page frames will be reclaimed (see Chapter 10) but despite reclaiming pages is may find that it was unable to free enough pages to satisfy a request even when scanning at highest priority. If it does fail to free page frames, `out_of_memory()` is called to see if the system is out of memory and needs to kill a process.
+
+![](./pics/understand-html077.png)
+
+Unfortunately, it is possible that the system is not out memory and simply needs to wait for IO to complete or for pages to be swapped to backing storage. This is unfortunate, not because the system has memory, but because the function is being called unnecessarily opening the possibly of processes being unnecessarily killed. Before deciding to kill a process, it goes through the following checklist.
+
+- Is there enough swap space left (`nr_swap_pages > 0`) ? If yes, not OOM
+- Has it been more than 5 seconds since the last failure? If yes, not OOM
+- Have we failed within the last second? If no, not OOM
+- If there hasn't been 10 failures at least in the last 5 seconds, we're not OOM
+- Has a process been killed within the last 5 seconds? If yes, not OOM
+
+It is only if the above tests are passed that `oom_kill()` is called to select a process to kill.
+
+### Selecting a Process
+
+The function `select_bad_process()` is responsible for choosing a process to kill. It decides by stepping through each running task and calculating how suitable it is for killing with the function `badness()`. The badness is calculated as follows, note that the square roots are integer approximations calculated with int_sqrt();
+
+```
+badness_for_task = total_vm_for_task / (sqrt(cpu_time_in_seconds) * sqrt(sqrt(cpu_time_in_minutes)))
+```
+
+This has been chosen to select a process that is using a large amount of memory but is not that long lived. Processes which have been running a long time are unlikely to be the cause of memory shortage so this calculation is likely to select a process that uses a lot of memory but has not been running long. If the process is a root process or has `CAP_SYS_ADMIN` capabilities, the points are divided by four as it is assumed that root privilege processes are well behaved. Similarly, if it has `CAP_SYS_RAWIO` capabilities (access to raw devices) privileges, the points are further divided by 4 as it is undesirable to kill a process that has direct access to hardware.
+
+### Killing the Selected Process
+
+Once a task is selected, the list is walked again and each process that shares the same mm_struct as the selected process (i.e. they are threads) is sent a signal. If the process has CAP_SYS_RAWIO capabilities, a SIGTERM is sent to give the process a chance of exiting cleanly, otherwise a SIGKILL is sent.
+
+### Is That It?
+
+Yes, thats it, out of memory management touches a lot of subsystems otherwise, there is not much to it.
+
+## The Final Word
+
+Make no mistake, memory management is a large, complex and time consuming field to research and difficult to apply to practical implementations. As it is very difficult to model how systems behave in real multi-programmed systems [CD80], developers often rely on intuition to guide them and examination of virtual memory algorithms depends on simulations of specific workloads. Simulations are necessary as modeling how scheduling, paging behaviour and multiple processes interact presents a considerable challenge. Page replacement policies, a field that has been the focus of considerable amounts of research, is a good example as it is only ever shown to work well for specified workloads. The problem of adjusting algorithms and policies to different workloads is addressed by having administrators tune systems as much as by research and algorithms.
+
+The Linux kernel is also large, complex and fully understood by a relatively small core group of people. It's development is the result of contributions of thousands of programmers with a varying range of specialties, backgrounds and spare time. The first implementations are developed based on the all-important foundation that theory provides. Contributors built upon this framework with changes based on real world observations.
+
+It has been asserted on the Linux Memory Management mailing list that the VM is poorly documented and difficult to pick up as “the implementation is a nightmare to follow”1 and the lack of documentation on practical VMs is not just confined to Linux. Matt Dillon, one of the principal developers of the FreeBSD VM2 and considered a “VM Guru” stated in an interview3 that documentation can be “hard to come by”. One of the principal difficulties with deciphering the implementation is the fact the developer must have a background in memory management theory to see why implementation decisions were made as a pure understanding of the code is insufficient for any purpose other than micro-optimisations.
+
+This book attempted to bridge the gap between memory management theory and the practical implementation in Linux and tie both fields together in a single place. It tried to describe what life is like in Linux as a memory manager in a manner that was relatively independent of hardware architecture considerations. I hope after reading this, and progressing onto the code commentary, that you, the reader feels a lot more comfortable with tackling the VM subsystem. As a final parting shot, Figure 14.1 broadly illustrates how of the sub-systems we discussed in detail interact with each other.
+
+On a final personal note, I hope that this book encourages other people to produce similar works for other areas of the kernel. I know I'll buy them!
+
+![](./pics/understand-html078.png)
 
 
