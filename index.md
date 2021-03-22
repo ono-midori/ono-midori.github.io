@@ -6,7 +6,7 @@
 
 ### Techs
 
-[The Application of Airflow](./techs/airflow.md)
+[Airflow](./techs/airflow.md)
 
 [Memory Management of C++ Containers](./techs/cppmm.md)
 
@@ -14,13 +14,13 @@
 
 [Kernel Bypass of Openonload](./techs/openonload.md)
 
-[The Usage and Performance of Hugepage](./techs/hugepage.md)
+[Hugepage](./techs/hugepage.md)
 
 [The Memory Management Subsystem of Linux Kernel](./techs/linuxmm.md)
 
-[The Application and Performance of Clickhouse DBMS](./techs/clickhouse.md)
+[Clickhouse](./techs/clickhouse.md)
 
-[The Application of futex](./techs/futex.md)
+[futex](./techs/futex.md)
 
 [The Procedure of Interrupts and System calls on Linux](./techs/syscall_int.md)
 
